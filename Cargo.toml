@@ -1,0 +1,109 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rtools-core",
+    "crates/rtools-image",
+    "crates/rtools-pdf",
+    "crates/rtools-ai",
+    "crates/rtools-cli",
+    "crates/rtools-api",
+    "crates/rtools-mcp",
+    "crates/rtools-wasm",
+]
+
+[workspace.dependencies]
+# Core
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+config = "0.14"
+figment = { version = "0.11", features = ["toml"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
+rayon = "1.10"
+walkdir = "2.5"
+ignore = "0.4"
+bytes = "1.5"
+mime = "0.3"
+mime_guess = "2.0"
+
+# Image processing
+image = { version = "0.25", features = ["jpeg", "png", "webp", "tiff", "bmp", "gif", "ico", "hdr", "exr", "dither", "rayon"] }
+imageproc = "0.24"
+mozjpeg = "0.10"
+webp = "0.7"
+ravif = "0.4"
+heic-reader = "0.2"
+jxl-oxide = "0.2"
+crc32fast = "1.4"
+
+# PDF processing
+lopdf = "0.34"
+printpdf = "0.4"
+pdf-extract = "0.9"
+tesseract = "0.3"
+
+# Async/Network
+axum = { version = "0.7", features = ["ws", "multipart"] }
+tower = { version = "0.4", features = ["timeout", "limit", "cors"] }
+hyper = { version = "1.0", features = ["full"] }
+tonic = "0.11"
+prost = "0.12"
+tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout", "compression", "fs"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "wrap_help", "color", "suggestions", "cargo"] }
+clap_complete = "4.5"
+indicatif = "0.17"
+console = "0.15"
+dialoguer = "0.11"
+
+# MCP
+rmcp = "0.2"
+
+# WASM
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["File", "FileReader", "HtmlCanvasElement", "CanvasRenderingContext2d", "Window", "Document", "Blob", "Url", "Response", "Request", "Headers"] }
+
+# AI/ML
+candle-core = { version = "0.6", features = ["mkl"] }
+candle-nn = "0.6"
+candle-transformers = "0.6"
+tokenizers = "0.15"
+ort = { version = "1.17", features = ["load-dylib"] }
+
+# Testing
+criterion = "0.5"
+proptest = "1.3"
+tempfile = "3.8"
+rstest = "0.18"
+
+[workspace.lints.rust]
+unused_crate_dependencies = "warn"
+unused_imports = "warn"
+unused_variables = "warn"
+dead_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+unwrap_used = "allow"
+expect_used = "allow"
+missing_docs_in_private_items = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
+debug = true

@@ -1,0 +1,38 @@
+[package]
+name = "rtools-image"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Image processing operations for rtools"
+readme = "../README.md"
+
+[dependencies]
+rtools-core = { path = "../rtools-core" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+rayon = { workspace = true }
+walkdir = { workspace = true }
+ignore = { workspace = true }
+bytes = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Image processing
+image = { workspace = true }
+imageproc = { workspace = true }
+mozjpeg = { workspace = true }
+webp = { workspace = true }
+ravif = { workspace = true }
+heic-reader = { workspace = true }
+jxl-oxide = { workspace = true }
+crc32fast = { workspace = true }
+kamadak-exif = "0.5"
+
+# PDF to image
+pdfium-render = "0.11"
+
+[lints]
+workspace = true

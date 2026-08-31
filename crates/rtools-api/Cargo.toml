@@ -1,0 +1,33 @@
+[package]
+name = "rtools-api"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "REST/gRPC API server for rtools"
+readme = "../README.md"
+
+[[bin]]
+name = "rtools-api"
+path = "src/main.rs"
+
+[dependencies]
+rtools-core = { path = "../rtools-core" }
+rtools-image = { path = "../rtools-image" }
+rtools-pdf = { path = "../rtools-pdf" }
+rtools-ai = { path = "../rtools-ai" }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { version = "1.6", features = ["v4"] }
+base64 = "0.22"
+tempfile = "3.8"
+
+[lints]
+workspace = true

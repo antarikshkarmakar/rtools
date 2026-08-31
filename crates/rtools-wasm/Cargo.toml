@@ -1,0 +1,32 @@
+[package]
+name = "rtools-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "WASM bindings for rtools"
+readme = "../README.md"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rtools-core = { path = "../rtools-core" }
+rtools-image = { path = "../rtools-image" }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+console_error_panic_hook = "0.1"
+wee_alloc = "0.4"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+
+[lints]
+workspace = true

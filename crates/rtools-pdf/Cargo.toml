@@ -1,0 +1,35 @@
+[package]
+name = "rtools-pdf"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "PDF processing operations for rtools"
+readme = "../README.md"
+
+[dependencies]
+rtools-core = { path = "../rtools-core" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+rayon = { workspace = true }
+walkdir = { workspace = true }
+bytes = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# PDF processing
+lopdf = { workspace = true }
+printpdf = { workspace = true }
+pdf-extract = { workspace = true }
+pdfium-render = "0.11"
+
+# Image extraction
+image = { workspace = true }
+
+# OCR
+tesseract = { workspace = true }
+
+[lints]
+workspace = true

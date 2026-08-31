@@ -1,0 +1,99 @@
+use rtools_core::error::{RToolsError, RToolsResult};
+use rtools_core::{FileInput, FileOutput, Processor};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// AI rename configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameConfig {
+    /// Filename pattern
+    pub pattern: String,
+    /// Output directory (None = rename in place)
+    pub output_dir: Option<PathBuf>,
+    /// Starting number for sequence
+    pub start_number: u32,
+    /// Use AI-generated descriptions
+    pub use_ai_descriptions: bool,
+    /// Dry run mode
+    pub dry_run: bool,
+}
+
+impl Default for RenameConfig {
+    fn default() -> Self {
+        Self {
+            pattern: "{date}_{subject}_{index}".to_string(),
+            output_dir: None,
+            start_number: 1,
+            use_ai_descriptions: true,
+            dry_run: false,
+        }
+    }
+}
+
+/// AI rename processor
+pub struct RenameProcessor;
+
+impl Processor for RenameProcessor {
+    type Input = Vec<FileInput>;
+    type Output = Vec<FileOutput>;
+    type Config = RenameConfig;
+    type Error = RToolsError;
+
+    fn process(&self, inputs: Vec<FileInput>, config: RenameConfig) -> RToolsResult<Vec<FileOutput>> {
+        let mut outputs = Vec::new();
+
+        for (idx, input) in inputs.iter().enumerate() {
+            let path = input.source.as_path().ok_or_else(|| {
+                RToolsError::invalid_input("Rename requires file path inputs")
+            })?;
+
+            let new_name = generate_filename(&config.pattern, path, idx as u32 + config.start_number)?;
+            let output_dir = config.output_dir.as_ref().unwrap_or(path.parent().unwrap_or(&PathBuf::from(".")));
+            let new_path = output_dir.join(&new_name);
+
+            if !config.dry_run {
+                std::fs::rename(path, &new_path)?;
+            }
+
+            outputs.push(FileOutput {
+                destination: rtools_core::output::OutputDestination::File(new_path),
+                name: Some(new_name),
+                mime_type: None,
+                stats: None,
+            });
+        }
+
+        Ok(outputs)
+    }
+
+    fn validate_config(&self, config: &RenameConfig) -> RToolsResult<()> {
+        if config.pattern.is_empty() {
+            return Err(RToolsError::invalid_input("Pattern cannot be empty"));
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "RenameProcessor"
+    }
+}
+
+/// Generate filename from pattern
+fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<String> {
+    let metadata = std::fs::metadata(path)?;
+    let modified = metadata.modified()?;
+    let datetime: chrono::DateTime<chrono::Local> = modified.into();
+
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path.extension().unwrap_or_default().to_string_lossy();
+
+    let filename = pattern
+        .replace("{date}", &datetime.format("%Y%m%d").to_string())
+        .replace("{time}", &datetime.format("%H%M%S").to_string())
+        .replace("{datetime}", &datetime.format("%Y%m%d_%H%M%S").to_string())
+        .replace("{index}", &index.to_string())
+        .replace("{name}", &stem)
+        .replace("{ext}", &ext);
+
+    Ok(format!("{}.{}", filename, ext))
+}
