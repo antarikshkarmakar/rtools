@@ -48,16 +48,31 @@ impl Processor for RenameProcessor {
             })?;
 
             let new_name = generate_filename(&config.pattern, path, idx as u32 + config.start_number)?;
-            let output_dir = config.output_dir.as_ref().unwrap_or(path.parent().unwrap_or(&PathBuf::from(".")));
-            let new_path = output_dir.join(&new_name);
+            let output_dir = config.output_dir.as_ref().unwrap_or(
+                path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+            );
+            let mut new_path = output_dir.join(&new_name);
 
-            if !config.dry_run {
+            // Collision detection: append numeric suffix if file exists
+            if new_path.exists() && new_path != path {
+                let stem = new_path.file_stem().unwrap_or_default().to_string_lossy();
+                let ext = new_path.extension().unwrap_or_default().to_string_lossy();
+                for i in 1..1000 {
+                    let candidate = output_dir.join(format!("{}_{}.{}", stem, i, ext));
+                    if !candidate.exists() || candidate == path {
+                        new_path = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if !config.dry_run && new_path != path {
                 std::fs::rename(path, &new_path)?;
             }
 
             outputs.push(FileOutput {
-                destination: rtools_core::output::OutputDestination::File(new_path),
-                name: Some(new_name),
+                destination: rtools_core::output::OutputDestination::File(new_path.clone()),
+                name: new_path.file_name().map(|n| n.to_string_lossy().to_string()),
                 mime_type: None,
                 stats: None,
             });
@@ -78,7 +93,7 @@ impl Processor for RenameProcessor {
     }
 }
 
-/// Generate filename from pattern
+/// Generate filename from pattern, avoiding double extensions
 fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<String> {
     let metadata = std::fs::metadata(path)?;
     let modified = metadata.modified()?;
@@ -95,5 +110,11 @@ fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<
         .replace("{name}", &stem)
         .replace("{ext}", &ext);
 
-    Ok(format!("{}.{}", filename, ext))
+    // Only append extension if the pattern doesn't already include {ext}
+    // (which would have been replaced with the actual extension)
+    if pattern.contains("{ext}") {
+        Ok(filename)
+    } else {
+        Ok(format!("{}.{}", filename, ext))
+    }
 }

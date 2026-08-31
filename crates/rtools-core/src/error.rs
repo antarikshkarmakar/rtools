@@ -89,8 +89,47 @@ impl RToolsError {
         RToolsError::UnsupportedFormat(msg.into())
     }
 
+    /// Create a new file not found error
+    pub fn file_not_found<S: Into<String>>(path: S) -> Self {
+        RToolsError::FileNotFound(path.into())
+    }
+
+    /// Create a new output directory not found error
+    pub fn output_directory_not_found<S: Into<String>>(path: S) -> Self {
+        RToolsError::OutputDirectoryNotFound(path.into())
+    }
+
     /// Create a new not implemented error
     pub fn not_implemented<S: Into<String>>(msg: S) -> Self {
         RToolsError::NotImplemented(msg.into())
+    }
+
+    /// Create a new batch processing error
+    pub fn batch_error<S: Into<String>>(msg: S) -> Self {
+        RToolsError::BatchError(msg.into())
+    }
+}
+
+impl From<toml::de::Error> for RToolsError {
+    fn from(e: toml::de::Error) -> Self {
+        RToolsError::Config(e.to_string())
+    }
+}
+
+impl From<toml::ser::Error> for RToolsError {
+    fn from(e: toml::ser::Error) -> Self {
+        RToolsError::Config(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for RToolsError {
+    fn from(e: serde_json::Error) -> Self {
+        RToolsError::Config(e.to_string())
+    }
+}
+
+impl From<figment::Error> for RToolsError {
+    fn from(e: figment::Error) -> Self {
+        RToolsError::Config(e.to_string())
     }
 }

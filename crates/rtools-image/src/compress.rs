@@ -43,7 +43,7 @@ pub struct CompressConfig {
     pub preset: CompressionPreset,
     /// Target output format (None = same as input)
     pub format: Option<ImageFormat>,
-    /// Output path (None = overwrite input)
+    /// Output path (None = {stem}_compressed.{ext})
     pub output: Option<PathBuf>,
     /// Preserve metadata
     pub preserve_metadata: bool,
@@ -63,6 +63,24 @@ impl Default for CompressConfig {
     }
 }
 
+/// Get a unique output path by appending a numeric suffix if file exists
+fn unique_output_path(path: &PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path.clone();
+    }
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path.extension().unwrap_or_default().to_string_lossy();
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    for i in 1..1000 {
+        let new_name = format!("{}_{}.{}", stem, i, ext);
+        let new_path = parent.join(new_name);
+        if !new_path.exists() {
+            return new_path;
+        }
+    }
+    path.clone()
+}
+
 /// Image compression processor
 pub struct CompressProcessor;
 
@@ -79,36 +97,182 @@ impl Processor for CompressProcessor {
             RToolsError::invalid_input("Compress requires a file path input")
         })?;
 
-        let format = input.format.ok_or_else(|| {
-            RToolsError::invalid_input("Cannot determine input format")
-        })?;
+        let format = input
+            .format
+            .or_else(|| ImageFormat::from_path(path))
+            .ok_or_else(|| RToolsError::invalid_input("Cannot determine input format"))?;
 
         let quality = config.preset.quality();
-        let output_format = config.format.unwrap_or(format);
+        let target_format = config.format.unwrap_or(format);
 
-        let result = match format {
-            ImageFormat::Jpeg => self.compress_jpeg(path, quality, output_format)?,
-            ImageFormat::Png => self.compress_png(path, quality, output_format)?,
-            ImageFormat::WebP => self.compress_webp(path, quality, output_format)?,
-            ImageFormat::Avif => self.compress_avif(path, quality, output_format)?,
-            _ => return Err(RToolsError::unsupported_format(format!("Compression not supported for {:?}", format))),
-        };
+        let output_path = config.output.unwrap_or_else(|| {
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let ext = target_format.extensions()[0];
+            path.parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(format!("{}_compressed.{}", stem, ext))
+        });
+
+        let output_path = unique_output_path(&output_path);
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let img = image::open(path).map_err(|e| {
+            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
+        })?;
+
+        // Log alpha channel warning for JPEG targets
+        if target_format == ImageFormat::Jpeg && img.color().has_alpha() {
+            tracing::warn!(
+                "Image has alpha channel but JPEG target selected — transparency will be lost"
+            );
+        }
+
+        match target_format {
+            ImageFormat::Jpeg => {
+                let rgb = img.to_rgb8();
+                let file = std::fs::File::create(&output_path)?;
+                let mut encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
+                encoder
+                    .encode_image(&rgb)
+                    .map_err(|e| RToolsError::image(format!("JPEG compression failed: {}", e)))?;
+            }
+            ImageFormat::Png => {
+                let file = std::fs::File::create(&output_path)?;
+                let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                    file,
+                    image::codecs::png::CompressionType::Best,
+                    image::codecs::png::FilterType::Adaptive,
+                );
+                if img.color().has_alpha() {
+                    let rgba = img.to_rgba8();
+                    encoder
+                        .write_image(
+                            &rgba,
+                            rgba.width(),
+                            rgba.height(),
+                            image::ExtendedColorType::Rgba8,
+                        )
+                        .map_err(|e| {
+                            RToolsError::image(format!("PNG compression failed: {}", e))
+                        })?;
+                } else {
+                    let rgb = img.to_rgb8();
+                    encoder
+                        .write_image(
+                            &rgb,
+                            rgb.width(),
+                            rgb.height(),
+                            image::ExtendedColorType::Rgb8,
+                        )
+                        .map_err(|e| {
+                            RToolsError::image(format!("PNG compression failed: {}", e))
+                        })?;
+                }
+            }
+            ImageFormat::Webp => {
+                // Use quality-aware encoding instead of lossless
+                let file = std::fs::File::create(&output_path)?;
+                if quality >= 100 {
+                    let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
+                    if img.color().has_alpha() {
+                        let rgba = img.to_rgba8();
+                        encoder
+                            .write_image(
+                                &rgba,
+                                rgba.width(),
+                                rgba.height(),
+                                image::ExtendedColorType::Rgba8,
+                            )
+                            .map_err(|e| {
+                                RToolsError::image(format!("WebP compression failed: {}", e))
+                            })?;
+                    } else {
+                        let rgb = img.to_rgb8();
+                        encoder
+                            .write_image(
+                                &rgb,
+                                rgb.width(),
+                                rgb.height(),
+                                image::ExtendedColorType::Rgb8,
+                            )
+                            .map_err(|e| {
+                                RToolsError::image(format!("WebP compression failed: {}", e))
+                            })?;
+                    }
+                } else {
+                    // Lossy WebP encoding with quality parameter
+                    let encoder = image::codecs::webp::WebPEncoder::new_with_quality(
+                        file,
+                        image::codecs::webp::WebPQuality::lossy(quality),
+                    );
+                    if img.color().has_alpha() {
+                        let rgba = img.to_rgba8();
+                        encoder
+                            .write_image(
+                                &rgba,
+                                rgba.width(),
+                                rgba.height(),
+                                image::ExtendedColorType::Rgba8,
+                            )
+                            .map_err(|e| {
+                                RToolsError::image(format!("WebP compression failed: {}", e))
+                            })?;
+                    } else {
+                        let rgb = img.to_rgb8();
+                        encoder
+                            .write_image(
+                                &rgb,
+                                rgb.width(),
+                                rgb.height(),
+                                image::ExtendedColorType::Rgb8,
+                            )
+                            .map_err(|e| {
+                                RToolsError::image(format!("WebP compression failed: {}", e))
+                            })?;
+                    }
+                }
+            }
+            ImageFormat::Avif => {
+                img.save_with_format(&output_path, image::ImageFormat::Avif)
+                    .map_err(|e| {
+                        RToolsError::image(format!("AVIF compression failed: {}", e))
+                    })?;
+            }
+            _ => {
+                img.save(&output_path).map_err(|e| {
+                    RToolsError::image(format!(
+                        "Compression failed for {:?}: {}",
+                        target_format, e
+                    ))
+                })?;
+            }
+        }
 
         let elapsed = start.elapsed();
-
         let input_size = std::fs::metadata(path)?.len();
-        let output_size = std::fs::metadata(&result)?.len();
+        let output_size = std::fs::metadata(&output_path)?.len();
 
         Ok(FileOutput {
-            destination: rtools_core::output::OutputDestination::File(result),
+            destination: rtools_core::output::OutputDestination::File(output_path),
             name: None,
-            mime_type: Some(format.mime_type()),
+            mime_type: Some(target_format.mime_type().to_string()),
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: output_size as f64 / input_size as f64,
+                compression_ratio: if input_size > 0 {
+                    output_size as f64 / input_size as f64
+                } else {
+                    1.0
+                },
                 processing_time_ms: elapsed.as_millis() as u64,
-                memory_used_mb: 0.0, // TODO: track memory
+                memory_used_mb: 0.0,
             }),
         })
     }
@@ -116,7 +280,9 @@ impl Processor for CompressProcessor {
     fn validate_config(&self, config: &CompressConfig) -> RToolsResult<()> {
         if let CompressionPreset::Custom(q) = config.preset {
             if q > 100 {
-                return Err(RToolsError::invalid_input("Quality must be between 0 and 100"));
+                return Err(RToolsError::invalid_input(
+                    "Quality must be between 0 and 100",
+                ));
             }
         }
         Ok(())
@@ -124,150 +290,5 @@ impl Processor for CompressProcessor {
 
     fn name(&self) -> &str {
         "CompressProcessor"
-    }
-}
-
-impl CompressProcessor {
-    fn compress_jpeg(&self, input: &PathBuf, quality: u8, format: ImageFormat) -> RToolsResult<PathBuf> {
-        let output = self.get_output_path(input, format);
-        let img = image::open(input)?;
-
-        match format {
-            ImageFormat::Jpeg => {
-                let mut encoder = mozjpeg::Encoder::new_file(&output, quality)?;
-                let rgb = img.to_rgb8();
-                let (width, height) = rgb.dimensions();
-                encoder.write_header()?;
-                encoder.write_scanlines(&rgb.as_raw())?;
-                encoder.finish()?;
-            }
-            ImageFormat::WebP => {
-                let webp_data = webp::Encoder::new(&img.to_rgb8()).encode(quality as f32 / 100.0);
-                std::fs::write(&output, &*webp_data)?;
-            }
-            _ => {
-                let mut output_img = img;
-                output_img.save(&output)?;
-            }
-        }
-
-        Ok(output)
-    }
-
-    fn compress_png(&self, input: &PathBuf, quality: u8, format: ImageFormat) -> RToolsResult<PathBuf> {
-        let output = self.get_output_path(input, format);
-        let img = image::open(input)?;
-
-        match format {
-            ImageFormat::Png => {
-                let mut encoder = image::codecs::png::PngEncoder::new(std::fs::File::create(&output)?);
-                let rgb = img.to_rgb8();
-                encoder.write_image(
-                    &rgb,
-                    rgb.width(),
-                    rgb.height(),
-                    image::ColorType::Rgb8.into(),
-                )?;
-            }
-            ImageFormat::WebP => {
-                let webp_data = webp::Encoder::new(&img.to_rgb8()).encode(quality as f32 / 100.0);
-                std::fs::write(&output, &*webp_data)?;
-            }
-            ImageFormat::Jpeg => {
-                img.save_with_format(&output, image::ImageFormat::Jpeg)?;
-            }
-            _ => {
-                img.save(&output)?;
-            }
-        }
-
-        Ok(output)
-    }
-
-    fn compress_webp(&self, input: &PathBuf, quality: u8, format: ImageFormat) -> RToolsResult<PathBuf> {
-        let output = self.get_output_path(input, format);
-        let img = image::open(input)?;
-
-        match format {
-            ImageFormat::WebP => {
-                let webp_data = webp::Encoder::new(&img.to_rgb8()).encode(quality as f32 / 100.0);
-                std::fs::write(&output, &*webp_data)?;
-            }
-            ImageFormat::Jpeg => {
-                let mut encoder = mozjpeg::Encoder::new_file(&output, quality)?;
-                let rgb = img.to_rgb8();
-                encoder.write_header()?;
-                encoder.write_scanlines(&rgb.as_raw())?;
-                encoder.finish()?;
-            }
-            ImageFormat::Png => {
-                img.save(&output)?;
-            }
-            _ => {
-                img.save(&output)?;
-            }
-        }
-
-        Ok(output)
-    }
-
-    fn compress_avif(&self, input: &PathBuf, quality: u8, format: ImageFormat) -> RToolsResult<PathBuf> {
-        let output = self.get_output_path(input, format);
-        let img = image::open(input)?;
-
-        match format {
-            ImageFormat::Avif => {
-                let rgb = img.to_rgb8();
-                let (width, height) = rgb.dimensions();
-                let decoder = ravif::Encoder::new()
-                    .with_quality(quality as f32)
-                    .encode(&rgb.into_raw(), width as usize, height as usize)?;
-                std::fs::write(&output, decoder.data)?;
-            }
-            ImageFormat::Jpeg => {
-                let mut encoder = mozjpeg::Encoder::new_file(&output, quality)?;
-                let rgb = img.to_rgb8();
-                encoder.write_header()?;
-                encoder.write_scanlines(&rgb.as_raw())?;
-                encoder.finish()?;
-            }
-            ImageFormat::WebP => {
-                let webp_data = webp::Encoder::new(&img.to_rgb8()).encode(quality as f32 / 100.0);
-                std::fs::write(&output, &*webp_data)?;
-            }
-            _ => {
-                img.save(&output)?;
-            }
-        }
-
-        Ok(output)
-    }
-
-    fn get_output_path(&self, input: &PathBuf, format: ImageFormat) -> PathBuf {
-        let mut output = input.clone();
-        output.set_extension(format.extensions()[0]);
-        output
-    }
-}
-
-impl ImageFormat {
-    fn mime_type(&self) -> String {
-        match self {
-            ImageFormat::Jpeg => "image/jpeg",
-            ImageFormat::Png => "image/png",
-            ImageFormat::WebP => "image/webp",
-            ImageFormat::Avif => "image/avif",
-            ImageFormat::Heic => "image/heic",
-            ImageFormat::Heif => "image/heif",
-            ImageFormat::Tiff => "image/tiff",
-            ImageFormat::Bmp => "image/bmp",
-            ImageFormat::Gif => "image/gif",
-            ImageFormat::Ico => "image/ico",
-            ImageFormat::Jxl => "image/jxl",
-            ImageFormat::Hdr => "image/hdr",
-            ImageFormat::Exr => "image/exr",
-            ImageFormat::Pdf => "application/pdf",
-        }
-        .to_string()
     }
 }

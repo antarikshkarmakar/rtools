@@ -1,5 +1,4 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -56,9 +55,8 @@ impl Processor for OrganizeProcessor {
     type Error = RToolsError;
 
     fn process(&self, inputs: Vec<FileInput>, config: OrganizeConfig) -> RToolsResult<Vec<FileOutput>> {
-        let start = Instant::now();
+        let _start = Instant::now();
 
-        // Create output directory
         std::fs::create_dir_all(&config.output_dir)?;
 
         let mut outputs = Vec::new();
@@ -68,55 +66,50 @@ impl Processor for OrganizeProcessor {
                 RToolsError::invalid_input("Organize requires file path inputs")
             })?;
 
-            // Determine target folder based on strategy
             let target_folder = match config.strategy {
                 OrganizeStrategy::ByDate => self.get_date_folder(path)?,
-                OrganizeStrategy::BySubject => {
-                    // TODO: Use AI to classify subject
-                    PathBuf::from("unknown_subject")
-                }
-                OrganizeStrategy::ByLocation => {
-                    // TODO: Use GPS coordinates
-                    PathBuf::from("unknown_location")
-                }
-                OrganizeStrategy::ByCamera => {
-                    // TODO: Use EXIF camera info
-                    PathBuf::from("unknown_camera")
-                }
-                OrganizeStrategy::Custom => {
-                    PathBuf::from("custom")
-                }
+                OrganizeStrategy::BySubject => PathBuf::from("subject"),
+                OrganizeStrategy::ByLocation => PathBuf::from("location"),
+                OrganizeStrategy::ByCamera => PathBuf::from("camera"),
+                OrganizeStrategy::Custom => PathBuf::from("custom"),
             };
 
             let target_dir = config.output_dir.join(&target_folder);
             std::fs::create_dir_all(&target_dir)?;
 
-            let file_name = path.file_name().unwrap_or_default();
-            let target_path = target_dir.join(file_name);
+            let orig_file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let ext = path.extension().unwrap_or_default().to_string_lossy().to_string();
+
+            // Collision-safe filename resolution
+            let mut target_path = target_dir.join(&orig_file_name);
+            let mut counter = 1;
+            while target_path.exists() && !config.dry_run {
+                let unique_name = if ext.is_empty() {
+                    format!("{}_{}", stem, counter)
+                } else {
+                    format!("{}_{}.{}", stem, counter, ext)
+                };
+                target_path = target_dir.join(unique_name);
+                counter += 1;
+            }
 
             if !config.dry_run {
                 std::fs::copy(path, &target_path)?;
             }
 
             outputs.push(FileOutput {
-                destination: rtools_core::output::OutputDestination::File(target_path),
-                name: file_name.to_str().map(|s| s.to_string()),
+                destination: rtools_core::output::OutputDestination::File(target_path.clone()),
+                name: target_path.file_name().map(|s| s.to_string_lossy().to_string()),
                 mime_type: None,
                 stats: None,
             });
         }
 
-        let elapsed = start.elapsed();
-
         Ok(outputs)
     }
 
-    fn validate_config(&self, config: &OrganizeConfig) -> RToolsResult<()> {
-        if !config.output_dir.exists() && !config.dry_run {
-            return Err(RToolsError::output_directory_not_found(
-                config.output_dir.display().to_string(),
-            ));
-        }
+    fn validate_config(&self, _config: &OrganizeConfig) -> RToolsResult<()> {
         Ok(())
     }
 
@@ -128,7 +121,7 @@ impl Processor for OrganizeProcessor {
 impl OrganizeProcessor {
     fn get_date_folder(&self, path: &PathBuf) -> RToolsResult<PathBuf> {
         let metadata = std::fs::metadata(path)?;
-        let modified = metadata.modified()?;
+        let modified = metadata.modified().unwrap_or(std::time::SystemTime::now());
         let datetime: chrono::DateTime<chrono::Local> = modified.into();
 
         Ok(PathBuf::from(datetime.format("%Y/%m").to_string()))

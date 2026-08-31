@@ -2,7 +2,6 @@ use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::PdfMetadata;
 use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// PDF metadata configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,55 +42,52 @@ impl Processor for PdfMetadataProcessor {
         })?;
 
         let doc = lopdf::Document::load(path)
-            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF: {}", e)))?;
+            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF {}: {}", path.display(), e)))?;
 
         let pages = doc.get_pages();
         let page_count = pages.len();
         let file_size = std::fs::metadata(path)?.len();
 
-        // Get metadata from document info dictionary
-        let info = doc.get_info();
-        let (title, author, subject, creator, producer, creation_date, modification_date) = match info {
-            Ok(info_dict) => {
-                let title = info_dict.get(b"Title")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                let author = info_dict.get(b"Author")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                let subject = info_dict.get(b"Subject")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                let creator = info_dict.get(b"Creator")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                let producer = info_dict.get(b"Producer")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                let creation_date = info_dict.get(b"CreationDate")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                let modification_date = info_dict.get(b"ModDate")
-                    .ok()
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| String::from_utf8_lossy(s).to_string());
-                (title, author, subject, creator, producer, creation_date, modification_date)
+        let info_dict = doc.trailer.get(b"Info")
+            .ok()
+            .and_then(|info_obj| {
+                match info_obj {
+                    lopdf::Object::Reference(id) => doc.get_object(*id).ok().and_then(|o| o.as_dict().ok()),
+                    lopdf::Object::Dictionary(ref dict) => Some(dict),
+                    _ => None,
+                }
+            });
+
+        let (title, author, subject, creator, producer, creation_date, modification_date) = match info_dict {
+            Some(dict) => {
+                let get_str = |key: &[u8]| -> Option<String> {
+                    dict.get(key)
+                        .ok()
+                        .and_then(|v| match v {
+                            lopdf::Object::String(ref bytes, _) => Some(String::from_utf8_lossy(bytes).to_string()),
+                            lopdf::Object::Name(ref bytes) => Some(String::from_utf8_lossy(bytes).to_string()),
+                            _ => None,
+                        })
+                };
+
+                (
+                    get_str(b"Title"),
+                    get_str(b"Author"),
+                    get_str(b"Subject"),
+                    get_str(b"Creator"),
+                    get_str(b"Producer"),
+                    get_str(b"CreationDate"),
+                    get_str(b"ModDate"),
+                )
             }
-            Err(_) => (None, None, None, None, None, None, None),
+            None => (None, None, None, None, None, None, None),
         };
 
-        // Check for encryption
         let is_encrypted = doc.is_encrypted();
 
         Ok(PdfMetadata {
             page_count,
-            page_sizes: Vec::new(), // TODO: extract page sizes
+            page_sizes: Vec::new(),
             title,
             author,
             subject,
@@ -101,8 +97,8 @@ impl Processor for PdfMetadataProcessor {
             modification_date,
             file_size,
             is_encrypted,
-            has_images: false, // TODO: detect images
-            has_text_layer: false, // TODO: detect text layer
+            has_images: false,
+            has_text_layer: false,
         })
     }
 

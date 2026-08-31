@@ -16,18 +16,27 @@ pub struct AiResponse {
 }
 
 pub async fn organize(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<AiResponse>, (StatusCode, String)> {
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut files = Vec::new();
-    
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
         let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         files.push(rtools_core::FileInput::from_path(temp_path));
     }
 
@@ -41,15 +50,13 @@ pub async fn organize(
 
     let processor = rtools_ai::OrganizeProcessor;
     match processor.process(files, config) {
-        Ok(outputs) => {
-            Ok(Json(AiResponse {
-                success: true,
-                message: format!("Organized {} files", outputs.len()),
-                results: Some(serde_json::json!({
-                    "count": outputs.len(),
-                })),
-            }))
-        }
+        Ok(outputs) => Ok(Json(AiResponse {
+            success: true,
+            message: format!("Organized {} files", outputs.len()),
+            results: Some(serde_json::json!({
+                "count": outputs.len(),
+            })),
+        })),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -60,18 +67,27 @@ pub struct RenameRequest {
 }
 
 pub async fn rename(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<AiResponse>, (StatusCode, String)> {
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut files = Vec::new();
-    
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
         let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         files.push(rtools_core::FileInput::from_path(temp_path));
     }
 
@@ -86,7 +102,8 @@ pub async fn rename(
     let processor = rtools_ai::RenameProcessor;
     match processor.process(files, config) {
         Ok(outputs) => {
-            let names: Vec<String> = outputs.iter()
+            let names: Vec<String> = outputs
+                .iter()
                 .filter_map(|o| o.name.clone())
                 .collect();
             Ok(Json(AiResponse {
@@ -109,20 +126,29 @@ pub struct AltTextResult {
 }
 
 pub async fn alt_text(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<AiResponse>, (StatusCode, String)> {
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut results = Vec::new();
-    
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let input = rtools_core::FileInput::from_path(temp_path.clone());
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+        let temp_path = temp_dir.path().join(&file_name);
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_ai::alt_text::AltTextConfig::default();
 
         let processor = rtools_ai::AltTextProcessor;
@@ -155,18 +181,27 @@ pub struct DuplicatesRequest {
 }
 
 pub async fn duplicates(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<AiResponse>, (StatusCode, String)> {
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut files = Vec::new();
-    
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
         let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         files.push(rtools_core::FileInput::from_path(temp_path));
     }
 
@@ -179,17 +214,15 @@ pub async fn duplicates(
 
     let processor = rtools_ai::DuplicatesProcessor;
     match processor.process(files, config) {
-        Ok(result) => {
-            Ok(Json(AiResponse {
-                success: true,
-                message: format!("Found {} duplicate groups", result.groups.len()),
-                results: Some(serde_json::json!({
-                    "groups": result.groups.len(),
-                    "originals": result.total_originals,
-                    "duplicates": result.total_duplicates,
-                })),
-            }))
-        }
+        Ok(result) => Ok(Json(AiResponse {
+            success: true,
+            message: format!("Found {} duplicate groups", result.groups.len()),
+            results: Some(serde_json::json!({
+                "groups": result.groups.len(),
+                "originals": result.total_originals,
+                "duplicates": result.total_duplicates,
+            })),
+        })),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }

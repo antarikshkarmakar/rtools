@@ -118,11 +118,59 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             output,
         } => {
             let processor = CropProcessor;
-            let crop_config = CropConfig {
-                region: rtools_image::crop::CropRegion::AspectRatio {
+
+            // Parse gravity
+            let grav = match gravity.to_lowercase().as_str() {
+                "north" | "n" => rtools_image::crop::Gravity::North,
+                "south" | "s" => rtools_image::crop::Gravity::South,
+                "east" | "e" => rtools_image::crop::Gravity::East,
+                "west" | "w" => rtools_image::crop::Gravity::West,
+                "northeast" | "ne" => rtools_image::crop::Gravity::NorthEast,
+                "northwest" | "nw" => rtools_image::crop::Gravity::NorthWest,
+                "southeast" | "se" => rtools_image::crop::Gravity::SouthEast,
+                "southwest" | "sw" => rtools_image::crop::Gravity::SouthWest,
+                _ => rtools_image::crop::Gravity::Center,
+            };
+
+            // Parse crop region from CLI args
+            let crop_region = if let Some(ratio_str) = ratio {
+                let parts: Vec<&str> = ratio_str.split(':').collect();
+                if parts.len() == 2 {
+                    let w: f64 = parts[0].parse().unwrap_or(1.0);
+                    let h: f64 = parts[1].parse().unwrap_or(1.0);
+                    rtools_image::crop::CropRegion::AspectRatio {
+                        ratio: rtools_image::crop::AspectRatio::Custom(w, h),
+                        gravity: grav,
+                    }
+                } else {
+                    rtools_image::crop::CropRegion::AspectRatio {
+                        ratio: rtools_image::crop::AspectRatio::Square,
+                        gravity: grav,
+                    }
+                }
+            } else if let Some(region_str) = region {
+                let parts: Vec<&str> = region_str.split(',').collect();
+                if parts.len() == 4 {
+                    let x: u32 = parts[0].parse().unwrap_or(0);
+                    let y: u32 = parts[1].parse().unwrap_or(0);
+                    let w: u32 = parts[2].parse().unwrap_or(100);
+                    let h: u32 = parts[3].parse().unwrap_or(100);
+                    rtools_image::crop::CropRegion::Pixels { x, y, width: w, height: h }
+                } else {
+                    rtools_image::crop::CropRegion::AspectRatio {
+                        ratio: rtools_image::crop::AspectRatio::Square,
+                        gravity: grav,
+                    }
+                }
+            } else {
+                rtools_image::crop::CropRegion::AspectRatio {
                     ratio: rtools_image::crop::AspectRatio::Square,
-                    gravity: rtools_image::crop::Gravity::Center,
-                },
+                    gravity: grav,
+                }
+            };
+
+            let crop_config = CropConfig {
+                region: crop_region,
                 output: output.and_then(|o| if o.is_dir() { None } else { Some(o) }),
                 quality: 85,
             };
@@ -165,7 +213,13 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                 } else {
                     anyhow::bail!("Either text or image watermark must be specified");
                 },
-                position: rtools_image::watermark::WatermarkPosition::BottomRight,
+                position: match position.to_lowercase().as_str() {
+                    "topleft" | "top-left" => rtools_image::watermark::WatermarkPosition::TopLeft,
+                    "topright" | "top-right" => rtools_image::watermark::WatermarkPosition::TopRight,
+                    "bottomleft" | "bottom-left" => rtools_image::watermark::WatermarkPosition::BottomLeft,
+                    "center" => rtools_image::watermark::WatermarkPosition::Center,
+                    _ => rtools_image::watermark::WatermarkPosition::BottomRight,
+                },
                 opacity,
                 output: output.and_then(|o| if o.is_dir() { None } else { Some(o) }),
                 quality: 85,

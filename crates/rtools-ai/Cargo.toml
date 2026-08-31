@@ -8,30 +8,14 @@ readme = "../README.md"
 
 [dependencies]
 rtools-core = { path = "../rtools-core" }
-rtools-image = { path = "../rtools-image" }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
-rayon = { workspace = true }
 walkdir = { workspace = true }
-bytes = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
-
-# AI/ML
-candle-core = { workspace = true }
-candle-nn = { workspace = true }
-candle-transformers = { workspace = true }
-tokenizers = { workspace = true }
 
 # Image processing for AI
 image = { workspace = true }
-
-# Hashing for duplicates
-image-hasher = "0.1"
-imgphash = "0.2"
 
 [lints]
 workspace = true

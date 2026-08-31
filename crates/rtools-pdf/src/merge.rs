@@ -1,7 +1,9 @@
+use lopdf::{Document, Object, ObjectId};
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -38,39 +40,108 @@ impl Processor for PdfMergeProcessor {
     fn process(&self, inputs: Vec<FileInput>, config: PdfMergeConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
-        if config.inputs.is_empty() && inputs.is_empty() {
+        let mut input_paths: Vec<PathBuf> = inputs
+            .iter()
+            .filter_map(|i| i.source.as_path().cloned())
+            .collect();
+
+        if input_paths.is_empty() {
+            input_paths = config.inputs.clone();
+        }
+
+        if input_paths.is_empty() {
             return Err(RToolsError::invalid_input("No PDF files to merge"));
         }
 
-        let mut output_doc = lopdf::Document::new();
-        let mut current_page_number = 1u32;
+        let mut max_id = 1u32;
+        let mut pagenum = 1u32;
+        let mut documents_pages = BTreeMap::new();
+        let mut documents_objects = BTreeMap::new();
+        let mut document = Document::with_version("1.5");
 
-        // Merge all PDFs
-        for (idx, input_path) in config.inputs.iter().enumerate() {
-            let mut doc = lopdf::Document::load(input_path)
-                .map_err(|e| RToolsError::pdf(format!("Failed to load PDF {}: {}", idx + 1, e)))?;
+        for input_path in &input_paths {
+            let mut doc = Document::load(input_path)
+                .map_err(|e| RToolsError::pdf(format!("Failed to load PDF {}: {}", input_path.display(), e)))?;
 
-            let page_count = doc.get_pages().len() as u32;
+            doc.renumber_objects_with(max_id);
+            max_id = doc.max_id + 1;
 
-            // Copy pages from source to output
-            for page_num in 1..=page_count {
-                // Copy page object
-                if let Ok(page_obj) = doc.get_page_contents(page_num) {
-                    let _ = output_doc.import_page(&mut doc, page_num);
+            let pages = doc.get_pages();
+            for (_p_num, object_id) in pages {
+                documents_pages.insert(pagenum, object_id);
+                pagenum += 1;
+            }
+
+            documents_objects.extend(doc.objects);
+        }
+
+        let mut catalog_id: Option<ObjectId> = None;
+        let mut pages_id: Option<ObjectId> = None;
+
+        for (object_id, object) in documents_objects {
+            match object.type_name().unwrap_or("") {
+                "Catalog" => {
+                    if catalog_id.is_none() {
+                        catalog_id = Some(object_id);
+                    }
                 }
-                current_page_number += 1;
+                "Pages" => {
+                    if pages_id.is_none() {
+                        pages_id = Some(object_id);
+                    }
+                }
+                _ => {
+                    document.objects.insert(object_id, object);
+                }
             }
         }
 
-        // Save merged PDF
-        output_doc.save(&config.output)
+        let final_pages_id = pages_id.unwrap_or_else(|| {
+            let id = (max_id, 0);
+            max_id += 1;
+            id
+        });
+
+        let mut kids = Vec::new();
+        let mut count = 0;
+        for (_, page_id) in documents_pages {
+            kids.push(Object::Reference(page_id));
+            count += 1;
+
+            if let Some(dict) = document.objects.get_mut(&page_id).and_then(|o| o.as_dict_mut().ok()) {
+                dict.set("Parent", Object::Reference(final_pages_id));
+            }
+        }
+
+        let mut pages_dict = lopdf::Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Count", Object::Integer(count));
+        pages_dict.set("Kids", Object::Array(kids));
+        document.objects.insert(final_pages_id, Object::Dictionary(pages_dict));
+
+        let final_catalog_id = catalog_id.unwrap_or_else(|| {
+            let id = (max_id, 0);
+            id
+        });
+
+        let mut catalog_dict = lopdf::Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(final_pages_id));
+        document.objects.insert(final_catalog_id, Object::Dictionary(catalog_dict));
+        document.trailer.set("Root", Object::Reference(final_catalog_id));
+
+        if let Some(parent) = config.output.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        document.save(&config.output)
             .map_err(|e| RToolsError::pdf(format!("Failed to save merged PDF: {}", e)))?;
 
         let elapsed = start.elapsed();
         let output_size = std::fs::metadata(&config.output)?.len();
 
-        // Calculate total input size
-        let input_size: u64 = config.inputs.iter()
+        let input_size: u64 = input_paths
+            .iter()
             .filter_map(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .sum();
@@ -82,7 +153,7 @@ impl Processor for PdfMergeProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: 1.0,
+                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
                 processing_time_ms: elapsed.as_millis() as u64,
                 memory_used_mb: 0.0,
             }),
@@ -90,9 +161,6 @@ impl Processor for PdfMergeProcessor {
     }
 
     fn validate_config(&self, config: &PdfMergeConfig) -> RToolsResult<()> {
-        if config.inputs.is_empty() {
-            return Err(RToolsError::invalid_input("No input files specified"));
-        }
         for path in &config.inputs {
             if !path.exists() {
                 return Err(RToolsError::file_not_found(path.display().to_string()));

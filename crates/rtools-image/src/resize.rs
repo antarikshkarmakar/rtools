@@ -78,8 +78,14 @@ impl Processor for ResizeProcessor {
             ));
         }
 
-        let img = image::open(path)?;
-        let (orig_width, orig_height) = img.dimensions();
+        let img = image::open(path)
+            .map_err(|e| RToolsError::image(format!("Failed to open image {}: {}", path.display(), e)))?;
+        let orig_width = img.width();
+        let orig_height = img.height();
+
+        if orig_width == 0 || orig_height == 0 {
+            return Err(RToolsError::invalid_input("Image has 0 width or height"));
+        }
 
         let (new_width, new_height) = calculate_dimensions(
             orig_width,
@@ -89,37 +95,52 @@ impl Processor for ResizeProcessor {
             config.maintain_aspect,
         );
 
-        let resized = img.resize(new_width, new_height, match config.algorithm {
+        let filter = match config.algorithm {
             ResizeAlgorithm::Lanczos => image::imageops::FilterType::Lanczos3,
             ResizeAlgorithm::Triangle => image::imageops::FilterType::Triangle,
             ResizeAlgorithm::CatmullRom => image::imageops::FilterType::CatmullRom,
             ResizeAlgorithm::NearestNeighbor => image::imageops::FilterType::Nearest,
             ResizeAlgorithm::MitchellNetravali => image::imageops::FilterType::CatmullRom,
-        });
+        };
+
+        let resized = if config.maintain_aspect {
+            img.resize(new_width.max(1), new_height.max(1), filter)
+        } else {
+            img.resize_exact(new_width.max(1), new_height.max(1), filter)
+        };
 
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default();
-            let ext = out.extension().unwrap_or_default();
-            out.set_file_name(format!("{}_{}x{}", stem.to_string_lossy(), new_width, new_height));
-            out.set_extension(ext);
+            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let ext = out.extension().unwrap_or_default().to_string_lossy().to_string();
+            out.set_file_name(format!("{}_{}x{}.{}", stem, new_width, new_height, ext));
             out
         });
 
-        resized.save(&output)?;
+        if let Some(parent) = output.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        resized.save(&output)
+            .map_err(|e| RToolsError::image(format!("Failed to save resized image: {}", e)))?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
 
+        // Derive MIME type from output path, not input
+        let output_format = rtools_core::ImageFormat::from_path(&output)
+            .or_else(|| input.format)
+            .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
+
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
             name: None,
-            mime_type: Some(input.format.unwrap_or(rtools_core::types::ImageFormat::Jpeg).mime_type()),
+            mime_type: Some(output_format.mime_type().to_string()),
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: output_size as f64 / input_size as f64,
+                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
                 processing_time_ms: elapsed.as_millis() as u64,
                 memory_used_mb: 0.0,
             }),
@@ -128,12 +149,12 @@ impl Processor for ResizeProcessor {
 
     fn validate_config(&self, config: &ResizeConfig) -> RToolsResult<()> {
         if let Some(w) = config.width {
-            if w == 0 || w > 8192 {
+            if w == 0 || w > 32768 {
                 return Err(RToolsError::invalid_input(format!("Invalid width: {}", w)));
             }
         }
         if let Some(h) = config.height {
-            if h == 0 || h > 8192 {
+            if h == 0 || h > 32768 {
                 return Err(RToolsError::invalid_input(format!("Invalid height: {}", h)));
             }
         }
@@ -157,27 +178,31 @@ fn calculate_dimensions(
         (Some(w), Some(h)) => {
             if maintain_aspect {
                 let ratio = (w as f64 / orig_width as f64).min(h as f64 / orig_height as f64);
-                ((orig_width as f64 * ratio) as u32, (orig_height as f64 * ratio) as u32)
+                let nw = (orig_width as f64 * ratio).round() as u32;
+                let nh = (orig_height as f64 * ratio).round() as u32;
+                (nw.max(1), nh.max(1))
             } else {
-                (w, h)
+                (w.max(1), h.max(1))
             }
         }
         (Some(w), None) => {
             if maintain_aspect {
                 let ratio = w as f64 / orig_width as f64;
-                (w, (orig_height as f64 * ratio) as u32)
+                let nh = (orig_height as f64 * ratio).round() as u32;
+                (w.max(1), nh.max(1))
             } else {
-                (w, orig_height)
+                (w.max(1), orig_height.max(1))
             }
         }
         (None, Some(h)) => {
             if maintain_aspect {
                 let ratio = h as f64 / orig_height as f64;
-                ((orig_width as f64 * ratio) as u32, h)
+                let nw = (orig_width as f64 * ratio).round() as u32;
+                (nw.max(1), h.max(1))
             } else {
-                (orig_width, h)
+                (orig_width.max(1), h.max(1))
             }
         }
-        (None, None) => unreachable!(),
+        (None, None) => (orig_width, orig_height),
     }
 }

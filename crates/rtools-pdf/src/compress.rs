@@ -1,5 +1,5 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::types::{PdfMetadata, ProcessStats};
+use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -18,12 +18,10 @@ pub enum PdfCompressionLevel {
 pub struct PdfCompressConfig {
     /// Compression level
     pub level: PdfCompressionLevel,
-    /// Output path (None = overwrite)
+    /// Output path (None = auto-generate)
     pub output: Option<PathBuf>,
     /// Remove metadata
     pub remove_metadata: bool,
-    /// Remove images
-    pub remove_images: bool,
 }
 
 impl Default for PdfCompressConfig {
@@ -32,7 +30,6 @@ impl Default for PdfCompressConfig {
             level: PdfCompressionLevel::Medium,
             output: None,
             remove_metadata: false,
-            remove_images: false,
         }
     }
 }
@@ -55,41 +52,34 @@ impl Processor for PdfCompressProcessor {
 
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default();
-            out.set_file_name(format!("{}_compressed", stem.to_string_lossy()));
-            out.set_extension("pdf");
+            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            out.set_file_name(format!("{}_compressed.pdf", stem));
             out
         });
 
+        if let Some(parent) = output.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
         // Load PDF
         let mut doc = lopdf::Document::load(path)
-            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF: {}", e)))?;
+            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF {}: {}", path.display(), e)))?;
 
-        // Apply compression based on level
-        match config.level {
-            PdfCompressionLevel::Light => {
-                // Basic compression - remove duplicate objects
-                doc.compress();
+        // Apply stream compression
+        doc.compress();
+
+        // Safe metadata removal
+        if config.remove_metadata {
+            let info_opt = doc.trailer.get(b"Info").ok().and_then(|v| v.as_reference().ok());
+            if let Some(info_id) = info_opt {
+                doc.objects.remove(&info_id);
             }
-            PdfCompressionLevel::Medium => {
-                doc.compress();
-                // Remove metadata if requested
-                if config.remove_metadata {
-                    let _ = doc.truncate();
-                }
-            }
-            PdfCompressionLevel::Heavy => {
-                doc.compress();
-                if config.remove_metadata {
-                    let _ = doc.truncate();
-                }
-                // Additional optimizations could be done here
-            }
+            doc.trailer.remove(b"Info");
         }
 
         // Save compressed PDF
         doc.save(&output)
-            .map_err(|e| RToolsError::pdf(format!("Failed to save PDF: {}", e)))?;
+            .map_err(|e| RToolsError::pdf(format!("Failed to save compressed PDF: {}", e)))?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
@@ -102,7 +92,7 @@ impl Processor for PdfCompressProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: output_size as f64 / input_size as f64,
+                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
                 processing_time_ms: elapsed.as_millis() as u64,
                 memory_used_mb: 0.0,
             }),

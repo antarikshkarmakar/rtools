@@ -9,6 +9,7 @@ members = [
     "crates/rtools-api",
     "crates/rtools-mcp",
     "crates/rtools-wasm",
+    "crates/rtools-tests",
 ]
 
 [workspace.dependencies]
@@ -18,8 +19,8 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-config = "0.14"
-figment = { version = "0.11", features = ["toml"] }
+figment = { version = "0.10", features = ["toml"] }
+dirs = "5.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
@@ -29,14 +30,14 @@ ignore = "0.4"
 bytes = "1.5"
 mime = "0.3"
 mime_guess = "2.0"
+serde-wasm-bindgen = "0.6"
 
 # Image processing
-image = { version = "0.25", features = ["jpeg", "png", "webp", "tiff", "bmp", "gif", "ico", "hdr", "exr", "dither", "rayon"] }
+image = { version = "0.25", features = ["jpeg", "png", "webp", "tiff", "bmp", "gif", "ico", "hdr", "exr", "rayon", "avif"] }
 imageproc = "0.24"
 mozjpeg = "0.10"
-webp = "0.7"
-ravif = "0.4"
-heic-reader = "0.2"
+webp = "0.3"
+ravif = { version = "0.11", default-features = false }
 jxl-oxide = "0.2"
 crc32fast = "1.4"
 
@@ -44,15 +45,14 @@ crc32fast = "1.4"
 lopdf = "0.34"
 printpdf = "0.4"
 pdf-extract = "0.9"
-tesseract = "0.3"
 
 # Async/Network
 axum = { version = "0.7", features = ["ws", "multipart"] }
-tower = { version = "0.4", features = ["timeout", "limit", "cors"] }
+tower = { version = "0.4", features = ["timeout", "limit", "util"] }
 hyper = { version = "1.0", features = ["full"] }
 tonic = "0.11"
 prost = "0.12"
-tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout", "compression", "fs"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout", "compression-full", "fs"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env", "wrap_help", "color", "suggestions", "cargo"] }
@@ -62,7 +62,7 @@ console = "0.15"
 dialoguer = "0.11"
 
 # MCP
-rmcp = "0.2"
+rmcp = { version = "3.1", features = ["server", "macros", "schemars"] }
 
 # WASM
 wasm-bindgen = "0.2"

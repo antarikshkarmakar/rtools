@@ -1,5 +1,4 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -60,13 +59,12 @@ impl Processor for PdfSplitProcessor {
     type Error = RToolsError;
 
     fn process(&self, input: FileInput, config: PdfSplitConfig) -> RToolsResult<Vec<FileOutput>> {
-        let start = Instant::now();
+        let _start = Instant::now();
 
         let path = input.source.as_path().ok_or_else(|| {
             RToolsError::invalid_input("PDF split requires a file path input")
         })?;
 
-        // Create output directory
         std::fs::create_dir_all(&config.output_dir)?;
 
         let doc = lopdf::Document::load(path)
@@ -76,23 +74,23 @@ impl Processor for PdfSplitProcessor {
         let page_count = pages.len() as u32;
 
         let pages_to_extract = resolve_page_range(&config.range, page_count);
-
         let mut outputs = Vec::new();
 
         for &page_num in &pages_to_extract {
-            let mut output_doc = lopdf::Document::new();
-            let _ = output_doc.import_page(&mut doc, page_num);
-
             let filename = config.filename_pattern
                 .replace("{n}", &page_num.to_string())
                 .replace("{total}", &page_count.to_string());
 
             let output_path = config.output_dir.join(&filename);
 
-            output_doc.save(&output_path)
-                .map_err(|e| RToolsError::pdf(format!("Failed to save page {}: {}", page_num, e)))?;
+            // Extract single page by cloning document and pruning pages
+            let mut page_doc = doc.clone();
+            let all_pages: Vec<u32> = page_doc.get_pages().keys().copied().collect();
+            let pages_to_delete: Vec<u32> = all_pages.into_iter().filter(|&p| p != page_num).collect();
+            page_doc.delete_pages(&pages_to_delete);
 
-            let output_size = std::fs::metadata(&output_path)?.len();
+            page_doc.save(&output_path)
+                .map_err(|e| RToolsError::pdf(format!("Failed to save page {}: {}", page_num, e)))?;
 
             outputs.push(FileOutput {
                 destination: rtools_core::output::OutputDestination::File(output_path),
@@ -101,9 +99,6 @@ impl Processor for PdfSplitProcessor {
                 stats: None,
             });
         }
-
-        let elapsed = start.elapsed();
-        let input_size = std::fs::metadata(path)?.len();
 
         Ok(outputs)
     }
@@ -131,10 +126,10 @@ fn resolve_page_range(range: &PageRange, total_pages: u32) -> Vec<u32> {
             }
         }
         PageRange::Range { start, end } => {
-            let s = start.max(&1);
-            let e = end.min(&total_pages);
+            let s = (*start).max(1);
+            let e = (*end).min(total_pages);
             if s <= e {
-                (*s..=*e).collect()
+                (s..=e).collect()
             } else {
                 vec![]
             }

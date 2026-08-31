@@ -61,36 +61,77 @@ impl Processor for DuplicatesProcessor {
     fn process(&self, inputs: Vec<FileInput>, config: DuplicatesConfig) -> RToolsResult<DuplicatesResult> {
         let start = std::time::Instant::now();
 
-        // Group files by hash
-        let mut hashes: std::collections::HashMap<u64, Vec<PathBuf>> = std::collections::HashMap::new();
+        let mut file_hashes: Vec<(PathBuf, u64)> = Vec::new();
 
-        for input in inputs {
+        for input in &inputs {
             let path = input.source.as_path().ok_or_else(|| {
                 RToolsError::invalid_input("Duplicates requires file path inputs")
             })?;
 
-            // Calculate hash
             let hash = calculate_image_hash(path, &config.algorithm)?;
-            hashes.entry(hash).or_default().push(path.clone());
+            file_hashes.push((path.clone(), hash));
         }
 
-        // Find duplicates
-        let duplicate_groups: Vec<DuplicateGroup> = hashes
-            .into_iter()
-            .filter(|(_, files)| files.len() > 1)
-            .map(|(hash, files)| DuplicateGroup {
-                hash,
-                files,
-                is_original: true,
-            })
-            .collect();
+        let max_distance = (((1.0 - config.threshold.clamp(0.0, 1.0)) * 64.0).round() as u32).min(64);
+
+        // Group files by perceptual distance
+        let mut visited = vec![false; file_hashes.len()];
+        let mut duplicate_groups: Vec<DuplicateGroup> = Vec::new();
+
+        for i in 0..file_hashes.len() {
+            if visited[i] {
+                continue;
+            }
+
+            let mut group_files = vec![file_hashes[i].0.clone()];
+            visited[i] = true;
+
+            for j in (i + 1)..file_hashes.len() {
+                if !visited[j] {
+                    let dist = (file_hashes[i].1 ^ file_hashes[j].1).count_ones();
+                    if dist <= max_distance {
+                        group_files.push(file_hashes[j].0.clone());
+                        visited[j] = true;
+                    }
+                }
+            }
+
+            if group_files.len() > 1 {
+                duplicate_groups.push(DuplicateGroup {
+                    hash: file_hashes[i].1,
+                    files: group_files,
+                    is_original: true,
+                });
+            }
+        }
+
+        // Apply action if needed
+        if !config.dry_run {
+            for group in &duplicate_groups {
+                for duplicate in group.files.iter().skip(1) {
+                    match &config.action {
+                        DuplicateAction::Delete => {
+                            let _ = std::fs::remove_file(duplicate);
+                        }
+                        DuplicateAction::Move { destination } => {
+                            let _ = std::fs::create_dir_all(destination);
+                            if let Some(file_name) = duplicate.file_name() {
+                                let target = destination.join(file_name);
+                                let _ = std::fs::rename(duplicate, target);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
 
         let elapsed = start.elapsed();
         let total_duplicates: usize = duplicate_groups.iter().map(|g| g.files.len() - 1).sum();
 
         Ok(DuplicatesResult {
             groups: duplicate_groups,
-            total_originals: inputs.len() - total_duplicates,
+            total_originals: inputs.len().saturating_sub(total_duplicates),
             total_duplicates,
             processing_time_ms: elapsed.as_millis() as u64,
         })
@@ -125,45 +166,37 @@ pub struct DuplicateGroup {
     pub is_original: bool,
 }
 
-/// Calculate image hash
+/// Calculate robust 64-bit image perceptual hash (aHash / dHash)
 fn calculate_image_hash(path: &PathBuf, algorithm: &HashAlgorithm) -> RToolsResult<u64> {
-    let img = image::open(path)?;
-    let gray = img.to_luma8();
-    let (width, height) = gray.dimensions();
+    let img = image::open(path)
+        .map_err(|e| RToolsError::image(format!("Failed to open image for hashing {}: {}", path.display(), e)))?;
 
     match algorithm {
         HashAlgorithm::Average => {
-            // Simple average hash
-            let pixels: Vec<u8> = gray.pixels().copied().collect();
-            let avg: u8 = pixels.iter().sum::<u32>() as u8 / pixels.len() as u8;
+            // Resize to 8x8 grayscale
+            let resized = img.resize_exact(8, 8, image::imageops::FilterType::Triangle).to_luma8();
+            let pixels: &[u8] = &resized;
+            let sum: u64 = pixels.iter().map(|&p| p as u64).sum();
+            let avg = (sum / 64) as u8;
+
             let mut hash = 0u64;
-            for (i, pixel) in pixels.iter().enumerate() {
-                if *pixel > avg {
-                    hash |= 1 << (i % 64);
+            for (i, &pixel) in pixels.iter().enumerate() {
+                if pixel >= avg {
+                    hash |= 1u64 << i;
                 }
             }
             Ok(hash)
         }
-        HashAlgorithm::Perceptual => {
-            // pHash placeholder
-            let pixels: Vec<u8> = gray.pixels().copied().collect();
+        HashAlgorithm::Difference | HashAlgorithm::Perceptual => {
+            // Resize to 9x8 grayscale for gradient tracking (dHash)
+            let resized = img.resize_exact(9, 8, image::imageops::FilterType::Triangle).to_luma8();
             let mut hash = 0u64;
-            for (i, pixel) in pixels.iter().enumerate().step_by(width as usize) {
-                if *pixel > 128 {
-                    hash |= 1 << (i % 64);
-                }
-            }
-            Ok(hash)
-        }
-        HashAlgorithm::Difference => {
-            // dHash placeholder
-            let mut hash = 0u64;
-            for y in 0..height {
-                for x in 0..width - 1 {
-                    let left = gray.get_pixel((x, y))[0];
-                    let right = gray.get_pixel((x + 1, y))[0];
+            for y in 0..8 {
+                for x in 0..8 {
+                    let left = resized.get_pixel(x, y)[0];
+                    let right = resized.get_pixel(x + 1, y)[0];
                     if left > right {
-                        hash |= 1 << ((y * width + x) % 64);
+                        hash |= 1u64 << (y * 8 + x);
                     }
                 }
             }

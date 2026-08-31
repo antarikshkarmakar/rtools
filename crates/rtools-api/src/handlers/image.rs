@@ -5,6 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tempfile::TempDir;
 
 use crate::AppState;
 
@@ -26,24 +27,38 @@ pub async fn compress(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<CompressResponse>, (StatusCode, String)> {
-    // Handle multipart file upload
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
-        let name = field.name().unwrap_or("file").to_string();
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        
-        // Read file data
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        // Save to temp file
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Create temp directory OUTSIDE the loop so it persists
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        // Process with rtools-image
-        let input = rtools_core::FileInput::from_path(temp_path.clone());
-        let config = rtools_image::CompressConfig {
-            preset: rtools_image::compress::CompressionPreset::Custom(state.config.image.default_quality),
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+        let temp_path = temp_dir.path().join(&file_name);
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let quality = CompressRequest {
+            quality: None,
             format: None,
+        };
+
+        let input = rtools_core::FileInput::from_path(temp_path);
+        let config = rtools_image::CompressConfig {
+            preset: rtools_image::compress::CompressionPreset::Custom(
+                quality.quality.unwrap_or(state.config.image.default_quality),
+            ),
+            format: quality
+                .format
+                .and_then(|f| rtools_core::ImageFormat::from_extension(&f)),
             output: None,
             preserve_metadata: true,
             strip_gps: false,
@@ -55,7 +70,10 @@ pub async fn compress(
                 return Ok(Json(CompressResponse {
                     success: true,
                     message: format!("Compressed {}", file_name),
-                    output_path: output.destination.as_path().map(|p| p.display().to_string()),
+                    output_path: output
+                        .destination
+                        .as_path()
+                        .map(|p| p.display().to_string()),
                     stats: output.stats,
                 }));
             }
@@ -85,15 +103,25 @@ pub async fn convert(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let input = rtools_core::FileInput::from_path(temp_path.clone());
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+        let temp_path = temp_dir.path().join(&file_name);
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_image::ConvertConfig {
             target_format: rtools_core::ImageFormat::from_extension(&file_name)
                 .unwrap_or(rtools_core::ImageFormat::Jpeg),
@@ -110,7 +138,10 @@ pub async fn convert(
                 return Ok(Json(ConvertResponse {
                     success: true,
                     message: format!("Converted {}", file_name),
-                    output_path: output.destination.as_path().map(|p| p.display().to_string()),
+                    output_path: output
+                        .destination
+                        .as_path()
+                        .map(|p| p.display().to_string()),
                 }));
             }
             Err(e) => {
@@ -133,15 +164,25 @@ pub async fn resize(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let input = rtools_core::FileInput::from_path(temp_path.clone());
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+        let temp_path = temp_dir.path().join(&file_name);
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_image::ResizeConfig {
             width: Some(800),
             height: None,
@@ -157,7 +198,10 @@ pub async fn resize(
                 return Ok(Json(ConvertResponse {
                     success: true,
                     message: format!("Resized {}", file_name),
-                    output_path: output.destination.as_path().map(|p| p.display().to_string()),
+                    output_path: output
+                        .destination
+                        .as_path()
+                        .map(|p| p.display().to_string()),
                 }));
             }
             Err(e) => {
@@ -170,27 +214,33 @@ pub async fn resize(
 }
 
 pub async fn crop(
-    State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
+    State(_state): State<Arc<AppState>>,
+    mut _multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    // TODO: Implement crop handler
-    Err((StatusCode::NOT_IMPLEMENTED, "Crop not yet implemented".to_string()))
+    Err((
+        StatusCode::NOT_IMPLEMENTED,
+        "Crop not yet implemented".to_string(),
+    ))
 }
 
 pub async fn watermark(
-    State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
+    State(_state): State<Arc<AppState>>,
+    mut _multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    // TODO: Implement watermark handler
-    Err((StatusCode::NOT_IMPLEMENTED, "Watermark not yet implemented".to_string()))
+    Err((
+        StatusCode::NOT_IMPLEMENTED,
+        "Watermark not yet implemented".to_string(),
+    ))
 }
 
 pub async fn filter(
-    State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
+    State(_state): State<Arc<AppState>>,
+    mut _multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    // TODO: Implement filter handler
-    Err((StatusCode::NOT_IMPLEMENTED, "Filter not yet implemented".to_string()))
+    Err((
+        StatusCode::NOT_IMPLEMENTED,
+        "Filter not yet implemented".to_string(),
+    ))
 }
 
 #[derive(Serialize)]
@@ -200,18 +250,28 @@ pub struct MetadataResponse {
 }
 
 pub async fn metadata(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<MetadataResponse>, (StatusCode, String)> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        
-        let temp_dir = tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let input = rtools_core::FileInput::from_path(temp_path.clone());
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+        let temp_path = temp_dir.path().join(&file_name);
+        std::fs::write(&temp_path, &data)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_image::MetadataConfig::default();
 
         let processor = rtools_image::MetadataProcessor;

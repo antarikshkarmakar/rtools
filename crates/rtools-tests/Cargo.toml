@@ -1,0 +1,24 @@
+[package]
+name = "rtools-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rtools-core = { path = "../rtools-core" }
+rtools-image = { path = "../rtools-image" }
+rtools-pdf = { path = "../rtools-pdf" }
+rtools-ai = { path = "../rtools-ai" }
+image = { workspace = true }
+tempfile = { workspace = true }
+
+[[test]]
+name = "image_tests"
+path = "tests/image_tests.rs"
+
+[[test]]
+name = "ai_tests"
+path = "tests/ai_tests.rs"
+
+[lints]
+workspace = true

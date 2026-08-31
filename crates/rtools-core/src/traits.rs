@@ -1,7 +1,4 @@
 use crate::error::RToolsResult;
-use crate::input::ProcessInput;
-use crate::output::ProcessOutput;
-use crate::types::ProcessStats;
 
 /// Core processor trait for single-item operations
 pub trait Processor: Send + Sync {
@@ -10,7 +7,7 @@ pub trait Processor: Send + Sync {
     /// Output type for this processor
     type Output: Send + Sync;
     /// Configuration type for this processor
-    type Config: Send + Sync;
+    type Config: Send + Sync + Clone;
     /// Error type for this processor
     type Error: Into<crate::error::RToolsError> + std::fmt::Display;
 
@@ -52,7 +49,10 @@ pub trait BatchProcessor: Processor {
         &self,
         inputs: Vec<Self::Input>,
         config: Self::Config,
-    ) -> impl Iterator<Item = RToolsResult<Self::Output>> {
+    ) -> impl Iterator<Item = RToolsResult<Self::Output>>
+    where
+        Self::Input: std::fmt::Debug,
+    {
         let name = self.name().to_string();
         inputs.into_iter().map(move |input| {
             tracing::debug!("Processing with {}: {:?}", name, input);

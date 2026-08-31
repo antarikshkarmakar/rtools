@@ -20,7 +20,8 @@ pub struct AppConfig {
     /// API server settings
     pub api: ApiConfig,
     /// MCP server settings
-    pub mc: McpConfig,
+    #[serde(alias = "mc")]
+    pub mcp: McpConfig,
 }
 
 impl Default for AppConfig {
@@ -31,7 +32,7 @@ impl Default for AppConfig {
             pdf: PdfConfig::default(),
             ai: AiConfig::default(),
             api: ApiConfig::default(),
-            mc: McpConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -264,8 +265,10 @@ impl AppConfig {
 
     /// Save configuration to file
     pub fn save(&self, path: &PathBuf) -> RToolsResult<()> {
-        let toml = toml::to_string_pretty(self)
-            .map_err(|e| crate::error::RToolsError::config(e.to_string()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let toml = toml::to_string_pretty(self)?;
         std::fs::write(path, toml)?;
         Ok(())
     }

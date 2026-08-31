@@ -41,7 +41,6 @@ pub async fn handle_pdf_command(cmd: PdfCommands, config: &AppConfig) -> anyhow:
                 },
                 output,
                 remove_metadata: false,
-                remove_images: false,
             };
 
             let file_input = FileInput::from_path(input.clone());
@@ -65,8 +64,16 @@ pub async fn handle_pdf_command(cmd: PdfCommands, config: &AppConfig) -> anyhow:
 
         PdfCommands::Split { input, pages, output } => {
             let processor = rtools_pdf::PdfSplitProcessor;
+
+            // Parse page range from --pages argument
+            let page_range = if let Some(pages_str) = pages {
+                parse_page_range(&pages_str)
+            } else {
+                rtools_pdf::split::PageRange::All
+            };
+
             let split_config = rtools_pdf::PdfSplitConfig {
-                range: rtools_pdf::split::PageRange::All,
+                range: page_range,
                 output_dir: output,
                 filename_pattern: "page_{n}.pdf".to_string(),
                 as_images: false,
@@ -107,5 +114,36 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// Parse page range string like "1-5,10,15-20" into PageRange
+fn parse_page_range(s: &str) -> rtools_pdf::split::PageRange {
+    let ranges: Vec<rtools_pdf::split::PageRange> = s
+        .split(',')
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.contains('-') {
+                let bounds: Vec<&str> = part.split('-').collect();
+                if bounds.len() == 2 {
+                    let start: u32 = bounds[0].parse().ok()?;
+                    let end: u32 = bounds[1].parse().ok()?;
+                    Some(rtools_pdf::split::PageRange::Range { start, end })
+                } else {
+                    None
+                }
+            } else {
+                let page: u32 = part.parse().ok()?;
+                Some(rtools_pdf::split::PageRange::Single(page))
+            }
+        })
+        .collect();
+
+    if ranges.len() == 1 {
+        ranges.into_iter().next().unwrap()
+    } else if ranges.is_empty() {
+        rtools_pdf::split::PageRange::All
+    } else {
+        rtools_pdf::split::PageRange::Multiple(ranges)
     }
 }

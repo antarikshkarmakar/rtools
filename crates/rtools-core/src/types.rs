@@ -84,6 +84,26 @@ impl ImageFormat {
             .and_then(|ext| ext.to_str())
             .and_then(Self::from_extension)
     }
+
+    /// Get MIME type string
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::Png => "image/png",
+            ImageFormat::Webp => "image/webp",
+            ImageFormat::Avif => "image/avif",
+            ImageFormat::Heic => "image/heic",
+            ImageFormat::Heif => "image/heif",
+            ImageFormat::Tiff => "image/tiff",
+            ImageFormat::Bmp => "image/bmp",
+            ImageFormat::Gif => "image/gif",
+            ImageFormat::Ico => "image/ico",
+            ImageFormat::Jxl => "image/jxl",
+            ImageFormat::Hdr => "image/hdr",
+            ImageFormat::Exr => "image/exr",
+            ImageFormat::Pdf => "application/pdf",
+        }
+    }
 }
 
 /// Supported PDF operations output formats
@@ -188,7 +208,7 @@ pub struct ExifData {
     pub f_number: Option<f64>,
     pub iso: Option<u32>,
     pub focal_length: Option<f64>,
-    pub flash: Option<bool>,
+    pub flash: Option<u16>,
     pub orientation: Option<u32>,
 }
 

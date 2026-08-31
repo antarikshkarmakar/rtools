@@ -1,5 +1,5 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::types::{ExifData, ImageMetadata};
+use rtools_core::types::ExifData;
 use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -39,70 +39,140 @@ impl Processor for ExifProcessor {
             RToolsError::invalid_input("EXIF requires a file path input")
         })?;
 
-        let file = std::fs::File::open(path)?;
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => return Err(RToolsError::Io(e)),
+        };
+
         let mut bufreader = std::io::BufReader::new(file);
-        let exif = exif::Reader::new().read_from_container(&mut bufreader)?;
+        let exif = match exif::Reader::new().read_from_container(&mut bufreader) {
+            Ok(e) => e,
+            Err(_) => {
+                // Return empty ExifData when no EXIF metadata is found or unsupported
+                return Ok(ExifData {
+                    camera_make: None,
+                    camera_model: None,
+                    lens_model: None,
+                    datetime_original: None,
+                    datetime_digitized: None,
+                    gps_latitude: None,
+                    gps_longitude: None,
+                    gps_altitude: None,
+                    exposure_time: None,
+                    f_number: None,
+                    iso: None,
+                    focal_length: None,
+                    flash: None,
+                    orientation: None,
+                });
+            }
+        };
+
+        let camera_make = exif.get_field(exif::Tag::Make, exif::In::PRIMARY)
+            .map(|v| v.display_value().to_string().trim_matches('"').to_string());
+        let camera_model = exif.get_field(exif::Tag::Model, exif::In::PRIMARY)
+            .map(|v| v.display_value().to_string().trim_matches('"').to_string());
+        let lens_model = exif.get_field(exif::Tag::LensModel, exif::In::PRIMARY)
+            .map(|v| v.display_value().to_string().trim_matches('"').to_string());
+        let datetime_original = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+            .map(|v| v.display_value().to_string().trim_matches('"').to_string());
+        let datetime_digitized = exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY)
+            .map(|v| v.display_value().to_string().trim_matches('"').to_string());
+
+        // Parse GPS DMS coordinates
+        let mut gps_latitude = exif.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Rational(coords) => decode_dms(coords),
+                _ => None,
+            });
+
+        if let (Some(lat), Some(lat_ref)) = (gps_latitude, exif.get_field(exif::Tag::GPSLatitudeRef, exif::In::PRIMARY)) {
+            let ref_str = lat_ref.display_value().to_string();
+            if ref_str.contains('S') || ref_str.contains('s') {
+                gps_latitude = Some(-lat.abs());
+            }
+        }
+
+        let mut gps_longitude = exif.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Rational(coords) => decode_dms(coords),
+                _ => None,
+            });
+
+        if let (Some(lon), Some(lon_ref)) = (gps_longitude, exif.get_field(exif::Tag::GPSLongitudeRef, exif::In::PRIMARY)) {
+            let ref_str = lon_ref.display_value().to_string();
+            if ref_str.contains('W') || ref_str.contains('w') {
+                gps_longitude = Some(-lon.abs());
+            }
+        }
+
+        let mut gps_altitude = exif.get_field(exif::Tag::GPSAltitude, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Rational(alt) => alt.first().map(|a| a.to_f64()),
+                _ => None,
+            });
+
+        // Apply altitude sign from GPSAltitudeRef (0 = above sea level, 1 = below)
+        if let Some(alt) = gps_altitude {
+            if let Some(alt_ref) = exif.get_field(exif::Tag::GPSAltitudeRef, exif::In::PRIMARY) {
+                if let Ok(val) = alt_ref.try_into::<u8>() {
+                    if val == 1 {
+                        gps_altitude = Some(-alt);
+                    }
+                }
+            }
+        }
+
+        let exposure_time = exif.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY)
+            .map(|v| v.display_value().to_string());
+
+        let f_number = exif.get_field(exif::Tag::FNumber, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Rational(f) => f.first().map(|f| f.to_f64()),
+                _ => None,
+            });
+
+        let iso = exif.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)
+            .or_else(|| exif.get_field(exif::Tag::ISOSpeed, exif::In::PRIMARY))
+            .and_then(|v| match &v.value {
+                exif::Value::Short(s) => s.first().map(|&i| i as u32),
+                exif::Value::Long(l) => l.first().copied(),
+                _ => None,
+            });
+
+        let focal_length = exif.get_field(exif::Tag::FocalLength, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Rational(f) => f.first().map(|f| f.to_f64()),
+                _ => None,
+            });
+
+        let flash = exif.get_field(exif::Tag::Flash, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Short(s) => s.first().map(|&v| v as u16),
+                _ => None,
+            });
+
+        let orientation = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+            .and_then(|v| match &v.value {
+                exif::Value::Short(s) => s.first().map(|&o| o as u32),
+                _ => None,
+            });
 
         Ok(ExifData {
-            camera_make: exif.get_field(exif::Tag::Make, exif::In::PRIMARY)
-                .and_then(|v| v.display_string().into()),
-            camera_model: exif.get_field(exif::Tag::Model, exif::In::PRIMARY)
-                .and_then(|v| v.display_string().into()),
-            lens_model: exif.get_field(exif::Tag::LensModel, exif::In::PRIMARY)
-                .and_then(|v| v.display_string().into()),
-            datetime_original: exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
-                .and_then(|v| v.display_string().into()),
-            datetime_digitized: exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY)
-                .and_then(|v| v.display_string().into()),
-            gps_latitude: exif.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY)
-                .and_then(|v| {
-                    if let exif::Value::Rational(ref coords) = v {
-                        coords.first().map(|c| c.to_f64())
-                    } else {
-                        None
-                    }
-                }),
-            gps_longitude: exif.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY)
-                .and_then(|v| {
-                    if let exif::Value::Rational(ref coords) = v {
-                        coords.first().map(|c| c.to_f64())
-                    } else {
-                        None
-                    }
-                }),
-            gps_altitude: exif.get_field(exif::Tag::GPSAltitude, exif::In::PRIMARY)
-                .and_then(|v| {
-                    if let exif::Value::Rational(ref alt) = v {
-                        alt.first().map(|a| a.to_f64())
-                    } else {
-                        None
-                    }
-                }),
-            exposure_time: exif.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY)
-                .and_then(|v| v.display_string().into()),
-            f_number: exif.get_field(exif::Tag::FNumber, exif::In::PRIMARY)
-                .and_then(|v| {
-                    if let exif::Value::Rational(ref f) = v {
-                        f.first().map(|f| f.to_f64())
-                    } else {
-                        None
-                    }
-                }),
-            iso: exif.get_field(exif::Tag::ISOSpeedRatings, exif::In::PRIMARY)
-                .and_then(|v| v.to_u32()),
-            focal_length: exif.get_field(exif::Tag::FocalLength, exif::In::PRIMARY)
-                .and_then(|v| {
-                    if let exif::Value::Rational(ref f) = v {
-                        f.first().map(|f| f.to_f64())
-                    } else {
-                        None
-                    }
-                }),
-            flash: exif.get_field(exif::Tag::Flash, exif::In::PRIMARY)
-                .and_then(|v| v.to_u32())
-                .map(|v| v & 1 == 1),
-            orientation: exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-                .and_then(|v| v.to_u32()),
+            camera_make,
+            camera_model,
+            lens_model,
+            datetime_original,
+            datetime_digitized,
+            gps_latitude,
+            gps_longitude,
+            gps_altitude,
+            exposure_time,
+            f_number,
+            iso,
+            focal_length,
+            flash,
+            orientation,
         })
     }
 
@@ -115,63 +185,15 @@ impl Processor for ExifProcessor {
     }
 }
 
-/// Metadata processor configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataConfig {
-    /// Include EXIF data
-    pub include_exif: bool,
-    /// Include dimensions
-    pub include_dimensions: bool,
-    /// Include file info
-    pub include_file_info: bool,
-}
-
-impl Default for MetadataConfig {
-    fn default() -> Self {
-        Self {
-            include_exif: true,
-            include_dimensions: true,
-            include_file_info: true,
-        }
-    }
-}
-
-/// Metadata processor
-pub struct MetadataProcessor;
-
-impl Processor for MetadataProcessor {
-    type Input = FileInput;
-    type Output = ImageMetadata;
-    type Config = MetadataConfig;
-    type Error = RToolsError;
-
-    fn process(&self, input: FileInput, _config: MetadataConfig) -> RToolsResult<ImageMetadata> {
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Metadata requires a file path input")
-        })?;
-
-        let img = image::open(path)?;
-        let (width, height) = img.dimensions();
-        let metadata = std::fs::metadata(path)?;
-
-        let format = input.format.unwrap_or(rtools_core::types::ImageFormat::Jpeg);
-
-        Ok(ImageMetadata {
-            width,
-            height,
-            format,
-            file_size: metadata.len(),
-            color_space: Some(format!("{:?}", img.color())),
-            bit_depth: None,
-            exif: None, // Would need to read EXIF separately
-        })
-    }
-
-    fn validate_config(&self, _config: &MetadataConfig) -> RToolsResult<()> {
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "MetadataProcessor"
+fn decode_dms(values: &[exif::Rational]) -> Option<f64> {
+    if values.len() >= 3 {
+        let deg = values[0].to_f64();
+        let min = values[1].to_f64();
+        let sec = values[2].to_f64();
+        Some(deg + (min / 60.0) + (sec / 3600.0))
+    } else if !values.is_empty() {
+        Some(values[0].to_f64())
+    } else {
+        None
     }
 }

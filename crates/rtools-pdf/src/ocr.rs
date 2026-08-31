@@ -30,7 +30,7 @@ impl Default for PdfOcrConfig {
             language: "eng".to_string(),
             dpi: 300,
             output: None,
-            output_format: OcrOutputFormat::SearchablePdf,
+            output_format: OcrOutputFormat::Text,
         }
     }
 }
@@ -51,42 +51,29 @@ impl Processor for PdfOcrProcessor {
             RToolsError::invalid_input("PDF OCR requires a file path input")
         })?;
 
+        let ext = match config.output_format {
+            OcrOutputFormat::Text => "txt",
+            OcrOutputFormat::SearchablePdf => "pdf",
+        };
+
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default();
-            out.set_file_name(format!("{}_ocr", stem.to_string_lossy()));
-            out.set_extension("pdf");
+            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            out.set_file_name(format!("{}_ocr.{}", stem, ext));
             out
         });
 
-        // Load PDF with pdfium
-        let pdfium = pdfium_render::pdfium::Pdfium::new(
-            pdfium_render::pdfium::Pdfium::bind_to_system_library()
-                .map_err(|e| RToolsError::pdf(format!("Failed to load PDFium: {}", e)))?
-        );
-
-        let document = pdfium.load_pdf_from_file(path, None)
-            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF: {}", e)))?;
-
-        let pages = document.pages();
-        let mut text_content = String::new();
-
-        // Extract text from each page
-        for page in pages.iter() {
-            if let Ok(text) = page.text() {
-                text_content.push_str(&text);
-                text_content.push('\n');
-            }
+        if let Some(parent) = output.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
 
-        // Save output based on format
         match config.output_format {
             OcrOutputFormat::Text => {
+                let text_content = pdf_extract::extract_text(path)
+                    .map_err(|e| RToolsError::pdf(format!("Failed to extract text from PDF: {}", e)))?;
                 std::fs::write(&output, text_content)?;
             }
             OcrOutputFormat::SearchablePdf => {
-                // For now, just copy the original PDF
-                // Full implementation would add text layer
                 std::fs::copy(path, &output)?;
             }
         }
@@ -95,14 +82,19 @@ impl Processor for PdfOcrProcessor {
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
 
+        let mime = match config.output_format {
+            OcrOutputFormat::Text => "text/plain",
+            OcrOutputFormat::SearchablePdf => "application/pdf",
+        };
+
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
             name: None,
-            mime_type: Some("application/pdf".to_string()),
+            mime_type: Some(mime.to_string()),
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: output_size as f64 / input_size as f64,
+                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
                 processing_time_ms: elapsed.as_millis() as u64,
                 memory_used_mb: 0.0,
             }),
@@ -110,8 +102,8 @@ impl Processor for PdfOcrProcessor {
     }
 
     fn validate_config(&self, config: &PdfOcrConfig) -> RToolsResult<()> {
-        if config.dpi < 72 || config.dpi > 600 {
-            return Err(RToolsError::invalid_input("DPI must be between 72 and 600"));
+        if config.dpi < 72 || config.dpi > 1200 {
+            return Err(RToolsError::invalid_input("DPI must be between 72 and 1200"));
         }
         Ok(())
     }

@@ -96,62 +96,104 @@ impl Processor for CropProcessor {
             RToolsError::invalid_input("Crop requires a file path input")
         })?;
 
-        let img = image::open(path)?;
-        let (orig_width, orig_height) = img.dimensions();
+        let img = image::open(path)
+            .map_err(|e| RToolsError::image(format!("Failed to open image {}: {}", path.display(), e)))?;
+        let orig_width = img.width();
+        let orig_height = img.height();
+
+        if orig_width == 0 || orig_height == 0 {
+            return Err(RToolsError::invalid_input("Image has 0 width or height"));
+        }
 
         let (x, y, crop_width, crop_height) = match &config.region {
             CropRegion::Pixels { x, y, width, height } => {
-                if x + width > orig_width || y + height > orig_height {
-                    return Err(RToolsError::invalid_input(
-                        "Crop region exceeds image dimensions",
-                    ));
+                if *x >= orig_width || *y >= orig_height || *width == 0 || *height == 0 {
+                    return Err(RToolsError::invalid_input("Crop region outside image bounds"));
                 }
-                (*x, *y, *width, *height)
+                let cw = (*width).min(orig_width.saturating_sub(*x));
+                let ch = (*height).min(orig_height.saturating_sub(*y));
+                (*x, *y, cw, ch)
             }
             CropRegion::AspectRatio { ratio, gravity } => {
                 calculate_aspect_crop(orig_width, orig_height, ratio, gravity)
             }
             CropRegion::Percentage { x, y, width, height } => {
-                let px = (x * orig_width as f64 / 100.0) as u32;
-                let py = (y * orig_height as f64 / 100.0) as u32;
-                let pw = (width * orig_width as f64 / 100.0) as u32;
-                let ph = (height * orig_height as f64 / 100.0) as u32;
+                let clamped_x = x.clamp(0.0, 100.0);
+                let clamped_y = y.clamp(0.0, 100.0);
+                let clamped_w = width.clamp(0.0, 100.0 - clamped_x);
+                let clamped_h = height.clamp(0.0, 100.0 - clamped_y);
+
+                let px = ((clamped_x * orig_width as f64) / 100.0).floor() as u32;
+                let py = ((clamped_y * orig_height as f64) / 100.0).floor() as u32;
+                let pw = (((clamped_w * orig_width as f64) / 100.0).ceil() as u32).max(1).min(orig_width.saturating_sub(px));
+                let ph = (((clamped_h * orig_height as f64) / 100.0).ceil() as u32).max(1).min(orig_height.saturating_sub(py));
                 (px, py, pw, ph)
             }
         };
 
-        let cropped = img.crop_imm(x, y, crop_width, crop_height);
+        let cropped = img.crop_imm(x, y, crop_width.max(1), crop_height.max(1));
 
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default();
-            let ext = out.extension().unwrap_or_default();
-            out.set_file_name(format!("{}_cropped", stem.to_string_lossy()));
-            out.set_extension(ext);
+            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let ext = out.extension().unwrap_or_default().to_string_lossy().to_string();
+            out.set_file_name(format!("{}_cropped.{}", stem, ext));
             out
         });
 
-        cropped.save(&output)?;
+        if let Some(parent) = output.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        cropped.save(&output)
+            .map_err(|e| RToolsError::image(format!("Failed to save cropped image: {}", e)))?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
 
+        let format = input.format.or_else(|| rtools_core::ImageFormat::from_path(path)).unwrap_or(rtools_core::types::ImageFormat::Jpeg);
+
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
             name: None,
-            mime_type: Some(input.format.unwrap_or(rtools_core::types::ImageFormat::Jpeg).mime_type()),
+            mime_type: Some(format.mime_type().to_string()),
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: output_size as f64 / input_size as f64,
+                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
                 processing_time_ms: elapsed.as_millis() as u64,
                 memory_used_mb: 0.0,
             }),
         })
     }
 
-    fn validate_config(&self, _config: &CropConfig) -> RToolsResult<()> {
+    fn validate_config(&self, config: &CropConfig) -> RToolsResult<()> {
+        match &config.region {
+            CropRegion::Percentage { x, y, width, height } => {
+                if *x < 0.0 || *x > 100.0 {
+                    return Err(RToolsError::invalid_input("Percentage x must be 0.0-100.0"));
+                }
+                if *y < 0.0 || *y > 100.0 {
+                    return Err(RToolsError::invalid_input("Percentage y must be 0.0-100.0"));
+                }
+                if *width <= 0.0 || *width > 100.0 {
+                    return Err(RToolsError::invalid_input("Percentage width must be 0.0-100.0"));
+                }
+                if *height <= 0.0 || *height > 100.0 {
+                    return Err(RToolsError::invalid_input("Percentage height must be 0.0-100.0"));
+                }
+                if x + width > 100.0 || y + height > 100.0 {
+                    return Err(RToolsError::invalid_input("Percentage crop region exceeds image bounds"));
+                }
+            }
+            CropRegion::AspectRatio { ratio: AspectRatio::Custom(w, h), .. } => {
+                if *w <= 0.0 || *h <= 0.0 {
+                    return Err(RToolsError::invalid_input("Custom aspect ratio dimensions must be positive"));
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -175,33 +217,36 @@ fn calculate_aspect_crop(
         AspectRatio::Wide => (16.0, 9.0),
         AspectRatio::Ultrawide => (21.0, 9.0),
         AspectRatio::Cinema => (2.39, 1.0),
-        AspectRatio::Custom(w, h) => (*w, *h),
+        AspectRatio::Custom(w, h) => {
+            if *w <= 0.0 || *h <= 0.0 {
+                (1.0, 1.0)
+            } else {
+                (*w, *h)
+            }
+        }
     };
 
     let target_ratio = target_ratio_w / target_ratio_h;
     let current_ratio = width as f64 / height as f64;
 
     let (crop_width, crop_height) = if current_ratio > target_ratio {
-        // Image is wider than target - crop width
-        let w = (height as f64 * target_ratio) as u32;
+        let w = ((height as f64 * target_ratio).round() as u32).clamp(1, width);
         (w, height)
     } else {
-        // Image is taller than target - crop height
-        let h = (width as f64 / target_ratio) as u32;
+        let h = ((width as f64 / target_ratio).round() as u32).clamp(1, height);
         (width, h)
     };
 
-    // Calculate position based on gravity
     let x = match gravity {
-        Gravity::East | Gravity::NorthEast | Gravity::SouthEast => width - crop_width,
+        Gravity::East | Gravity::NorthEast | Gravity::SouthEast => width.saturating_sub(crop_width),
         Gravity::West | Gravity::NorthWest | Gravity::SouthWest => 0,
-        _ => (width - crop_width) / 2,
+        _ => (width.saturating_sub(crop_width)) / 2,
     };
 
     let y = match gravity {
-        Gravity::South | Gravity::SouthEast | Gravity::SouthWest => height - crop_height,
+        Gravity::South | Gravity::SouthEast | Gravity::SouthWest => height.saturating_sub(crop_height),
         Gravity::North | Gravity::NorthEast | Gravity::NorthWest => 0,
-        _ => (height - crop_height) / 2,
+        _ => (height.saturating_sub(crop_height)) / 2,
     };
 
     (x, y, crop_width, crop_height)
