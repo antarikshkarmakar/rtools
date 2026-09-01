@@ -1,5 +1,4 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -110,7 +109,7 @@ impl Processor for SortProcessor {
             });
         }
 
-        let elapsed = start.elapsed();
+        let _elapsed = start.elapsed();
 
         Ok(outputs)
     }

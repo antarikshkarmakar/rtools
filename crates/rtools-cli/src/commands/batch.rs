@@ -7,6 +7,9 @@ struct BatchConfig {
 }
 
 #[derive(serde::Deserialize)]
+// The batch command is a stub (see TODOs in `handle_batch_command`); the
+// fields exist to accept the documented TOML schema without rejecting it.
+#[allow(dead_code)]
 struct BatchOperation {
     operation: String,
     input: Vec<String>,

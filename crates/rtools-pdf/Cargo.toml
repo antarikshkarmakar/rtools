@@ -9,15 +9,10 @@ readme = "../README.md"
 [dependencies]
 rtools-core = { path = "../rtools-core" }
 serde = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
 
 # PDF processing
 lopdf = { workspace = true }
 pdf-extract = { workspace = true }
-
-# Image extraction
-image = { workspace = true }
 
 [lints]
 workspace = true

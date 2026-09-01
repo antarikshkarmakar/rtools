@@ -3,9 +3,9 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use rtools_core::Processor;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tempfile::TempDir;
 
 use crate::AppState;
 
@@ -86,12 +86,6 @@ pub async fn compress(
     Err((StatusCode::BAD_REQUEST, "No file uploaded".to_string()))
 }
 
-#[derive(Deserialize)]
-pub struct ConvertRequest {
-    pub format: String,
-    pub quality: Option<u8>,
-}
-
 #[derive(Serialize)]
 pub struct ConvertResponse {
     pub success: bool,
@@ -151,13 +145,6 @@ pub async fn convert(
     }
 
     Err((StatusCode::BAD_REQUEST, "No file uploaded".to_string()))
-}
-
-#[derive(Deserialize)]
-pub struct ResizeRequest {
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub maintain_aspect: Option<bool>,
 }
 
 pub async fn resize(

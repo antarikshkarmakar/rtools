@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueHint};
+use clap::{CommandFactory, Parser, Subcommand, ValueHint};
 use std::path::PathBuf;
 
 mod commands;

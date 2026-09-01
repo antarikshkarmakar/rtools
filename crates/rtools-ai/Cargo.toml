@@ -9,9 +9,6 @@ readme = "../README.md"
 [dependencies]
 rtools-core = { path = "../rtools-core" }
 serde = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
-walkdir = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Image processing for AI

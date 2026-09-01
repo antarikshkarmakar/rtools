@@ -6,13 +6,59 @@ use rtools_image::{
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// Create a test image filled with a deterministic pseudo-random pattern.
+///
+/// The pattern is seeded from the file name and dimensions so that images
+/// that differ in size or name have distinct content (and therefore distinct
+/// perceptual hashes), while a byte-for-byte copy remains identical. Pixels
+/// are written in the format implied by the file extension so JPEG/WebP/PNG
+/// fixtures all decode correctly.
 fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32) -> PathBuf {
-    let img = image::DynamicImage::new_rgba8(width, height);
+    let mut state = name.bytes().fold(
+        width.wrapping_mul(73856093) ^ height.wrapping_mul(19349663),
+        |acc, b| acc.wrapping_mul(16777619).wrapping_add(b as u32).wrapping_add(1013904223),
+    );
+    if state == 0 {
+        state = 0x9e37_79b9;
+    }
+
+    let mut img = image::RgbaImage::new(width, height);
+    for px in img.pixels_mut() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let v = state % 256;
+        *px = image::Rgba([
+            (v & 0xFF) as u8,
+            ((v * 3) & 0xFF) as u8,
+            ((v * 5) & 0xFF) as u8,
+            255,
+        ]);
+    }
+
+    use image::ImageEncoder;
+
     let path = dir.join(name);
-    img.write_with(image::codecs::png::PngEncoder::new(std::io::BufWriter::new(
-        std::fs::File::create(&path).unwrap(),
-    )))
-    .unwrap();
+    let writer = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "jpg" | "jpeg" => {
+            let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+            rgb.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 90))
+                .unwrap();
+        }
+        "webp" => {
+            img.write_with_encoder(image::codecs::webp::WebPEncoder::new_lossless(writer))
+                .unwrap();
+        }
+        _ => {
+            img.write_with_encoder(image::codecs::png::PngEncoder::new(writer)).unwrap();
+        }
+    }
     path
 }
 

@@ -114,12 +114,12 @@ impl Processor for ExifProcessor {
 
         // Apply altitude sign from GPSAltitudeRef (0 = above sea level, 1 = below)
         if let Some(alt) = gps_altitude {
-            if let Some(alt_ref) = exif.get_field(exif::Tag::GPSAltitudeRef, exif::In::PRIMARY) {
-                if let Ok(val) = alt_ref.try_into::<u8>() {
-                    if val == 1 {
-                        gps_altitude = Some(-alt);
-                    }
-                }
+            let below_sea_level = exif
+                .get_field(exif::Tag::GPSAltitudeRef, exif::In::PRIMARY)
+                .map(|f| matches!(f.value, exif::Value::Short(ref s) if s.first() == Some(&1)))
+                .unwrap_or(false);
+            if below_sea_level {
+                gps_altitude = Some(-alt);
             }
         }
 

@@ -3,9 +3,8 @@ use rtools_core::AppConfig;
 use rtools_core::FileInput;
 use rtools_core::Processor;
 use rtools_image::{CompressConfig, CompressProcessor, CropConfig, CropProcessor, ConvertConfig, ConvertProcessor, FilterConfig, FilterProcessor, ResizeConfig, ResizeProcessor, WatermarkConfig, WatermarkProcessor};
-use std::path::PathBuf;
 
-pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> anyhow::Result<()> {
+pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> anyhow::Result<()> {
     match cmd {
         ImageCommands::Compress {
             input,
@@ -99,7 +98,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, resize_config.clone()) {
-                    Ok(output) => {
+                    Ok(_output) => {
                         println!("✓ Resized: {}", input_path.display());
                     }
                     Err(e) => {
@@ -178,7 +177,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, crop_config.clone()) {
-                    Ok(output) => {
+                    Ok(_output) => {
                         println!("✓ Cropped: {}", input_path.display());
                     }
                     Err(e) => {
@@ -228,7 +227,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, watermark_config.clone()) {
-                    Ok(output) => {
+                    Ok(_output) => {
                         println!("✓ Watermarked: {}", input_path.display());
                     }
                     Err(e) => {
@@ -267,7 +266,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, filter_config.clone()) {
-                    Ok(output) => {
+                    Ok(_output) => {
                         println!("✓ Filtered: {}", input_path.display());
                     }
                     Err(e) => {
@@ -278,7 +277,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             Ok(())
         }
 
-        ImageCommands::Exif { input, format } => {
+        ImageCommands::Exif { input, format: _ } => {
             let processor = rtools_image::ExifProcessor;
             let config = rtools_image::exif::ExifConfig::default();
 
@@ -305,7 +304,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             Ok(())
         }
 
-        ImageCommands::Ocr { input, language, output } => {
+        ImageCommands::Ocr { input, language, output: _ } => {
             // OCR is handled by AI crate
             let processor = rtools_ai::OcrProcessor;
             let config = rtools_ai::ocr::OcrConfig {

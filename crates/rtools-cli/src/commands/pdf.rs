@@ -3,7 +3,7 @@ use rtools_core::AppConfig;
 use rtools_core::FileInput;
 use rtools_core::Processor;
 
-pub async fn handle_pdf_command(cmd: PdfCommands, config: &AppConfig) -> anyhow::Result<()> {
+pub async fn handle_pdf_command(cmd: PdfCommands, _config: &AppConfig) -> anyhow::Result<()> {
     match cmd {
         PdfCommands::Merge { input, output } => {
             let processor = rtools_pdf::PdfMergeProcessor;
@@ -93,13 +93,13 @@ pub async fn handle_pdf_command(cmd: PdfCommands, config: &AppConfig) -> anyhow:
             Ok(())
         }
 
-        PdfCommands::Text { input, output } => {
+        PdfCommands::Text { input: _, output: _ } => {
             // TODO: Implement text extraction
             println!("✓ Text extraction not yet implemented");
             Ok(())
         }
 
-        PdfCommands::ToImage { input, output, format, dpi } => {
+        PdfCommands::ToImage { input: _, output: _, format: _, dpi: _ } => {
             // TODO: Implement PDF to image conversion
             println!("✓ PDF to image conversion not yet implemented");
             Ok(())

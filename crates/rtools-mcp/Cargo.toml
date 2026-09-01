@@ -16,11 +16,14 @@ rtools-image = { path = "../rtools-image" }
 rtools-pdf = { path = "../rtools-pdf" }
 rtools-ai = { path = "../rtools-ai" }
 rmcp = { workspace = true }
+# Direct dependency so `#[derive(JsonSchema)]` resolves to `::schemars` in
+# generated code and so the `derive` feature is enabled (rmcp only enables
+# `chrono04`). Resolves to the same crate/version as rmcp's schemars dep.
+schemars = { version = "1", features = ["derive"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 walkdir = { workspace = true }
 

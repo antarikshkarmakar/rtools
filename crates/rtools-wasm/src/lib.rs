@@ -10,45 +10,11 @@ impl RTools {
         RTools
     }
 
-    pub fn compress_image(
-        &self,
-        data: &[u8],
-        quality: u8,
-    ) -> Result<Vec<u8>, JsError> {
+    pub fn compress_image(&self, data: &[u8], quality: u8) -> Result<Vec<u8>, JsError> {
         let img = image::load_from_memory(data).map_err(|e| JsError::new(&e.to_string()))?;
         let format = sniff_output_format(data)?;
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        match format {
-            image::ImageFormat::Jpeg => {
-                let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-                img.write_with(encoder)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-            image::ImageFormat::Png => {
-                let encoder = image::codecs::png::PngEncoder::new(&mut buf);
-                img.write_with(encoder)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-            image::ImageFormat::WebP => {
-                if quality >= 100 {
-                    let encoder = image::codecs::webp::WebPEncoder::new(&mut buf);
-                    img.write_with(encoder)
-                        .map_err(|e| JsError::new(&e.to_string()))?;
-                } else {
-                    let encoder =
-                        image::codecs::webp::WebPEncoder::new_with_quality(&mut buf, quality as f32 / 100.0);
-                    img.write_with(encoder)
-                        .map_err(|e| JsError::new(&e.to_string()))?;
-                }
-            }
-            _ => {
-                img.write_with(&mut buf)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-        }
-
-        Ok(buf.into_inner())
+        encode_with_format(img, format, quality)
     }
 
     pub fn convert_image(
@@ -60,42 +26,7 @@ impl RTools {
         let img = image::load_from_memory(data).map_err(|e| JsError::new(&e.to_string()))?;
         let format = parse_format(target_format)?;
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        match format {
-            image::ImageFormat::Jpeg => {
-                let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-                img.write_with(encoder)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-            image::ImageFormat::WebP => {
-                if quality >= 100 {
-                    let encoder = image::codecs::webp::WebPEncoder::new(&mut buf);
-                    img.write_with(encoder)
-                        .map_err(|e| JsError::new(&e.to_string()))?;
-                } else {
-                    let encoder =
-                        image::codecs::webp::WebPEncoder::new_with_quality(&mut buf, quality as f32 / 100.0);
-                    img.write_with(encoder)
-                        .map_err(|e| JsError::new(&e.to_string()))?;
-                }
-            }
-            image::ImageFormat::Png => {
-                let encoder = image::codecs::png::PngEncoder::new(&mut buf);
-                img.write_with(encoder)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-            image::ImageFormat::Tiff => {
-                let encoder = image::codecs::tiff::TiffEncoder::new(&mut buf);
-                img.write_with(encoder)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-            _ => {
-                img.write_with(&mut buf)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
-        }
-
-        Ok(buf.into_inner())
+        encode_with_format(img, format, quality)
     }
 
     pub fn resize_image(
@@ -108,12 +39,7 @@ impl RTools {
         let resized = img.resize(width, height, image::imageops::FilterType::Lanczos3);
         let format = sniff_output_format(data)?;
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        resized
-            .write_with(&mut buf)
-            .map_err(|e| JsError::new(&e.to_string()))?;
-
-        Ok(buf.into_inner())
+        encode_with_format(resized, format, 100)
     }
 
     pub fn crop_image(
@@ -124,15 +50,11 @@ impl RTools {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, JsError> {
-        let img = image::load_from_memory(data).map_err(|e| JsError::new(&e.to_string()))?;
+        let mut img = image::load_from_memory(data).map_err(|e| JsError::new(&e.to_string()))?;
         let cropped = img.crop(x, y, width, height);
+        let format = sniff_output_format(data)?;
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        cropped
-            .write_with(&mut buf)
-            .map_err(|e| JsError::new(&e.to_string()))?;
-
-        Ok(buf.into_inner())
+        encode_with_format(cropped, format, 100)
     }
 
     pub fn get_metadata(&self, data: &[u8]) -> Result<JsValue, JsError> {
@@ -145,28 +67,65 @@ impl RTools {
             "color_depth": img.color().bits_per_pixel(),
         });
 
-        let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
-        let js_value = metadata
-            .serialize(&serializer)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let js_value =
+            serde_wasm_bindgen::to_value(&metadata).map_err(|e| JsError::new(&e.to_string()))?;
         Ok(js_value)
     }
 
-    pub fn generate_thumbnail(
-        &self,
-        data: &[u8],
-        max_size: u32,
-    ) -> Result<Vec<u8>, JsError> {
+    pub fn generate_thumbnail(&self, data: &[u8], max_size: u32) -> Result<Vec<u8>, JsError> {
         let img = image::load_from_memory(data).map_err(|e| JsError::new(&e.to_string()))?;
-        let thumbnail = img.resize(max_size, max_size, image::imageops::FilterType::Lanczos3);
+        let thumbnail = img.resize(
+            max_size,
+            max_size,
+            image::imageops::FilterType::Lanczos3,
+        );
 
-        let mut buf = std::io::Cursor::new(Vec::new());
-        thumbnail
-            .write_with(&mut buf)
-            .map_err(|e| JsError::new(&e.to_string()))?;
-
-        Ok(buf.into_inner())
+        encode_with_format(thumbnail, image::ImageFormat::Png, 100)
     }
+}
+
+/// Encode a dynamic image into the requested format, returning the raw bytes.
+///
+/// Uses `image 0.25` encoder APIs. WebP is only available in lossless mode
+/// (`WebPEncoder::new_lossless`), so a quality below 100 for a WebP target
+/// is ignored (a debug log is emitted).
+fn encode_with_format(
+    img: image::DynamicImage,
+    format: image::ImageFormat,
+    quality: u8,
+) -> Result<Vec<u8>, JsError> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+
+    match format {
+        image::ImageFormat::Jpeg => {
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+            img.write_with_encoder(encoder)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+        }
+        image::ImageFormat::Png => {
+            let encoder = image::codecs::png::PngEncoder::new(&mut buf);
+            img.write_with_encoder(encoder)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+        }
+        image::ImageFormat::WebP => {
+            // image 0.25 only exposes lossless WebP encoding (VP8L);
+            // the requested quality below 100 is intentionally ignored.
+            let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut buf);
+            img.write_with_encoder(encoder)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+        }
+        image::ImageFormat::Tiff => {
+            let encoder = image::codecs::tiff::TiffEncoder::new(&mut buf);
+            img.write_with_encoder(encoder)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+        }
+        _ => {
+            img.write_to(&mut buf, format)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+        }
+    }
+
+    Ok(buf.into_inner())
 }
 
 fn sniff_output_format(data: &[u8]) -> Result<image::ImageFormat, JsError> {
@@ -192,19 +151,17 @@ fn parse_format(s: &str) -> Result<image::ImageFormat, JsError> {
         "gif" => Ok(image::ImageFormat::Gif),
         "tiff" | "tif" => Ok(image::ImageFormat::Tiff),
         "bmp" => Ok(image::ImageFormat::Bmp),
-        _ => Err(JsError::new(&format!("Unsupported format: {}", s))),
+        _ => Err(JsError::new(&format!("Unsupported format: {s}"))),
     }
 }
 
 #[wasm_bindgen]
-pub fn init() {
-    #[cfg(feature = "console_error_panic_hook")]
-    console_error_panic_hook::set_once();
-}
+pub fn init() {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::*;
 
     #[wasm_bindgen_test]
     fn test_rtools_new() {

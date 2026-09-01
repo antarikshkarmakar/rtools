@@ -20,5 +20,21 @@ path = "tests/image_tests.rs"
 name = "ai_tests"
 path = "tests/ai_tests.rs"
 
-[lints]
-workspace = true
+# Dependencies are consumed by the integration tests in `tests/`, not by the
+# (empty) library target, which is what `unused_crate_dependencies` lints.
+# `workspace = true` does not allow per-lint overrides, so repeat the
+# workspace lints here with that one lint relaxed.
+[lints.rust]
+unused_imports = "warn"
+unused_variables = "warn"
+dead_code = "warn"
+unused_crate_dependencies = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+unwrap_used = "allow"
+expect_used = "allow"
+missing_docs_in_private_items = "allow"

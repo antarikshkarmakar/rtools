@@ -1,6 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -41,7 +41,7 @@ impl Processor for OcrProcessor {
     type Config = OcrConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: OcrConfig) -> RToolsResult<OcrResult> {
+    fn process(&self, input: FileInput, _config: OcrConfig) -> RToolsResult<OcrResult> {
         let start = Instant::now();
 
         let path = input.source.as_path().ok_or_else(|| {

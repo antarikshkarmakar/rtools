@@ -9,12 +9,10 @@ readme = "../README.md"
 [dependencies]
 rtools-core = { path = "../rtools-core" }
 serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 
 # Image processing
 image = { workspace = true }
-imageproc = { workspace = true }
 kamadak-exif = "0.5"
 
 [lints]

@@ -1,3 +1,4 @@
+use image::ImageEncoder;
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
 use rtools_core::{FileInput, FileOutput, Processor};
@@ -138,64 +139,36 @@ impl Processor for ConvertProcessor {
                 }
             }
             ImageFormat::Webp => {
-                let file = std::fs::File::create(&output_path)?;
-                if config.quality >= 100 {
-                    let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
-                    if img.color().has_alpha() {
-                        let rgba = img.to_rgba8();
-                        encoder
-                            .write_image(
-                                &rgba,
-                                rgba.width(),
-                                rgba.height(),
-                                image::ExtendedColorType::Rgba8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP conversion failed: {}", e))
-                            })?;
-                    } else {
-                        let rgb = img.to_rgb8();
-                        encoder
-                            .write_image(
-                                &rgb,
-                                rgb.width(),
-                                rgb.height(),
-                                image::ExtendedColorType::Rgb8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP conversion failed: {}", e))
-                            })?;
-                    }
-                } else {
-                    let encoder = image::codecs::webp::WebPEncoder::new_with_quality(
-                        file,
-                        image::codecs::webp::WebPQuality::lossy(config.quality),
+                // image 0.25 only exposes lossless WebP encoding (VP8L);
+                // the requested quality is logged but cannot be applied.
+                if config.quality < 100 {
+                    tracing::debug!(
+                        "WebP target requested at quality {} — image 0.25 only supports lossless WebP",
+                        config.quality
                     );
-                    if img.color().has_alpha() {
-                        let rgba = img.to_rgba8();
-                        encoder
-                            .write_image(
-                                &rgba,
-                                rgba.width(),
-                                rgba.height(),
-                                image::ExtendedColorType::Rgba8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP conversion failed: {}", e))
-                            })?;
-                    } else {
-                        let rgb = img.to_rgb8();
-                        encoder
-                            .write_image(
-                                &rgb,
-                                rgb.width(),
-                                rgb.height(),
-                                image::ExtendedColorType::Rgb8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP conversion failed: {}", e))
-                            })?;
-                    }
+                }
+                let file = std::fs::File::create(&output_path)?;
+                let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
+                if img.color().has_alpha() {
+                    let rgba = img.to_rgba8();
+                    encoder
+                        .write_image(
+                            &rgba,
+                            rgba.width(),
+                            rgba.height(),
+                            image::ExtendedColorType::Rgba8,
+                        )
+                        .map_err(|e| RToolsError::image(format!("WebP conversion failed: {}", e)))?;
+                } else {
+                    let rgb = img.to_rgb8();
+                    encoder
+                        .write_image(
+                            &rgb,
+                            rgb.width(),
+                            rgb.height(),
+                            image::ExtendedColorType::Rgb8,
+                        )
+                        .map_err(|e| RToolsError::image(format!("WebP conversion failed: {}", e)))?;
                 }
             }
             ImageFormat::Avif => {

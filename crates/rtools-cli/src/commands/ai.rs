@@ -4,7 +4,7 @@ use rtools_core::FileInput;
 use rtools_core::Processor;
 use std::path::PathBuf;
 
-pub async fn handle_ai_command(cmd: AiCommands, config: &AppConfig) -> anyhow::Result<()> {
+pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::Result<()> {
     match cmd {
         AiCommands::Organize {
             input,
@@ -77,7 +77,7 @@ pub async fn handle_ai_command(cmd: AiCommands, config: &AppConfig) -> anyhow::R
         AiCommands::AltText {
             input,
             language,
-            output,
+            output: _,
         } => {
             let processor = rtools_ai::AltTextProcessor;
             let alt_text_config = rtools_ai::alt_text::AltTextConfig {

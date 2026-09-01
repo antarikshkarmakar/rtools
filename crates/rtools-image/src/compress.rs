@@ -1,5 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
+use image::ImageEncoder;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -177,66 +178,29 @@ impl Processor for CompressProcessor {
                 }
             }
             ImageFormat::Webp => {
-                // Use quality-aware encoding instead of lossless
+                // image 0.25 only exposes lossless WebP encoding (VP8L)
                 let file = std::fs::File::create(&output_path)?;
-                if quality >= 100 {
-                    let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
-                    if img.color().has_alpha() {
-                        let rgba = img.to_rgba8();
-                        encoder
-                            .write_image(
-                                &rgba,
-                                rgba.width(),
-                                rgba.height(),
-                                image::ExtendedColorType::Rgba8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP compression failed: {}", e))
-                            })?;
-                    } else {
-                        let rgb = img.to_rgb8();
-                        encoder
-                            .write_image(
-                                &rgb,
-                                rgb.width(),
-                                rgb.height(),
-                                image::ExtendedColorType::Rgb8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP compression failed: {}", e))
-                            })?;
-                    }
+                let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
+                if img.color().has_alpha() {
+                    let rgba = img.to_rgba8();
+                    encoder
+                        .write_image(
+                            &rgba,
+                            rgba.width(),
+                            rgba.height(),
+                            image::ExtendedColorType::Rgba8,
+                        )
+                        .map_err(|e| RToolsError::image(format!("WebP compression failed: {}", e)))?;
                 } else {
-                    // Lossy WebP encoding with quality parameter
-                    let encoder = image::codecs::webp::WebPEncoder::new_with_quality(
-                        file,
-                        image::codecs::webp::WebPQuality::lossy(quality),
-                    );
-                    if img.color().has_alpha() {
-                        let rgba = img.to_rgba8();
-                        encoder
-                            .write_image(
-                                &rgba,
-                                rgba.width(),
-                                rgba.height(),
-                                image::ExtendedColorType::Rgba8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP compression failed: {}", e))
-                            })?;
-                    } else {
-                        let rgb = img.to_rgb8();
-                        encoder
-                            .write_image(
-                                &rgb,
-                                rgb.width(),
-                                rgb.height(),
-                                image::ExtendedColorType::Rgb8,
-                            )
-                            .map_err(|e| {
-                                RToolsError::image(format!("WebP compression failed: {}", e))
-                            })?;
-                    }
+                    let rgb = img.to_rgb8();
+                    encoder
+                        .write_image(
+                            &rgb,
+                            rgb.width(),
+                            rgb.height(),
+                            image::ExtendedColorType::Rgb8,
+                        )
+                        .map_err(|e| RToolsError::image(format!("WebP compression failed: {}", e)))?;
                 }
             }
             ImageFormat::Avif => {

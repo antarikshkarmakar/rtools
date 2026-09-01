@@ -48,25 +48,25 @@ impl Processor for RenameProcessor {
             })?;
 
             let new_name = generate_filename(&config.pattern, path, idx as u32 + config.start_number)?;
-            let output_dir = config.output_dir.as_ref().unwrap_or(
+            let output_dir = config.output_dir.as_ref().map(|d| d.as_path()).unwrap_or(
                 path.parent().unwrap_or_else(|| std::path::Path::new(".")),
             );
             let mut new_path = output_dir.join(&new_name);
 
             // Collision detection: append numeric suffix if file exists
-            if new_path.exists() && new_path != path {
+            if new_path.exists() && new_path != *path {
                 let stem = new_path.file_stem().unwrap_or_default().to_string_lossy();
                 let ext = new_path.extension().unwrap_or_default().to_string_lossy();
                 for i in 1..1000 {
                     let candidate = output_dir.join(format!("{}_{}.{}", stem, i, ext));
-                    if !candidate.exists() || candidate == path {
+                    if !candidate.exists() || candidate == *path {
                         new_path = candidate;
                         break;
                     }
                 }
             }
 
-            if !config.dry_run && new_path != path {
+            if !config.dry_run && new_path != *path {
                 std::fs::rename(path, &new_path)?;
             }
 

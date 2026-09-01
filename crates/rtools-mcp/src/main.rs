@@ -6,9 +6,10 @@ use rmcp::{
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
     service::RequestContext,
-    transport::stdio,
+    transport::io::stdio,
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
+use rtools_core::Processor;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -422,7 +423,7 @@ impl RToolsServer {
                 }
             }
 
-            _ => Err(McpError::method_not_found(format!("Unknown tool: {}", tool_name), None)),
+            _ => Err(McpError::invalid_params(format!("Unknown tool: {}", tool_name), None)),
         }
     }
 }
@@ -444,13 +445,9 @@ fn collect_images(dir: &str) -> Result<Vec<rtools_core::FileInput>, std::io::Err
     Ok(inputs)
 }
 
-#[rmcp::async_trait]
 impl ServerHandler for RToolsServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(
@@ -461,6 +458,7 @@ impl ServerHandler for RToolsServer {
         Ok(ListToolsResult {
             tools: Self::tools(),
             next_cursor: None,
+            ..Default::default()
         })
     }
 
@@ -470,7 +468,7 @@ impl ServerHandler for RToolsServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, McpError> {
         let name = request.name.to_string();
-        let arguments = request.arguments.unwrap_or_default();
+        let arguments = serde_json::Value::Object(request.arguments.unwrap_or_default());
         self.handle_tool(&name, arguments).await.map(Into::into)
     }
 }

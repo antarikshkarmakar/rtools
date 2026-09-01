@@ -5,10 +5,36 @@ use rtools_ai::{
 };
 use tempfile::TempDir;
 
+/// Create a test PNG filled with a deterministic pattern seeded from the file
+/// name and dimensions, so that differently-named/sized images have distinct
+/// content (and distinct perceptual hashes), while a byte-for-byte copy stays
+/// identical.
 fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32) -> std::path::PathBuf {
-    let img = image::DynamicImage::new_rgba8(width, height);
+    let mut state = name.bytes().fold(
+        width.wrapping_mul(73856093) ^ height.wrapping_mul(19349663),
+        |acc, b| acc.wrapping_mul(16777619).wrapping_add(b as u32).wrapping_add(1013904223),
+    );
+    if state == 0 {
+        state = 0x9e37_79b9;
+    }
+
+    let mut img = image::RgbaImage::new(width, height);
+    for px in img.pixels_mut() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let v = state % 256;
+        *px = image::Rgba([
+            (v & 0xFF) as u8,
+            ((v * 3) & 0xFF) as u8,
+            ((v * 5) & 0xFF) as u8,
+            255,
+        ]);
+    }
+
     let path = dir.join(name);
-    img.write_with(image::codecs::png::PngEncoder::new(std::io::BufWriter::new(
+    use image::ImageEncoder;
+    img.write_with_encoder(image::codecs::png::PngEncoder::new(std::io::BufWriter::new(
         std::fs::File::create(&path).unwrap(),
     )))
     .unwrap();

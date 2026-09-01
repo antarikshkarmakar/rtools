@@ -3,7 +3,8 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use serde::{Deserialize, Serialize};
+use rtools_core::Processor;
+use serde::Serialize;
 use std::sync::Arc;
 
 use crate::AppState;
@@ -59,11 +60,6 @@ pub async fn organize(
         })),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
-}
-
-#[derive(Deserialize)]
-pub struct RenameRequest {
-    pub pattern: Option<String>,
 }
 
 pub async fn rename(
@@ -173,11 +169,6 @@ pub async fn alt_text(
             "results": results,
         })),
     }))
-}
-
-#[derive(Deserialize)]
-pub struct DuplicatesRequest {
-    pub threshold: Option<f64>,
 }
 
 pub async fn duplicates(
