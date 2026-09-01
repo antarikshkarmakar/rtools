@@ -133,13 +133,16 @@ impl Processor for CropProcessor {
 
         let cropped = img.crop_imm(x, y, crop_width.max(1), crop_height.max(1));
 
-        let output = config.output.unwrap_or_else(|| {
-            let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = out.extension().unwrap_or_default().to_string_lossy().to_string();
-            out.set_file_name(format!("{}_cropped.{}", stem, ext));
-            out
-        });
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let ext = path.extension().unwrap_or_default().to_string_lossy().to_string();
+        let file_name = format!("{stem}_cropped.{ext}");
+        let output = match config.output {
+            Some(out) => rtools_core::resolve_output_path(&out, &file_name),
+            None => path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(file_name),
+        };
 
         if let Some(parent) = output.parent() {
             let _ = std::fs::create_dir_all(parent);

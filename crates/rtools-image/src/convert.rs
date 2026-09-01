@@ -71,16 +71,16 @@ impl Processor for ConvertProcessor {
         })?;
 
         // Generate output path using target format extension
-        let output_path = config.output.unwrap_or_else(|| {
-            let stem = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy();
-            let ext = config.target_format.extensions()[0];
-            path.parent()
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = config.target_format.extensions()[0];
+        let file_name = format!("{stem}.{ext}");
+        let output_path = match config.output {
+            Some(out) => rtools_core::resolve_output_path(&out, &file_name),
+            None => path
+                .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
-                .join(format!("{}.{}", stem, ext))
-        });
+                .join(file_name),
+        };
 
         let output_path = unique_output_path(&output_path);
 

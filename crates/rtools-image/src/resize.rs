@@ -109,13 +109,16 @@ impl Processor for ResizeProcessor {
             img.resize_exact(new_width.max(1), new_height.max(1), filter)
         };
 
-        let output = config.output.unwrap_or_else(|| {
-            let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = out.extension().unwrap_or_default().to_string_lossy().to_string();
-            out.set_file_name(format!("{}_{}x{}.{}", stem, new_width, new_height, ext));
-            out
-        });
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let ext = path.extension().unwrap_or_default().to_string_lossy().to_string();
+        let file_name = format!("{stem}_{new_width}x{new_height}.{ext}");
+        let output = match config.output {
+            Some(out) => rtools_core::resolve_output_path(&out, &file_name),
+            None => path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(file_name),
+        };
 
         if let Some(parent) = output.parent() {
             let _ = std::fs::create_dir_all(parent);

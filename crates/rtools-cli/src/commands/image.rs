@@ -91,7 +91,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 height,
                 maintain_aspect,
                 algorithm: Default::default(),
-                output: output.and_then(|o| if o.is_dir() { None } else { Some(o) }),
+                output,
                 quality: 85,
             };
 
@@ -170,7 +170,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
 
             let crop_config = CropConfig {
                 region: crop_region,
-                output: output.and_then(|o| if o.is_dir() { None } else { Some(o) }),
+                output,
                 quality: 85,
             };
 
@@ -220,7 +220,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                     _ => rtools_image::watermark::WatermarkPosition::BottomRight,
                 },
                 opacity,
-                output: output.and_then(|o| if o.is_dir() { None } else { Some(o) }),
+                output,
                 quality: 85,
             };
 
@@ -259,7 +259,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
             let filter_config = FilterConfig {
                 filter,
                 strength,
-                output: output.and_then(|o| if o.is_dir() { None } else { Some(o) }),
+                output,
                 quality: 85,
             };
 

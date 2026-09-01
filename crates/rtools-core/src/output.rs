@@ -2,6 +2,17 @@ use crate::types::ProcessStats;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Resolve an explicit output path: if it points to an existing directory
+/// (or ends with a path separator), treat it as a directory and join `name`
+/// onto it; otherwise return it unchanged as a file path.
+pub fn resolve_output_path(output: &PathBuf, name: &str) -> PathBuf {
+    if output.is_dir() || output.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR) {
+        output.join(name)
+    } else {
+        output.clone()
+    }
+}
+
 /// Output destination for processing results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OutputDestination {

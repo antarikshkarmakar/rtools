@@ -8,9 +8,13 @@ mod commands;
     name = "rtools",
     about = "A high-performance image and PDF processing toolkit",
     version,
-    long_about = "rtools is a privacy-first, local processing toolkit for images and PDFs.\n\nIt provides CLI, API, and MCP interfaces for powerful file processing operations."
+    long_about = "rtools is a privacy-first, local processing toolkit for images and PDFs.\n\nIt provides CLI, API, and MCP interfaces for powerful file processing operations.",
+    next_line_help = true
 )]
-#[command(propagate_version = true)]
+#[command(
+    propagate_version = true,
+    after_long_help = "Examples:\n  Compress an image:          rtools image compress -i photo.jpg -q 80\n  Convert to WebP:            rtools image convert -i photo.png -f webp\n  Resize to 1920px wide:      rtools image resize -i photo.jpg -w 1920\n  Crop to 16:9:               rtools image crop -i photo.jpg -a 16:9\n  Add a text watermark:       rtools image watermark -i photo.jpg -t \"© me\"\n  Apply a film filter:        rtools image filter -i photo.jpg -p portra\n  Read EXIF metadata:         rtools image exif -i photo.jpg\n  Merge PDFs:                 rtools pdf merge -i a.pdf b.pdf -o merged.pdf\n  Split a PDF:                rtools pdf split -i doc.pdf -o out/ -p 1-5,10\n  Find duplicate photos:      rtools ai duplicates -i photos/ -a report\n\nTip: run `rtools <command> --help` for full details on any command."
+)]
 struct Cli {
     /// Configuration file path
     #[arg(short, long, value_hint = ValueHint::FilePath)]
@@ -50,6 +54,7 @@ enum Commands {
     },
 
     /// Batch processing with config file
+    #[command(after_long_help = "Example:\n  rtools batch -c batch.toml -j 4")]
     Batch {
         /// Batch configuration file
         #[arg(short, long, value_hint = ValueHint::FilePath)]
@@ -77,6 +82,9 @@ enum Commands {
 #[derive(Subcommand)]
 enum ImageCommands {
     /// Compress images
+    #[command(
+        after_long_help = "Examples:\n  rtools image compress -i photo.jpg -q 70\n  rtools image compress -i a.jpg b.jpg -f webp -o out/"
+    )]
     Compress {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -90,7 +98,7 @@ enum ImageCommands {
         #[arg(short, long, default_value = "85")]
         quality: u8,
 
-        /// Output format
+        /// Output format (jpg, jpeg, png, webp, avif, tiff, bmp, gif)
         #[arg(short, long)]
         format: Option<String>,
 
@@ -104,12 +112,13 @@ enum ImageCommands {
     },
 
     /// Convert image format
+    #[command(after_long_help = "Example:\n  rtools image convert -i photo.png -f webp -q 80")]
     Convert {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
 
-        /// Target format
+        /// Target format (jpg, jpeg, png, webp, avif, tiff, bmp, gif)
         #[arg(short, long)]
         format: String,
 
@@ -123,6 +132,9 @@ enum ImageCommands {
     },
 
     /// Resize images
+    #[command(
+        after_long_help = "Examples:\n  rtools image resize -i photo.jpg -w 1920\n  rtools image resize -i photo.jpg -w 800 -h 600 --no-maintain-aspect"
+    )]
     Resize {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -133,7 +145,7 @@ enum ImageCommands {
         width: Option<u32>,
 
         /// Target height
-        #[arg(short, long)]
+        #[arg(long)]
         height: Option<u32>,
 
         /// Maintain aspect ratio
@@ -146,6 +158,9 @@ enum ImageCommands {
     },
 
     /// Crop images
+    #[command(
+        after_long_help = "Examples:\n  rtools image crop -i photo.jpg -a 16:9\n  rtools image crop -i photo.jpg -r 100,100,800,600"
+    )]
     Crop {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -156,7 +171,7 @@ enum ImageCommands {
         region: Option<String>,
 
         /// Aspect ratio (16:9, 4:3, 1:1, etc.)
-        #[arg(short, long)]
+        #[arg(short = 'a', long)]
         ratio: Option<String>,
 
         /// Gravity point
@@ -169,6 +184,9 @@ enum ImageCommands {
     },
 
     /// Add watermark
+    #[command(
+        after_long_help = "Examples:\n  rtools image watermark -i photo.jpg -t \"© me\" -p bottom-right --opacity 0.6\n  rtools image watermark -i photo.jpg --image logo.png -p top-left"
+    )]
     Watermark {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -179,10 +197,10 @@ enum ImageCommands {
         text: Option<String>,
 
         /// Watermark image
-        #[arg(short, long)]
+        #[arg(long)]
         image: Option<PathBuf>,
 
-        /// Position
+        /// Position (top-left, top-right, bottom-left, bottom-right, center)
         #[arg(short, long, default_value = "bottom-right")]
         position: String,
 
@@ -196,12 +214,15 @@ enum ImageCommands {
     },
 
     /// Apply film filter
+    #[command(
+        after_long_help = "Presets: portra, gold, fuji, velvia, polaroid, trix, cinestill\n\nExample:\n  rtools image filter -i photo.jpg -p portra --strength 0.8"
+    )]
     Filter {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
 
-        /// Filter preset
+        /// Filter preset (portra, gold, fuji, velvia, polaroid, trix, cinestill)
         #[arg(short, long)]
         preset: String,
 
@@ -215,6 +236,7 @@ enum ImageCommands {
     },
 
     /// View EXIF metadata
+    #[command(after_long_help = "Examples:\n  rtools image exif -i photo.jpg\n  rtools image exif -i photo.jpg -f json")]
     Exif {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -226,6 +248,7 @@ enum ImageCommands {
     },
 
     /// Extract text from images (OCR)
+    #[command(after_long_help = "Example:\n  rtools image ocr -i scan.jpg -l eng -o text.txt")]
     Ocr {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -244,6 +267,7 @@ enum ImageCommands {
 #[derive(Subcommand)]
 enum PdfCommands {
     /// Merge PDF files
+    #[command(after_long_help = "Example:\n  rtools pdf merge -i a.pdf b.pdf c.pdf -o merged.pdf")]
     Merge {
         /// Input PDF files
         #[arg(short, long, num_args = 2..)]
@@ -255,6 +279,7 @@ enum PdfCommands {
     },
 
     /// Compress PDF
+    #[command(after_long_help = "Levels: light, medium (default), heavy\n\nExample:\n  rtools pdf compress -i doc.pdf -l heavy -o small.pdf")]
     Compress {
         /// Input PDF file
         #[arg(short, long)]
@@ -270,6 +295,9 @@ enum PdfCommands {
     },
 
     /// Split PDF into pages
+    #[command(
+        after_long_help = "Page range syntax: comma-separated pages and ranges, e.g. \"1-5,10,15-20\"\n\nExamples:\n  rtools pdf split -i doc.pdf -o pages/\n  rtools pdf split -i doc.pdf -o pages/ --pages 1-5,10"
+    )]
     Split {
         /// Input PDF file
         #[arg(short, long)]
@@ -285,6 +313,7 @@ enum PdfCommands {
     },
 
     /// Extract text from PDF
+    #[command(after_long_help = "Note: text extraction is not implemented yet.")]
     Text {
         /// Input PDF file
         #[arg(short, long)]
@@ -296,6 +325,7 @@ enum PdfCommands {
     },
 
     /// Convert PDF to images
+    #[command(after_long_help = "Example:\n  rtools pdf to-image -i doc.pdf -o pages/ -f png --dpi 200")]
     ToImage {
         /// Input PDF file
         #[arg(short, long)]
@@ -318,6 +348,9 @@ enum PdfCommands {
 #[derive(Subcommand)]
 enum AiCommands {
     /// Organize photos using AI
+    #[command(
+        after_long_help = "Strategy: date (default), subject, location\n\nExample:\n  rtools ai organize -i photos/ -o organized/ -s date"
+    )]
     Organize {
         /// Input directory
         #[arg(short, long)]
@@ -333,6 +366,9 @@ enum AiCommands {
     },
 
     /// Rename photos using AI
+    #[command(
+        after_long_help = "Pattern tokens: {date}, {subject}, {index}\n\nExamples:\n  rtools ai rename -i photos/ --dry-run\n  rtools ai rename -i photos/ -p \"holiday_{index}\""
+    )]
     Rename {
         /// Input directory
         #[arg(short, long)]
@@ -348,6 +384,7 @@ enum AiCommands {
     },
 
     /// Generate alt text for images
+    #[command(after_long_help = "Example:\n  rtools ai alt-text -i a.jpg b.png -l en")]
     AltText {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -363,6 +400,9 @@ enum AiCommands {
     },
 
     /// Find duplicate images
+    #[command(
+        after_long_help = "Action: report (default), move, delete\n\nExample:\n  rtools ai duplicates -i photos/ -t 0.95 -a report"
+    )]
     Duplicates {
         /// Input directory
         #[arg(short, long)]
