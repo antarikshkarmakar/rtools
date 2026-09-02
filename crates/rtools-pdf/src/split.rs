@@ -61,23 +61,25 @@ impl Processor for PdfSplitProcessor {
     fn process(&self, input: FileInput, config: PdfSplitConfig) -> RToolsResult<Vec<FileOutput>> {
         let _start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("PDF split requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("PDF split requires a file path input"))?;
 
         std::fs::create_dir_all(&config.output_dir)?;
 
         let doc = lopdf::Document::load(path)
-            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF: {}", e)))?;
+            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF: {e}")))?;
 
         let pages = doc.get_pages();
-        let page_count = pages.len() as u32;
+        let page_count = u32::try_from(pages.len()).unwrap_or(u32::MAX);
 
         let pages_to_extract = resolve_page_range(&config.range, page_count);
         let mut outputs = Vec::new();
 
         for &page_num in &pages_to_extract {
-            let filename = config.filename_pattern
+            let filename = config
+                .filename_pattern
                 .replace("{n}", &page_num.to_string())
                 .replace("{total}", &page_count.to_string());
 
@@ -85,12 +87,17 @@ impl Processor for PdfSplitProcessor {
 
             // Extract single page by cloning document and pruning pages
             let mut page_doc = doc.clone();
-            let all_pages: Vec<u32> = page_doc.get_pages().keys().copied().collect();
-            let pages_to_delete: Vec<u32> = all_pages.into_iter().filter(|&p| p != page_num).collect();
+            let pages_to_delete: Vec<u32> = page_doc
+                .get_pages()
+                .keys()
+                .copied()
+                .filter(|&p| p != page_num)
+                .collect();
             page_doc.delete_pages(&pages_to_delete);
 
-            page_doc.save(&output_path)
-                .map_err(|e| RToolsError::pdf(format!("Failed to save page {}: {}", page_num, e)))?;
+            page_doc
+                .save(&output_path)
+                .map_err(|e| RToolsError::pdf(format!("Failed to save page {page_num}: {e}")))?;
 
             outputs.push(FileOutput {
                 destination: rtools_core::output::OutputDestination::File(output_path),
@@ -105,12 +112,14 @@ impl Processor for PdfSplitProcessor {
 
     fn validate_config(&self, config: &PdfSplitConfig) -> RToolsResult<()> {
         if config.filename_pattern.is_empty() {
-            return Err(RToolsError::invalid_input("Filename pattern cannot be empty"));
+            return Err(RToolsError::invalid_input(
+                "Filename pattern cannot be empty",
+            ));
         }
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PdfSplitProcessor"
     }
 }
@@ -134,11 +143,10 @@ fn resolve_page_range(range: &PageRange, total_pages: u32) -> Vec<u32> {
                 vec![]
             }
         }
-        PageRange::Multiple(ranges) => {
-            ranges.iter()
-                .flat_map(|r| resolve_page_range(r, total_pages))
-                .collect()
-        }
+        PageRange::Multiple(ranges) => ranges
+            .iter()
+            .flat_map(|r| resolve_page_range(r, total_pages))
+            .collect(),
         PageRange::All => (1..=total_pages).collect(),
         PageRange::EveryN(n) => {
             if *n > 0 {

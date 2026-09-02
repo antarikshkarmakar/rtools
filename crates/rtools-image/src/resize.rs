@@ -5,10 +5,27 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn bounded_dimension(value: f64) -> u32 {
+    // Dimension calculations are non-negative and bounded by image dimensions.
+    value.clamp(0.0, f64::from(u32::MAX)).round() as u32
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
+    if input_size == 0 {
+        1.0
+    } else {
+        // A ratio remains stable even when very large byte counts are rounded.
+        output_size as f64 / input_size as f64
+    }
+}
+
 /// Resize algorithm
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ResizeAlgorithm {
     /// Lanczos resampling (high quality)
+    #[default]
     Lanczos,
     /// Triangle/Bilinear
     Triangle,
@@ -18,12 +35,6 @@ pub enum ResizeAlgorithm {
     NearestNeighbor,
     /// Mitchell-Netravali
     MitchellNetravali,
-}
-
-impl Default for ResizeAlgorithm {
-    fn default() -> Self {
-        ResizeAlgorithm::Lanczos
-    }
 }
 
 /// Configuration for image resizing
@@ -68,9 +79,10 @@ impl Processor for ResizeProcessor {
     fn process(&self, input: FileInput, config: ResizeConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Resize requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Resize requires a file path input"))?;
 
         if config.width.is_none() && config.height.is_none() {
             return Err(RToolsError::invalid_input(
@@ -78,8 +90,9 @@ impl Processor for ResizeProcessor {
             ));
         }
 
-        let img = image::open(path)
-            .map_err(|e| RToolsError::image(format!("Failed to open image {}: {}", path.display(), e)))?;
+        let img = image::open(path).map_err(|e| {
+            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
+        })?;
         let orig_width = img.width();
         let orig_height = img.height();
 
@@ -98,9 +111,10 @@ impl Processor for ResizeProcessor {
         let filter = match config.algorithm {
             ResizeAlgorithm::Lanczos => image::imageops::FilterType::Lanczos3,
             ResizeAlgorithm::Triangle => image::imageops::FilterType::Triangle,
-            ResizeAlgorithm::CatmullRom => image::imageops::FilterType::CatmullRom,
+            ResizeAlgorithm::CatmullRom | ResizeAlgorithm::MitchellNetravali => {
+                image::imageops::FilterType::CatmullRom
+            }
             ResizeAlgorithm::NearestNeighbor => image::imageops::FilterType::Nearest,
-            ResizeAlgorithm::MitchellNetravali => image::imageops::FilterType::CatmullRom,
         };
 
         let resized = if config.maintain_aspect {
@@ -109,8 +123,16 @@ impl Processor for ResizeProcessor {
             img.resize_exact(new_width.max(1), new_height.max(1), filter)
         };
 
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let ext = path.extension().unwrap_or_default().to_string_lossy().to_string();
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let ext = path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let file_name = format!("{stem}_{new_width}x{new_height}.{ext}");
         let output = match config.output {
             Some(out) => rtools_core::resolve_output_path(&out, &file_name),
@@ -124,8 +146,9 @@ impl Processor for ResizeProcessor {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        resized.save(&output)
-            .map_err(|e| RToolsError::image(format!("Failed to save resized image: {}", e)))?;
+        resized
+            .save(&output)
+            .map_err(|e| RToolsError::image(format!("Failed to save resized image: {e}")))?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
@@ -133,7 +156,7 @@ impl Processor for ResizeProcessor {
 
         // Derive MIME type from output path, not input
         let output_format = rtools_core::ImageFormat::from_path(&output)
-            .or_else(|| input.format)
+            .or(input.format)
             .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
 
         Ok(FileOutput {
@@ -143,8 +166,8 @@ impl Processor for ResizeProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
-                processing_time_ms: elapsed.as_millis() as u64,
+                compression_ratio: compression_ratio(output_size, input_size),
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
         })
@@ -153,18 +176,18 @@ impl Processor for ResizeProcessor {
     fn validate_config(&self, config: &ResizeConfig) -> RToolsResult<()> {
         if let Some(w) = config.width {
             if w == 0 || w > 32768 {
-                return Err(RToolsError::invalid_input(format!("Invalid width: {}", w)));
+                return Err(RToolsError::invalid_input(format!("Invalid width: {w}")));
             }
         }
         if let Some(h) = config.height {
             if h == 0 || h > 32768 {
-                return Err(RToolsError::invalid_input(format!("Invalid height: {}", h)));
+                return Err(RToolsError::invalid_input(format!("Invalid height: {h}")));
             }
         }
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ResizeProcessor"
     }
 }
@@ -180,9 +203,10 @@ fn calculate_dimensions(
     match (target_width, target_height) {
         (Some(w), Some(h)) => {
             if maintain_aspect {
-                let ratio = (w as f64 / orig_width as f64).min(h as f64 / orig_height as f64);
-                let nw = (orig_width as f64 * ratio).round() as u32;
-                let nh = (orig_height as f64 * ratio).round() as u32;
+                let ratio = (f64::from(w) / f64::from(orig_width))
+                    .min(f64::from(h) / f64::from(orig_height));
+                let nw = bounded_dimension(f64::from(orig_width) * ratio);
+                let nh = bounded_dimension(f64::from(orig_height) * ratio);
                 (nw.max(1), nh.max(1))
             } else {
                 (w.max(1), h.max(1))
@@ -190,8 +214,8 @@ fn calculate_dimensions(
         }
         (Some(w), None) => {
             if maintain_aspect {
-                let ratio = w as f64 / orig_width as f64;
-                let nh = (orig_height as f64 * ratio).round() as u32;
+                let ratio = f64::from(w) / f64::from(orig_width);
+                let nh = bounded_dimension(f64::from(orig_height) * ratio);
                 (w.max(1), nh.max(1))
             } else {
                 (w.max(1), orig_height.max(1))
@@ -199,8 +223,8 @@ fn calculate_dimensions(
         }
         (None, Some(h)) => {
             if maintain_aspect {
-                let ratio = h as f64 / orig_height as f64;
-                let nw = (orig_width as f64 * ratio).round() as u32;
+                let ratio = f64::from(h) / f64::from(orig_height);
+                let nw = bounded_dimension(f64::from(orig_width) * ratio);
                 (nw.max(1), h.max(1))
             } else {
                 (orig_width.max(1), h.max(1))

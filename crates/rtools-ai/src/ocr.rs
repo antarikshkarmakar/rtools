@@ -44,9 +44,10 @@ impl Processor for OcrProcessor {
     fn process(&self, input: FileInput, _config: OcrConfig) -> RToolsResult<OcrResult> {
         let start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("OCR requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("OCR requires a file path input"))?;
 
         // TODO: Implement proper Tesseract OCR
         let text = format!("OCR placeholder for: {}", path.display());
@@ -62,7 +63,7 @@ impl Processor for OcrProcessor {
                 input_size,
                 output_size: 0,
                 compression_ratio: 0.0,
-                processing_time_ms: elapsed.as_millis() as u64,
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             },
         })
@@ -75,7 +76,7 @@ impl Processor for OcrProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "OcrProcessor"
     }
 }

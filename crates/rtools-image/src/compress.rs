@@ -1,9 +1,9 @@
+use image::ImageEncoder;
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
-use image::ImageEncoder;
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Compression quality preset
@@ -25,7 +25,7 @@ pub enum CompressionPreset {
 
 impl CompressionPreset {
     /// Get quality value (0-100)
-    pub fn quality(&self) -> u8 {
+    pub const fn quality(&self) -> u8 {
         match self {
             CompressionPreset::Web => 60,
             CompressionPreset::Balanced => 75,
@@ -65,21 +65,33 @@ impl Default for CompressConfig {
 }
 
 /// Get a unique output path by appending a numeric suffix if file exists
-fn unique_output_path(path: &PathBuf) -> PathBuf {
+fn unique_output_path(path: &Path) -> PathBuf {
     if !path.exists() {
-        return path.clone();
+        return path.to_path_buf();
     }
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let ext = path.extension().unwrap_or_default().to_string_lossy();
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     for i in 1..1000 {
-        let new_name = format!("{}_{}.{}", stem, i, ext);
+        let new_name = format!("{stem}_{i}.{ext}");
         let new_path = parent.join(new_name);
         if !new_path.exists() {
             return new_path;
         }
     }
-    path.clone()
+    path.to_path_buf()
+}
+
+/// Calculates a finite compression ratio for two filesystem byte counts.
+#[allow(clippy::cast_precision_loss)]
+fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
+    if input_size == 0 {
+        1.0
+    } else {
+        // File sizes beyond f64's exact integer range still have a stable,
+        // useful ratio; the conversion is intentionally localized here.
+        output_size as f64 / input_size as f64
+    }
 }
 
 /// Image compression processor
@@ -91,12 +103,14 @@ impl Processor for CompressProcessor {
     type Config = CompressConfig;
     type Error = RToolsError;
 
+    #[allow(clippy::too_many_lines)] // Task 4 will split encoding by output format.
     fn process(&self, input: FileInput, config: CompressConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Compress requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Compress requires a file path input"))?;
 
         let format = input
             .format
@@ -138,11 +152,10 @@ impl Processor for CompressProcessor {
             ImageFormat::Jpeg => {
                 let rgb = img.to_rgb8();
                 let file = std::fs::File::create(&output_path)?;
-                let mut encoder =
-                    image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
+                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
                 encoder
                     .encode_image(&rgb)
-                    .map_err(|e| RToolsError::image(format!("JPEG compression failed: {}", e)))?;
+                    .map_err(|e| RToolsError::image(format!("JPEG compression failed: {e}")))?;
             }
             ImageFormat::Png => {
                 let file = std::fs::File::create(&output_path)?;
@@ -160,9 +173,7 @@ impl Processor for CompressProcessor {
                             rgba.height(),
                             image::ExtendedColorType::Rgba8,
                         )
-                        .map_err(|e| {
-                            RToolsError::image(format!("PNG compression failed: {}", e))
-                        })?;
+                        .map_err(|e| RToolsError::image(format!("PNG compression failed: {e}")))?;
                 } else {
                     let rgb = img.to_rgb8();
                     encoder
@@ -172,9 +183,7 @@ impl Processor for CompressProcessor {
                             rgb.height(),
                             image::ExtendedColorType::Rgb8,
                         )
-                        .map_err(|e| {
-                            RToolsError::image(format!("PNG compression failed: {}", e))
-                        })?;
+                        .map_err(|e| RToolsError::image(format!("PNG compression failed: {e}")))?;
                 }
             }
             ImageFormat::Webp => {
@@ -190,7 +199,7 @@ impl Processor for CompressProcessor {
                             rgba.height(),
                             image::ExtendedColorType::Rgba8,
                         )
-                        .map_err(|e| RToolsError::image(format!("WebP compression failed: {}", e)))?;
+                        .map_err(|e| RToolsError::image(format!("WebP compression failed: {e}")))?;
                 } else {
                     let rgb = img.to_rgb8();
                     encoder
@@ -200,21 +209,16 @@ impl Processor for CompressProcessor {
                             rgb.height(),
                             image::ExtendedColorType::Rgb8,
                         )
-                        .map_err(|e| RToolsError::image(format!("WebP compression failed: {}", e)))?;
+                        .map_err(|e| RToolsError::image(format!("WebP compression failed: {e}")))?;
                 }
             }
             ImageFormat::Avif => {
                 img.save_with_format(&output_path, image::ImageFormat::Avif)
-                    .map_err(|e| {
-                        RToolsError::image(format!("AVIF compression failed: {}", e))
-                    })?;
+                    .map_err(|e| RToolsError::image(format!("AVIF compression failed: {e}")))?;
             }
             _ => {
                 img.save(&output_path).map_err(|e| {
-                    RToolsError::image(format!(
-                        "Compression failed for {:?}: {}",
-                        target_format, e
-                    ))
+                    RToolsError::image(format!("Compression failed for {target_format:?}: {e}"))
                 })?;
             }
         }
@@ -230,12 +234,8 @@ impl Processor for CompressProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: if input_size > 0 {
-                    output_size as f64 / input_size as f64
-                } else {
-                    1.0
-                },
-                processing_time_ms: elapsed.as_millis() as u64,
+                compression_ratio: compression_ratio(output_size, input_size),
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
         })
@@ -252,7 +252,7 @@ impl Processor for CompressProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CompressProcessor"
     }
 }

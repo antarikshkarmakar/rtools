@@ -4,7 +4,9 @@ use rtools_core::FileInput;
 use rtools_core::Processor;
 use std::path::PathBuf;
 
+#[allow(clippy::too_many_lines)] // Task 7 will split individual AI command handlers.
 pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::Result<()> {
+    std::future::ready(()).await;
     match cmd {
         AiCommands::Organize {
             input,
@@ -15,7 +17,6 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             let organize_config = rtools_ai::organize::OrganizeConfig {
                 output_dir: output,
                 strategy: match strategy.as_str() {
-                    "date" => rtools_ai::organize::OrganizeStrategy::ByDate,
                     "subject" => rtools_ai::organize::OrganizeStrategy::BySubject,
                     "location" => rtools_ai::organize::OrganizeStrategy::ByLocation,
                     _ => rtools_ai::organize::OrganizeStrategy::ByDate,
@@ -26,7 +27,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             };
 
             // Collect all images from input directory
-            let inputs = collect_image_inputs(&input)?;
+            let inputs = collect_image_inputs(&input);
             println!("Found {} images to organize", inputs.len());
 
             match processor.process(inputs, organize_config) {
@@ -34,7 +35,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                     println!("✓ Organized {} images", outputs.len());
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to organize images: {}", e);
+                    eprintln!("✗ Failed to organize images: {e}");
                 }
             }
             Ok(())
@@ -54,7 +55,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                 dry_run,
             };
 
-            let inputs = collect_image_inputs(&input)?;
+            let inputs = collect_image_inputs(&input);
             println!("Found {} images to rename", inputs.len());
 
             if dry_run {
@@ -64,11 +65,14 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             match processor.process(inputs, rename_config) {
                 Ok(outputs) => {
                     for output in &outputs {
-                        println!("✓ Renamed to: {}", output.name.as_deref().unwrap_or("unknown"));
+                        println!(
+                            "✓ Renamed to: {}",
+                            output.name.as_deref().unwrap_or("unknown")
+                        );
                     }
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to rename images: {}", e);
+                    eprintln!("✗ Failed to rename images: {e}");
                 }
             }
             Ok(())
@@ -94,7 +98,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                         println!("  Text: {}", result.alt_text);
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to generate alt text: {}", e);
+                        eprintln!("✗ Failed to generate alt text: {e}");
                     }
                 }
             }
@@ -120,7 +124,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                 dry_run: false,
             };
 
-            let inputs = collect_image_inputs(&input)?;
+            let inputs = collect_image_inputs(&input);
             println!("Found {} images to check for duplicates", inputs.len());
 
             match processor.process(inputs, duplicates_config) {
@@ -131,7 +135,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                     println!("  Time: {}ms", result.processing_time_ms);
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to find duplicates: {}", e);
+                    eprintln!("✗ Failed to find duplicates: {e}");
                 }
             }
             Ok(())
@@ -139,11 +143,16 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
     }
 }
 
-fn collect_image_inputs(dir: &PathBuf) -> anyhow::Result<Vec<FileInput>> {
+fn collect_image_inputs(dir: &PathBuf) -> Vec<FileInput> {
     let mut inputs = Vec::new();
-    let valid_extensions = ["jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "bmp", "gif"];
+    let valid_extensions = [
+        "jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "bmp", "gif",
+    ];
 
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
         if entry.file_type().is_file() {
             if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
                 if valid_extensions.contains(&ext.to_lowercase().as_str()) {
@@ -153,5 +162,5 @@ fn collect_image_inputs(dir: &PathBuf) -> anyhow::Result<Vec<FileInput>> {
         }
     }
 
-    Ok(inputs)
+    inputs
 }

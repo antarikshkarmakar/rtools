@@ -48,13 +48,17 @@ impl Processor for AltTextProcessor {
     fn process(&self, input: FileInput, _config: AltTextConfig) -> RToolsResult<AltTextResult> {
         let start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Alt text requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Alt text requires a file path input"))?;
 
         // TODO: Implement BLIP model for captioning
         // For now, return a placeholder
-        let alt_text = format!("Image: {}", path.file_stem().unwrap_or_default().to_string_lossy());
+        let alt_text = format!(
+            "Image: {}",
+            path.file_stem().unwrap_or_default().to_string_lossy()
+        );
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
@@ -67,7 +71,7 @@ impl Processor for AltTextProcessor {
                 input_size,
                 output_size: 0,
                 compression_ratio: 0.0,
-                processing_time_ms: elapsed.as_millis() as u64,
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             },
         })
@@ -75,12 +79,14 @@ impl Processor for AltTextProcessor {
 
     fn validate_config(&self, config: &AltTextConfig) -> RToolsResult<()> {
         if config.max_length == 0 {
-            return Err(RToolsError::invalid_input("Max length must be greater than 0"));
+            return Err(RToolsError::invalid_input(
+                "Max length must be greater than 0",
+            ));
         }
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AltTextProcessor"
     }
 }

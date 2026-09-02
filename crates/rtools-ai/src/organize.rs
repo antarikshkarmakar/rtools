@@ -54,7 +54,11 @@ impl Processor for OrganizeProcessor {
     type Config = OrganizeConfig;
     type Error = RToolsError;
 
-    fn process(&self, inputs: Vec<FileInput>, config: OrganizeConfig) -> RToolsResult<Vec<FileOutput>> {
+    fn process(
+        &self,
+        inputs: Vec<FileInput>,
+        config: OrganizeConfig,
+    ) -> RToolsResult<Vec<FileOutput>> {
         let _start = Instant::now();
 
         std::fs::create_dir_all(&config.output_dir)?;
@@ -62,12 +66,13 @@ impl Processor for OrganizeProcessor {
         let mut outputs = Vec::new();
 
         for input in inputs {
-            let path = input.source.as_path().ok_or_else(|| {
-                RToolsError::invalid_input("Organize requires file path inputs")
-            })?;
+            let path = input
+                .source
+                .as_path()
+                .ok_or_else(|| RToolsError::invalid_input("Organize requires file path inputs"))?;
 
             let target_folder = match config.strategy {
-                OrganizeStrategy::ByDate => self.get_date_folder(path)?,
+                OrganizeStrategy::ByDate => Self::get_date_folder(path)?,
                 OrganizeStrategy::BySubject => PathBuf::from("subject"),
                 OrganizeStrategy::ByLocation => PathBuf::from("location"),
                 OrganizeStrategy::ByCamera => PathBuf::from("camera"),
@@ -77,18 +82,30 @@ impl Processor for OrganizeProcessor {
             let target_dir = config.output_dir.join(&target_folder);
             std::fs::create_dir_all(&target_dir)?;
 
-            let orig_file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = path.extension().unwrap_or_default().to_string_lossy().to_string();
+            let orig_file_name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let ext = path
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
 
             // Collision-safe filename resolution
             let mut target_path = target_dir.join(&orig_file_name);
             let mut counter = 1;
             while target_path.exists() && !config.dry_run {
                 let unique_name = if ext.is_empty() {
-                    format!("{}_{}", stem, counter)
+                    format!("{stem}_{counter}")
                 } else {
-                    format!("{}_{}.{}", stem, counter, ext)
+                    format!("{stem}_{counter}.{ext}")
                 };
                 target_path = target_dir.join(unique_name);
                 counter += 1;
@@ -100,7 +117,9 @@ impl Processor for OrganizeProcessor {
 
             outputs.push(FileOutput {
                 destination: rtools_core::output::OutputDestination::File(target_path.clone()),
-                name: target_path.file_name().map(|s| s.to_string_lossy().to_string()),
+                name: target_path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string()),
                 mime_type: None,
                 stats: None,
             });
@@ -113,15 +132,17 @@ impl Processor for OrganizeProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "OrganizeProcessor"
     }
 }
 
 impl OrganizeProcessor {
-    fn get_date_folder(&self, path: &PathBuf) -> RToolsResult<PathBuf> {
+    fn get_date_folder(path: &PathBuf) -> RToolsResult<PathBuf> {
         let metadata = std::fs::metadata(path)?;
-        let modified = metadata.modified().unwrap_or(std::time::SystemTime::now());
+        let modified = metadata
+            .modified()
+            .unwrap_or_else(|_| std::time::SystemTime::now());
         let datetime: chrono::DateTime<chrono::Local> = modified.into();
 
         Ok(PathBuf::from(datetime.format("%Y/%m").to_string()))

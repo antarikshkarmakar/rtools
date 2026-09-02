@@ -8,7 +8,7 @@ pub mod types;
 pub use config::AppConfig;
 pub use error::{RToolsError, RToolsResult};
 pub use input::{FileInput, InputSource};
-pub use output::{FileOutput, OutputDestination, resolve_output_path};
+pub use output::{resolve_output_path, FileOutput, OutputDestination};
 pub use traits::{AIProcessor, BatchProcessor, MetadataExtractor, Processor};
 pub use types::{
     ContentType, ExifData, ImageFormat, ImageMetadata, PageSize, PageSizeUnit, PdfMetadata,

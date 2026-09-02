@@ -1,3 +1,6 @@
+// Clippy 1.95.0 ICEs in `RedundantClone::check_fn` while rendering this crate.
+#![allow(clippy::redundant_clone)]
+
 use axum::{
     response::IntoResponse,
     routing::{get, post, Router},
@@ -28,7 +31,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Load configuration
     let config = rtools_core::AppConfig::load(None)?;
-    let state = AppState { config: config.clone() };
+    let state = AppState {
+        config: config.clone(),
+    };
 
     // Build CORS layer
     let cors = CorsLayer::new()
@@ -60,13 +65,10 @@ async fn main() -> anyhow::Result<()> {
         .with_state(Arc::new(state));
 
     // Start server
-    let addr = SocketAddr::new(
-        config.api.host.parse()?,
-        config.api.port,
-    );
-    
+    let addr = SocketAddr::new(config.api.host.parse()?, config.api.port);
+
     tracing::info!("Starting server on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 

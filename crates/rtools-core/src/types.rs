@@ -1,6 +1,6 @@
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Supported image formats
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display)]
@@ -38,7 +38,7 @@ pub enum ImageFormat {
 
 impl ImageFormat {
     /// Get file extensions for this format
-    pub fn extensions(&self) -> &'static [&'static str] {
+    pub const fn extensions(&self) -> &'static [&'static str] {
         match self {
             ImageFormat::Jpeg => &["jpg", "jpeg"],
             ImageFormat::Png => &["png"],
@@ -79,14 +79,14 @@ impl ImageFormat {
     }
 
     /// Detect format from file path
-    pub fn from_path(path: &PathBuf) -> Option<Self> {
+    pub fn from_path(path: &Path) -> Option<Self> {
         path.extension()
             .and_then(|ext| ext.to_str())
             .and_then(Self::from_extension)
     }
 
     /// Get MIME type string
-    pub fn mime_type(&self) -> &'static str {
+    pub const fn mime_type(&self) -> &'static str {
         match self {
             ImageFormat::Jpeg => "image/jpeg",
             ImageFormat::Png => "image/png",

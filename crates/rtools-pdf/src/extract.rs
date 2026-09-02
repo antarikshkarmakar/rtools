@@ -30,15 +30,21 @@ impl Processor for PdfExtractProcessor {
     type Config = PdfExtractConfig;
     type Error = RToolsError;
 
-    fn process(&self, _input: FileInput, _config: PdfExtractConfig) -> RToolsResult<Vec<FileOutput>> {
-        Err(RToolsError::not_implemented("PDF image extraction not yet implemented"))
+    fn process(
+        &self,
+        _input: FileInput,
+        _config: PdfExtractConfig,
+    ) -> RToolsResult<Vec<FileOutput>> {
+        Err(RToolsError::not_implemented(
+            "PDF image extraction not yet implemented",
+        ))
     }
 
     fn validate_config(&self, _config: &PdfExtractConfig) -> RToolsResult<()> {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PdfExtractProcessor"
     }
 }

@@ -37,17 +37,17 @@ pub fn handle_config_command(cmd: ConfigCommands) -> anyhow::Result<()> {
             Ok(())
         }
 
-        ConfigCommands::Validate { config: config_path } => {
-            match AppConfig::load(Some(&config_path)) {
-                Ok(_) => {
-                    println!("✓ Configuration file is valid: {}", config_path.display());
-                    Ok(())
-                }
-                Err(e) => {
-                    eprintln!("✗ Invalid configuration: {}", e);
-                    std::process::exit(1);
-                }
+        ConfigCommands::Validate {
+            config: config_path,
+        } => match AppConfig::load(Some(&config_path)) {
+            Ok(_) => {
+                println!("✓ Configuration file is valid: {}", config_path.display());
+                Ok(())
             }
-        }
+            Err(e) => {
+                eprintln!("✗ Invalid configuration: {e}");
+                std::process::exit(1);
+            }
+        },
     }
 }

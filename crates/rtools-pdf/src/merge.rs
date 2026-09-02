@@ -7,6 +7,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+#[allow(clippy::cast_precision_loss)]
+fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
+    if input_size == 0 {
+        1.0
+    } else {
+        // A ratio remains stable even when very large byte counts are rounded.
+        output_size as f64 / input_size as f64
+    }
+}
+
 /// Configuration for PDF merging
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfMergeConfig {
@@ -37,6 +47,7 @@ impl Processor for PdfMergeProcessor {
     type Config = PdfMergeConfig;
     type Error = RToolsError;
 
+    #[allow(clippy::too_many_lines)] // Task 7 will separate PDF document assembly.
     fn process(&self, inputs: Vec<FileInput>, config: PdfMergeConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
@@ -46,7 +57,7 @@ impl Processor for PdfMergeProcessor {
             .collect();
 
         if input_paths.is_empty() {
-            input_paths = config.inputs.clone();
+            input_paths.clone_from(&config.inputs);
         }
 
         if input_paths.is_empty() {
@@ -60,8 +71,13 @@ impl Processor for PdfMergeProcessor {
         let mut document = Document::with_version("1.5");
 
         for input_path in &input_paths {
-            let mut doc = Document::load(input_path)
-                .map_err(|e| RToolsError::pdf(format!("Failed to load PDF {}: {}", input_path.display(), e)))?;
+            let mut doc = Document::load(input_path).map_err(|e| {
+                RToolsError::pdf(format!(
+                    "Failed to load PDF {}: {}",
+                    input_path.display(),
+                    e
+                ))
+            })?;
 
             doc.renumber_objects_with(max_id);
             max_id = doc.max_id + 1;
@@ -79,13 +95,13 @@ impl Processor for PdfMergeProcessor {
         let mut pages_id: Option<ObjectId> = None;
 
         for (object_id, object) in documents_objects {
-            match object.type_name().unwrap_or("") {
-                "Catalog" => {
+            match object.type_name().unwrap_or(b"") {
+                b"Catalog" => {
                     if catalog_id.is_none() {
                         catalog_id = Some(object_id);
                     }
                 }
-                "Pages" => {
+                b"Pages" => {
                     if pages_id.is_none() {
                         pages_id = Some(object_id);
                     }
@@ -108,7 +124,11 @@ impl Processor for PdfMergeProcessor {
             kids.push(Object::Reference(page_id));
             count += 1;
 
-            if let Some(dict) = document.objects.get_mut(&page_id).and_then(|o| o.as_dict_mut().ok()) {
+            if let Some(dict) = document
+                .objects
+                .get_mut(&page_id)
+                .and_then(|o| o.as_dict_mut().ok())
+            {
                 dict.set("Parent", Object::Reference(final_pages_id));
             }
         }
@@ -117,25 +137,29 @@ impl Processor for PdfMergeProcessor {
         pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
         pages_dict.set("Count", Object::Integer(count));
         pages_dict.set("Kids", Object::Array(kids));
-        document.objects.insert(final_pages_id, Object::Dictionary(pages_dict));
+        document
+            .objects
+            .insert(final_pages_id, Object::Dictionary(pages_dict));
 
-        let final_catalog_id = catalog_id.unwrap_or_else(|| {
-            let id = (max_id, 0);
-            id
-        });
+        let final_catalog_id = catalog_id.unwrap_or((max_id, 0));
 
         let mut catalog_dict = lopdf::Dictionary::new();
         catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
         catalog_dict.set("Pages", Object::Reference(final_pages_id));
-        document.objects.insert(final_catalog_id, Object::Dictionary(catalog_dict));
-        document.trailer.set("Root", Object::Reference(final_catalog_id));
+        document
+            .objects
+            .insert(final_catalog_id, Object::Dictionary(catalog_dict));
+        document
+            .trailer
+            .set("Root", Object::Reference(final_catalog_id));
 
         if let Some(parent) = config.output.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        document.save(&config.output)
-            .map_err(|e| RToolsError::pdf(format!("Failed to save merged PDF: {}", e)))?;
+        document
+            .save(&config.output)
+            .map_err(|e| RToolsError::pdf(format!("Failed to save merged PDF: {e}")))?;
 
         let elapsed = start.elapsed();
         let output_size = std::fs::metadata(&config.output)?.len();
@@ -153,8 +177,8 @@ impl Processor for PdfMergeProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
-                processing_time_ms: elapsed.as_millis() as u64,
+                compression_ratio: compression_ratio(output_size, input_size),
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
         })
@@ -169,7 +193,7 @@ impl Processor for PdfMergeProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PdfMergeProcessor"
     }
 }

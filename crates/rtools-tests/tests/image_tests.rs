@@ -15,8 +15,12 @@ use tempfile::TempDir;
 /// fixtures all decode correctly.
 fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32) -> PathBuf {
     let mut state = name.bytes().fold(
-        width.wrapping_mul(73856093) ^ height.wrapping_mul(19349663),
-        |acc, b| acc.wrapping_mul(16777619).wrapping_add(b as u32).wrapping_add(1013904223),
+        width.wrapping_mul(73_856_093) ^ height.wrapping_mul(19_349_663),
+        |acc, b| {
+            acc.wrapping_mul(16_777_619)
+                .wrapping_add(u32::from(b))
+                .wrapping_add(1_013_904_223)
+        },
     );
     if state == 0 {
         state = 0x9e37_79b9;
@@ -36,27 +40,28 @@ fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32)
         ]);
     }
 
-    use image::ImageEncoder;
-
     let path = dir.join(name);
     let writer = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase())
+        .map(str::to_lowercase)
         .unwrap_or_default();
     match ext.as_str() {
         "jpg" | "jpeg" => {
             let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
-            rgb.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 90))
-                .unwrap();
+            rgb.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                writer, 90,
+            ))
+            .unwrap();
         }
         "webp" => {
             img.write_with_encoder(image::codecs::webp::WebPEncoder::new_lossless(writer))
                 .unwrap();
         }
         _ => {
-            img.write_with_encoder(image::codecs::png::PngEncoder::new(writer)).unwrap();
+            img.write_with_encoder(image::codecs::png::PngEncoder::new(writer))
+                .unwrap();
         }
     }
     path
@@ -139,7 +144,7 @@ fn test_resize_image() {
         width: Some(200),
         height: Some(150),
         maintain_aspect: true,
-        algorithm: Default::default(),
+        algorithm: rtools_image::resize::ResizeAlgorithm::default(),
         output: Some(tmp.path().join("resized.png")),
         quality: 85,
     };
@@ -165,7 +170,7 @@ fn test_resize_maintain_aspect() {
         width: Some(200),
         height: None,
         maintain_aspect: true,
-        algorithm: Default::default(),
+        algorithm: rtools_image::resize::ResizeAlgorithm::default(),
         output: Some(tmp.path().join("aspect_out.png")),
         quality: 85,
     };
@@ -260,9 +265,7 @@ fn test_compress_custom_quality() {
 
     assert!(
         low_quality_size < high_quality_size,
-        "Low quality ({}) should be smaller than high quality ({})",
-        low_quality_size,
-        high_quality_size
+        "Low quality ({low_quality_size}) should be smaller than high quality ({high_quality_size})"
     );
 }
 

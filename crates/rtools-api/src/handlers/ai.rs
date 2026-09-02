@@ -98,10 +98,7 @@ pub async fn rename(
     let processor = rtools_ai::RenameProcessor;
     match processor.process(files, config) {
         Ok(outputs) => {
-            let names: Vec<String> = outputs
-                .iter()
-                .filter_map(|o| o.name.clone())
-                .collect();
+            let names: Vec<String> = outputs.iter().filter_map(|o| o.name.clone()).collect();
             Ok(Json(AiResponse {
                 success: true,
                 message: format!("Renamed {} files", names.len()),

@@ -1,7 +1,6 @@
 # Dependencies
 /target
 **/target
-Cargo.lock
 .worktrees/
 
 # IDE

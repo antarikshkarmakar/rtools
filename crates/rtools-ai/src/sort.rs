@@ -57,22 +57,25 @@ impl Processor for SortProcessor {
 
         std::fs::create_dir_all(&config.output_dir)?;
 
-        let mut files: Vec<(PathBuf, u64, String)> = inputs.iter()
+        let mut files: Vec<(PathBuf, u64, String)> = inputs
+            .iter()
             .filter_map(|input| {
                 let path = input.source.as_path()?;
                 let metadata = std::fs::metadata(path).ok()?;
                 let sort_key = match config.criteria {
-                    SortCriteria::Date => {
-                        metadata.modified().ok()
-                            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
-                            .unwrap_or(0)
-                    }
+                    SortCriteria::Date => metadata.modified().ok().map_or(0, |t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    }),
                     SortCriteria::Size => metadata.len(),
-                    SortCriteria::Type => 0,
-                    SortCriteria::Name => 0,
-                    SortCriteria::GpsLocation => 0,
+                    SortCriteria::Type | SortCriteria::Name | SortCriteria::GpsLocation => 0,
                 };
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 Some((path.clone(), sort_key, name))
             })
             .collect();
@@ -95,7 +98,10 @@ impl Processor for SortProcessor {
 
         for (idx, (path, _, _)) in files.iter().enumerate() {
             let file_name = path.file_name().unwrap_or_default();
-            let target = config.output_dir.join(format!("{:04}_{}", idx + 1, file_name.to_string_lossy()));
+            let target =
+                config
+                    .output_dir
+                    .join(format!("{:04}_{}", idx + 1, file_name.to_string_lossy()));
 
             if !config.dry_run {
                 std::fs::copy(path, &target)?;
@@ -118,7 +124,7 @@ impl Processor for SortProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SortProcessor"
     }
 }

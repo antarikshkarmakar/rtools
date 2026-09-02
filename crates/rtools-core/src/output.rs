@@ -1,15 +1,20 @@
 use crate::types::ProcessStats;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolve an explicit output path: if it points to an existing directory
 /// (or ends with a path separator), treat it as a directory and join `name`
 /// onto it; otherwise return it unchanged as a file path.
-pub fn resolve_output_path(output: &PathBuf, name: &str) -> PathBuf {
-    if output.is_dir() || output.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR) {
+#[must_use]
+pub fn resolve_output_path(output: &Path, name: &str) -> PathBuf {
+    if output.is_dir()
+        || output
+            .to_string_lossy()
+            .ends_with(std::path::MAIN_SEPARATOR)
+    {
         output.join(name)
     } else {
-        output.clone()
+        output.to_path_buf()
     }
 }
 
@@ -28,12 +33,12 @@ pub enum OutputDestination {
 
 impl OutputDestination {
     /// Check if this is a file output
-    pub fn is_file(&self) -> bool {
+    pub const fn is_file(&self) -> bool {
         matches!(self, OutputDestination::File(_))
     }
 
     /// Get the path if this is a file output
-    pub fn as_path(&self) -> Option<&PathBuf> {
+    pub const fn as_path(&self) -> Option<&PathBuf> {
         match self {
             OutputDestination::File(path) | OutputDestination::Directory(path) => Some(path),
             _ => None,
@@ -60,7 +65,7 @@ impl FileOutput {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.to_string());
+            .map(std::string::ToString::to_string);
 
         Self {
             destination: OutputDestination::File(path),
@@ -75,7 +80,7 @@ impl FileOutput {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.to_string());
+            .map(std::string::ToString::to_string);
 
         Self {
             destination: OutputDestination::Directory(path),
@@ -86,7 +91,7 @@ impl FileOutput {
     }
 
     /// Create a new bytes output
-    pub fn to_bytes() -> Self {
+    pub const fn to_bytes() -> Self {
         Self {
             destination: OutputDestination::Bytes(Vec::new()),
             name: None,

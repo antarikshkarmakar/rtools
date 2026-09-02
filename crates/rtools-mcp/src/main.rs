@@ -1,8 +1,5 @@
 use rmcp::{
-    model::{
-        CallToolResult, ContentBlock, ListToolsResult, ServerCapabilities, ServerInfo,
-        Tool,
-    },
+    model::{CallToolResult, ContentBlock, ListToolsResult, ServerCapabilities, ServerInfo, Tool},
     schemars::JsonSchema,
     serde::{Deserialize, Serialize},
     service::RequestContext,
@@ -10,6 +7,7 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
 use rtools_core::Processor;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -89,12 +87,13 @@ struct MetadataInput {
 }
 
 impl RToolsServer {
+    #[allow(clippy::too_many_lines)] // Task 7 will group tool schemas by domain.
     fn tools() -> Vec<Tool> {
         vec![
             Tool::new(
                 "compress_image",
                 "Compress an image with quality preservation",
-                serde_json::to_value(&rmcp::schemars::schema_for!(CompressInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(CompressInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -103,7 +102,7 @@ impl RToolsServer {
             Tool::new(
                 "convert_image",
                 "Convert image to different format (WebP, PNG, JPG, AVIF)",
-                serde_json::to_value(&rmcp::schemars::schema_for!(ConvertInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(ConvertInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -112,7 +111,7 @@ impl RToolsServer {
             Tool::new(
                 "resize_image",
                 "Resize image by dimensions",
-                serde_json::to_value(&rmcp::schemars::schema_for!(ResizeInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(ResizeInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -121,7 +120,7 @@ impl RToolsServer {
             Tool::new(
                 "organize_photos",
                 "AI-organize photos into folders",
-                serde_json::to_value(&rmcp::schemars::schema_for!(OrganizeInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(OrganizeInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -130,7 +129,7 @@ impl RToolsServer {
             Tool::new(
                 "rename_photos",
                 "AI-rename photos with descriptive names",
-                serde_json::to_value(&rmcp::schemars::schema_for!(RenameInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(RenameInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -139,7 +138,7 @@ impl RToolsServer {
             Tool::new(
                 "generate_alt_text",
                 "Generate accessibility alt text for an image",
-                serde_json::to_value(&rmcp::schemars::schema_for!(AltTextInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(AltTextInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -148,7 +147,7 @@ impl RToolsServer {
             Tool::new(
                 "find_duplicates",
                 "Find duplicate images by visual similarity",
-                serde_json::to_value(&rmcp::schemars::schema_for!(DuplicatesInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(DuplicatesInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -157,7 +156,7 @@ impl RToolsServer {
             Tool::new(
                 "compress_pdf",
                 "Compress PDF file size",
-                serde_json::to_value(&rmcp::schemars::schema_for!(PdfCompressInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(PdfCompressInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -166,7 +165,7 @@ impl RToolsServer {
             Tool::new(
                 "merge_pdfs",
                 "Merge multiple PDF files into one",
-                serde_json::to_value(&rmcp::schemars::schema_for!(PdfMergeInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(PdfMergeInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -175,7 +174,7 @@ impl RToolsServer {
             Tool::new(
                 "extract_text",
                 "Extract text from image or PDF using OCR",
-                serde_json::to_value(&rmcp::schemars::schema_for!(OcrInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(OcrInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -184,7 +183,7 @@ impl RToolsServer {
             Tool::new(
                 "get_metadata",
                 "Get image metadata including EXIF data",
-                serde_json::to_value(&rmcp::schemars::schema_for!(MetadataInput))
+                serde_json::to_value(rmcp::schemars::schema_for!(MetadataInput))
                     .unwrap_or_default()
                     .as_object()
                     .cloned()
@@ -193,18 +192,23 @@ impl RToolsServer {
         ]
     }
 
+    #[allow(clippy::too_many_lines)] // Task 7 will split MCP tool dispatch by operation.
     async fn handle_tool(
         &self,
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        std::future::ready(()).await;
         match tool_name {
             "compress_image" => {
-                let input: CompressInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: CompressInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_image::CompressConfig {
-                    preset: rtools_image::compress::CompressionPreset::Custom(input.quality.unwrap_or(85)),
+                    preset: rtools_image::compress::CompressionPreset::Custom(
+                        input.quality.unwrap_or(85),
+                    ),
                     format: None,
                     output: input.output_path.map(PathBuf::from),
                     preserve_metadata: true,
@@ -215,22 +219,31 @@ impl RToolsServer {
                     Ok(output) => {
                         let mut result = "Compressed successfully".to_string();
                         if let Some(stats) = &output.stats {
-                            result.push_str(&format!("\nInput: {} bytes", stats.input_size));
-                            result.push_str(&format!("\nOutput: {} bytes", stats.output_size));
-                            result.push_str(&format!("\nRatio: {:.1}%", stats.compression_ratio * 100.0));
+                            let _ = write!(result, "\nInput: {} bytes", stats.input_size);
+                            let _ = write!(result, "\nOutput: {} bytes", stats.output_size);
+                            let _ =
+                                write!(result, "\nRatio: {:.1}%", stats.compression_ratio * 100.0);
                         }
                         Ok(CallToolResult::success(vec![ContentBlock::text(result)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "convert_image" => {
-                let input: ConvertInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: ConvertInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let target_format = rtools_core::ImageFormat::from_extension(&input.target_format)
-                    .ok_or_else(|| McpError::invalid_params(format!("Unsupported format: {}", input.target_format), None))?;
+                    .ok_or_else(|| {
+                        McpError::invalid_params(
+                            format!("Unsupported format: {}", input.target_format),
+                            None,
+                        )
+                    })?;
                 let config = rtools_image::ConvertConfig {
                     target_format,
                     output: input.output_path.map(PathBuf::from),
@@ -241,35 +254,44 @@ impl RToolsServer {
                 };
                 let processor = rtools_image::ConvertProcessor;
                 match processor.process(file_input, config) {
-                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!("Converted to {}", input.target_format))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                        "Converted to {}",
+                        input.target_format
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "resize_image" => {
-                let input: ResizeInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: ResizeInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_image::ResizeConfig {
                     width: input.width,
                     height: input.height,
                     maintain_aspect: input.maintain_aspect.unwrap_or(true),
-                    algorithm: Default::default(),
+                    algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                     output: None,
                     quality: 85,
                 };
                 let processor = rtools_image::ResizeProcessor;
                 match processor.process(file_input, config) {
-                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text("Resized successfully")])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                        "Resized successfully",
+                    )])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "organize_photos" => {
-                let input: OrganizeInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = collect_images(&input.input_dir)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                let input: OrganizeInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let inputs = collect_images(&input.input_dir);
                 let config = rtools_ai::organize::OrganizeConfig {
                     output_dir: PathBuf::from(&input.output_dir),
                     strategy: match input.strategy.as_deref().unwrap_or("date") {
@@ -283,18 +305,24 @@ impl RToolsServer {
                 };
                 let processor = rtools_ai::OrganizeProcessor;
                 match processor.process(inputs, config) {
-                    Ok(outputs) => Ok(CallToolResult::success(vec![ContentBlock::text(format!("Organized {} photos", outputs.len()))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(outputs) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                        "Organized {} photos",
+                        outputs.len()
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "rename_photos" => {
-                let input: RenameInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = collect_images(&input.input_dir)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                let input: RenameInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let inputs = collect_images(&input.input_dir);
                 let config = rtools_ai::rename::RenameConfig {
-                    pattern: input.pattern.unwrap_or_else(|| "{date}_{subject}_{index}".to_string()),
+                    pattern: input
+                        .pattern
+                        .unwrap_or_else(|| "{date}_{subject}_{index}".to_string()),
                     output_dir: None,
                     start_number: 1,
                     use_ai_descriptions: true,
@@ -302,15 +330,21 @@ impl RToolsServer {
                 };
                 let processor = rtools_ai::RenameProcessor;
                 match processor.process(inputs, config) {
-                    Ok(outputs) => Ok(CallToolResult::success(vec![ContentBlock::text(format!("Renamed {} photos", outputs.len()))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(outputs) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                        "Renamed {} photos",
+                        outputs.len()
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "generate_alt_text" => {
-                let input: AltTextInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: AltTextInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_ai::alt_text::AltTextConfig {
                     language: input.language.unwrap_or_else(|| "en".to_string()),
                     max_length: 125,
@@ -318,16 +352,19 @@ impl RToolsServer {
                 };
                 let processor = rtools_ai::AltTextProcessor;
                 match processor.process(file_input, config) {
-                    Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(result.alt_text)])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                        result.alt_text,
+                    )])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "find_duplicates" => {
-                let input: DuplicatesInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = collect_images(&input.input_dir)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                let input: DuplicatesInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let inputs = collect_images(&input.input_dir);
                 let config = rtools_ai::duplicates::DuplicatesConfig {
                     threshold: input.threshold.unwrap_or(0.9),
                     algorithm: rtools_ai::duplicates::HashAlgorithm::Perceptual,
@@ -338,18 +375,21 @@ impl RToolsServer {
                 match processor.process(inputs, config) {
                     Ok(result) => {
                         let mut text = format!("Found {} duplicate groups\n", result.groups.len());
-                        text.push_str(&format!("Originals: {}\n", result.total_originals));
-                        text.push_str(&format!("Duplicates: {}\n", result.total_duplicates));
+                        let _ = writeln!(text, "Originals: {}", result.total_originals);
+                        let _ = writeln!(text, "Duplicates: {}", result.total_duplicates);
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "compress_pdf" => {
-                let input: PdfCompressInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: PdfCompressInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_pdf::PdfCompressConfig {
                     level: match input.level.as_deref().unwrap_or("medium") {
                         "light" => rtools_pdf::compress::PdfCompressionLevel::Light,
@@ -364,19 +404,23 @@ impl RToolsServer {
                     Ok(output) => {
                         let mut text = "Compressed PDF successfully".to_string();
                         if let Some(stats) = &output.stats {
-                            text.push_str(&format!("\nInput: {} bytes", stats.input_size));
-                            text.push_str(&format!("\nOutput: {} bytes", stats.output_size));
+                            let _ = write!(text, "\nInput: {} bytes", stats.input_size);
+                            let _ = write!(text, "\nOutput: {} bytes", stats.output_size);
                         }
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "merge_pdfs" => {
-                let input: PdfMergeInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_inputs: Vec<rtools_core::FileInput> = input.input_paths.iter()
+                let input: PdfMergeInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_inputs: Vec<rtools_core::FileInput> = input
+                    .input_paths
+                    .iter()
                     .map(|p| rtools_core::FileInput::from_path(PathBuf::from(p)))
                     .collect();
                 let config = rtools_pdf::PdfMergeConfig {
@@ -386,15 +430,21 @@ impl RToolsServer {
                 };
                 let processor = rtools_pdf::PdfMergeProcessor;
                 match processor.process(file_inputs, config) {
-                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!("Merged PDFs into {}", input.output_path))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                        "Merged PDFs into {}",
+                        input.output_path
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "extract_text" => {
-                let input: OcrInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: OcrInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_ai::ocr::OcrConfig {
                     language: input.language.unwrap_or_else(|| "eng".to_string()),
                     dpi: 300,
@@ -402,15 +452,20 @@ impl RToolsServer {
                 };
                 let processor = rtools_ai::OcrProcessor;
                 match processor.process(file_input, config) {
-                    Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(result.text)])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                        result.text,
+                    )])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
             "get_metadata" => {
-                let input: MetadataInput =
-                    serde_json::from_value(input).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input = rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input: MetadataInput = serde_json::from_value(input)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_image::MetadataConfig::default();
                 let processor = rtools_image::MetadataProcessor;
                 match processor.process(file_input, config) {
@@ -419,30 +474,42 @@ impl RToolsServer {
                             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                         Ok(CallToolResult::success(vec![ContentBlock::text(result)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())])),
+                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.to_string(),
+                    )])),
                 }
             }
 
-            _ => Err(McpError::invalid_params(format!("Unknown tool: {}", tool_name), None)),
+            _ => Err(McpError::invalid_params(
+                format!("Unknown tool: {tool_name}"),
+                None,
+            )),
         }
     }
 }
 
-fn collect_images(dir: &str) -> Result<Vec<rtools_core::FileInput>, std::io::Error> {
+fn collect_images(dir: &str) -> Vec<rtools_core::FileInput> {
     let mut inputs = Vec::new();
-    let valid_extensions = ["jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "bmp", "gif"];
+    let valid_extensions = [
+        "jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "bmp", "gif",
+    ];
 
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
         if entry.file_type().is_file() {
             if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
                 if valid_extensions.contains(&ext.to_lowercase().as_str()) {
-                    inputs.push(rtools_core::FileInput::from_path(entry.path().to_path_buf()));
+                    inputs.push(rtools_core::FileInput::from_path(
+                        entry.path().to_path_buf(),
+                    ));
                 }
             }
         }
     }
 
-    Ok(inputs)
+    inputs
 }
 
 impl ServerHandler for RToolsServer {

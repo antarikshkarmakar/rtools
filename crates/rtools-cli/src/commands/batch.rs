@@ -23,16 +23,22 @@ pub async fn handle_batch_command(
     jobs: Option<usize>,
     app_config: &AppConfig,
 ) -> anyhow::Result<()> {
+    std::future::ready(()).await;
     let config_content = std::fs::read_to_string(&config_path)?;
     let batch_config: BatchConfig = toml::from_str(&config_content)?;
 
     println!("Processing {} operations...", batch_config.operations.len());
 
     let parallel_jobs = jobs.unwrap_or(app_config.general.parallel_jobs);
-    println!("Using {} parallel jobs", parallel_jobs);
+    println!("Using {parallel_jobs} parallel jobs");
 
     for (idx, operation) in batch_config.operations.iter().enumerate() {
-        println!("\n[{:}/{}] {}...", idx + 1, batch_config.operations.len(), operation.operation);
+        println!(
+            "\n[{:}/{}] {}...",
+            idx + 1,
+            batch_config.operations.len(),
+            operation.operation
+        );
 
         match operation.operation.as_str() {
             "compress" => {

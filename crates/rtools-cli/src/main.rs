@@ -236,7 +236,9 @@ enum ImageCommands {
     },
 
     /// View EXIF metadata
-    #[command(after_long_help = "Examples:\n  rtools image exif -i photo.jpg\n  rtools image exif -i photo.jpg -f json")]
+    #[command(
+        after_long_help = "Examples:\n  rtools image exif -i photo.jpg\n  rtools image exif -i photo.jpg -f json"
+    )]
     Exif {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -279,7 +281,9 @@ enum PdfCommands {
     },
 
     /// Compress PDF
-    #[command(after_long_help = "Levels: light, medium (default), heavy\n\nExample:\n  rtools pdf compress -i doc.pdf -l heavy -o small.pdf")]
+    #[command(
+        after_long_help = "Levels: light, medium (default), heavy\n\nExample:\n  rtools pdf compress -i doc.pdf -l heavy -o small.pdf"
+    )]
     Compress {
         /// Input PDF file
         #[arg(short, long)]
@@ -325,7 +329,9 @@ enum PdfCommands {
     },
 
     /// Convert PDF to images
-    #[command(after_long_help = "Example:\n  rtools pdf to-image -i doc.pdf -o pages/ -f png --dpi 200")]
+    #[command(
+        after_long_help = "Example:\n  rtools pdf to-image -i doc.pdf -o pages/ -f png --dpi 200"
+    )]
     ToImage {
         /// Input PDF file
         #[arg(short, long)]
@@ -455,12 +461,15 @@ async fn main() -> anyhow::Result<()> {
     let config = rtools_core::AppConfig::load(cli.config.as_ref())?;
 
     match cli.command {
-        Commands::Image { command } => commands::image::handle_image_command(command, &config).await,
+        Commands::Image { command } => {
+            commands::image::handle_image_command(command, &config).await
+        }
         Commands::Pdf { command } => commands::pdf::handle_pdf_command(command, &config).await,
         Commands::Ai { command } => commands::ai::handle_ai_command(command, &config).await,
-        Commands::Batch { config: batch_config, jobs } => {
-            commands::batch::handle_batch_command(batch_config, jobs, &config).await
-        }
+        Commands::Batch {
+            config: batch_config,
+            jobs,
+        } => commands::batch::handle_batch_command(batch_config, jobs, &config).await,
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             clap_complete::generate(shell, &mut cmd, "rtools", &mut std::io::stdout());

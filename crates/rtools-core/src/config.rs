@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// General settings
     pub general: GeneralConfig,
@@ -22,19 +22,6 @@ pub struct AppConfig {
     /// MCP server settings
     #[serde(alias = "mc")]
     pub mcp: McpConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            image: ImageConfig::default(),
-            pdf: PdfConfig::default(),
-            ai: AiConfig::default(),
-            api: ApiConfig::default(),
-            mcp: McpConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +84,7 @@ impl Default for ImageConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfConfig {
-    /// PDFium library path
+    /// `PDFium` library path
     pub pdfium_path: Option<PathBuf>,
     /// OCR language
     pub ocr_language: String,
@@ -225,9 +212,14 @@ impl Default for McpConfig {
 }
 
 impl AppConfig {
-    /// Load configuration from file
+    /// Load configuration from file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when configuration cannot be loaded or the temporary
+    /// directory cannot be created.
     pub fn load(path: Option<&PathBuf>) -> RToolsResult<Self> {
-        let mut figment = Figment::from(Serialized::defaults(AppConfig::default()));
+        let mut figment = Figment::from(Serialized::defaults(Self::default()));
 
         if let Some(path) = path {
             if path.exists() {
@@ -252,7 +244,7 @@ impl AppConfig {
             }
         }
 
-        let config: AppConfig = figment
+        let config: Self = figment
             .extract()
             .map_err(|e| crate::error::RToolsError::config(e.to_string()))?;
 
@@ -263,7 +255,12 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Save configuration to file
+    /// Save configuration to file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the parent directory cannot be created or the
+    /// configuration cannot be serialized or written.
     pub fn save(&self, path: &PathBuf) -> RToolsResult<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -278,5 +275,5 @@ impl AppConfig {
 fn num_cpus() -> Option<usize> {
     std::thread::available_parallelism()
         .ok()
-        .map(|n| n.get())
+        .map(std::num::NonZeroUsize::get)
 }

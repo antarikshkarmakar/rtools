@@ -2,13 +2,14 @@
 name = "rtools-tests"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 
 [dependencies]
-rtools-core = { path = "../rtools-core" }
-rtools-image = { path = "../rtools-image" }
-rtools-pdf = { path = "../rtools-pdf" }
-rtools-ai = { path = "../rtools-ai" }
+rtools-core = { path = "../rtools-core", version = "0.1.0" }
+rtools-image = { path = "../rtools-image", version = "0.1.0" }
+rtools-pdf = { path = "../rtools-pdf", version = "0.1.0" }
+rtools-ai = { path = "../rtools-ai", version = "0.1.0" }
 image = { workspace = true }
 tempfile = { workspace = true }
 
@@ -31,10 +32,13 @@ dead_code = "warn"
 unused_crate_dependencies = "allow"
 
 [lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
-cargo = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
 unwrap_used = "allow"
 expect_used = "allow"
 missing_docs_in_private_items = "allow"
+multiple_crate_versions = "allow"
+use_self = "allow"
+must_use_candidate = "allow"

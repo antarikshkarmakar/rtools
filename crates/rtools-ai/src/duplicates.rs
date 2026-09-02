@@ -58,7 +58,11 @@ impl Processor for DuplicatesProcessor {
     type Config = DuplicatesConfig;
     type Error = RToolsError;
 
-    fn process(&self, inputs: Vec<FileInput>, config: DuplicatesConfig) -> RToolsResult<DuplicatesResult> {
+    fn process(
+        &self,
+        inputs: Vec<FileInput>,
+        config: DuplicatesConfig,
+    ) -> RToolsResult<DuplicatesResult> {
         let start = std::time::Instant::now();
 
         let mut file_hashes: Vec<(PathBuf, u64)> = Vec::new();
@@ -72,7 +76,14 @@ impl Processor for DuplicatesProcessor {
             file_hashes.push((path.clone(), hash));
         }
 
-        let max_distance = (((1.0 - config.threshold.clamp(0.0, 1.0)) * 64.0).round() as u32).min(64);
+        let distance_fraction = 1.0 - config.threshold.clamp(0.0, 1.0);
+        let max_distance = (0..=64)
+            .min_by(|left, right| {
+                (f64::from(*left) - distance_fraction * 64.0)
+                    .abs()
+                    .total_cmp(&(f64::from(*right) - distance_fraction * 64.0).abs())
+            })
+            .unwrap_or_default();
 
         // Group files by perceptual distance
         let mut visited = vec![false; file_hashes.len()];
@@ -133,18 +144,20 @@ impl Processor for DuplicatesProcessor {
             groups: duplicate_groups,
             total_originals: inputs.len().saturating_sub(total_duplicates),
             total_duplicates,
-            processing_time_ms: elapsed.as_millis() as u64,
+            processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         })
     }
 
     fn validate_config(&self, config: &DuplicatesConfig) -> RToolsResult<()> {
         if config.threshold < 0.0 || config.threshold > 1.0 {
-            return Err(RToolsError::invalid_input("Threshold must be between 0.0 and 1.0"));
+            return Err(RToolsError::invalid_input(
+                "Threshold must be between 0.0 and 1.0",
+            ));
         }
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DuplicatesProcessor"
     }
 }
@@ -168,16 +181,23 @@ pub struct DuplicateGroup {
 
 /// Calculate robust 64-bit image perceptual hash (aHash / dHash)
 fn calculate_image_hash(path: &PathBuf, algorithm: &HashAlgorithm) -> RToolsResult<u64> {
-    let img = image::open(path)
-        .map_err(|e| RToolsError::image(format!("Failed to open image for hashing {}: {}", path.display(), e)))?;
+    let img = image::open(path).map_err(|e| {
+        RToolsError::image(format!(
+            "Failed to open image for hashing {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
 
     match algorithm {
         HashAlgorithm::Average => {
             // Resize to 8x8 grayscale
-            let resized = img.resize_exact(8, 8, image::imageops::FilterType::Triangle).to_luma8();
+            let resized = img
+                .resize_exact(8, 8, image::imageops::FilterType::Triangle)
+                .to_luma8();
             let pixels: &[u8] = &resized;
-            let sum: u64 = pixels.iter().map(|&p| p as u64).sum();
-            let avg = (sum / 64) as u8;
+            let sum: u64 = pixels.iter().map(|&p| u64::from(p)).sum();
+            let avg = u8::try_from(sum / 64).expect("an average of u8 pixels fits in u8");
 
             let mut hash = 0u64;
             for (i, &pixel) in pixels.iter().enumerate() {
@@ -189,7 +209,9 @@ fn calculate_image_hash(path: &PathBuf, algorithm: &HashAlgorithm) -> RToolsResu
         }
         HashAlgorithm::Difference | HashAlgorithm::Perceptual => {
             // Resize to 9x8 grayscale for gradient tracking (dHash)
-            let resized = img.resize_exact(9, 8, image::imageops::FilterType::Triangle).to_luma8();
+            let resized = img
+                .resize_exact(9, 8, image::imageops::FilterType::Triangle)
+                .to_luma8();
             let mut hash = 0u64;
             for y in 0..8 {
                 for x in 0..8 {

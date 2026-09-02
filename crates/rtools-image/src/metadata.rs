@@ -34,21 +34,27 @@ impl Processor for MetadataProcessor {
     type Error = RToolsError;
 
     fn process(&self, input: FileInput, config: MetadataConfig) -> RToolsResult<ImageMetadata> {
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Metadata requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Metadata requires a file path input"))?;
 
         let img = image::open(path)
-            .map_err(|e| RToolsError::image(format!("Failed to open image for metadata: {}", e)))?;
+            .map_err(|e| RToolsError::image(format!("Failed to open image for metadata: {e}")))?;
         let width = img.width();
         let height = img.height();
         let metadata = std::fs::metadata(path)?;
 
-        let format = input.format.or_else(|| rtools_core::ImageFormat::from_path(path)).unwrap_or(rtools_core::types::ImageFormat::Jpeg);
+        let format = input
+            .format
+            .or_else(|| rtools_core::ImageFormat::from_path(path))
+            .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
 
         let exif_data = if config.include_exif {
             let exif_proc = crate::exif::ExifProcessor;
-            exif_proc.process(input, crate::exif::ExifConfig::default()).ok()
+            exif_proc
+                .process(input, crate::exif::ExifConfig::default())
+                .ok()
         } else {
             None
         };
@@ -68,7 +74,7 @@ impl Processor for MetadataProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MetadataProcessor"
     }
 }

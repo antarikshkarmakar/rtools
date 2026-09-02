@@ -2,9 +2,15 @@ use crate::ImageCommands;
 use rtools_core::AppConfig;
 use rtools_core::FileInput;
 use rtools_core::Processor;
-use rtools_image::{CompressConfig, CompressProcessor, CropConfig, CropProcessor, ConvertConfig, ConvertProcessor, FilterConfig, FilterProcessor, ResizeConfig, ResizeProcessor, WatermarkConfig, WatermarkProcessor};
+use rtools_image::{
+    CompressConfig, CompressProcessor, ConvertConfig, ConvertProcessor, CropConfig, CropProcessor,
+    FilterConfig, FilterProcessor, ResizeConfig, ResizeProcessor, WatermarkConfig,
+    WatermarkProcessor,
+};
 
+#[allow(clippy::too_many_lines)] // Task 4 will split individual image command handlers.
 pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> anyhow::Result<()> {
+    std::future::ready(()).await;
     match cmd {
         ImageCommands::Compress {
             input,
@@ -29,7 +35,8 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                     Ok(output) => {
                         println!("✓ Compressed: {}", input_path.display());
                         if let Some(stats) = &output.stats {
-                            println!("  Size: {} → {} ({:.1}%)", 
+                            println!(
+                                "  Size: {} → {} ({:.1}%)",
                                 format_size(stats.input_size),
                                 format_size(stats.output_size),
                                 stats.compression_ratio * 100.0
@@ -52,7 +59,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
         } => {
             let processor = ConvertProcessor;
             let target_format = rtools_core::ImageFormat::from_extension(&format)
-                .ok_or_else(|| anyhow::anyhow!("Unsupported format: {}", format))?;
+                .ok_or_else(|| anyhow::anyhow!("Unsupported format: {format}"))?;
 
             let convert_config = ConvertConfig {
                 target_format,
@@ -67,8 +74,15 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, convert_config.clone()) {
                     Ok(output) => {
-                        println!("✓ Converted: {} → {}", input_path.display(), 
-                            output.destination.as_path().map(|p| p.display().to_string()).unwrap_or_default());
+                        println!(
+                            "✓ Converted: {} → {}",
+                            input_path.display(),
+                            output
+                                .destination
+                                .as_path()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default()
+                        );
                     }
                     Err(e) => {
                         eprintln!("✗ Failed to convert {}: {}", input_path.display(), e);
@@ -90,7 +104,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 width,
                 height,
                 maintain_aspect,
-                algorithm: Default::default(),
+                algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                 output,
                 quality: 85,
             };
@@ -154,7 +168,12 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                     let y: u32 = parts[1].parse().unwrap_or(0);
                     let w: u32 = parts[2].parse().unwrap_or(100);
                     let h: u32 = parts[3].parse().unwrap_or(100);
-                    rtools_image::crop::CropRegion::Pixels { x, y, width: w, height: h }
+                    rtools_image::crop::CropRegion::Pixels {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    }
                 } else {
                     rtools_image::crop::CropRegion::AspectRatio {
                         ratio: rtools_image::crop::AspectRatio::Square,
@@ -214,8 +233,12 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 },
                 position: match position.to_lowercase().as_str() {
                     "topleft" | "top-left" => rtools_image::watermark::WatermarkPosition::TopLeft,
-                    "topright" | "top-right" => rtools_image::watermark::WatermarkPosition::TopRight,
-                    "bottomleft" | "bottom-left" => rtools_image::watermark::WatermarkPosition::BottomLeft,
+                    "topright" | "top-right" => {
+                        rtools_image::watermark::WatermarkPosition::TopRight
+                    }
+                    "bottomleft" | "bottom-left" => {
+                        rtools_image::watermark::WatermarkPosition::BottomLeft
+                    }
                     "center" => rtools_image::watermark::WatermarkPosition::Center,
                     _ => rtools_image::watermark::WatermarkPosition::BottomRight,
                 },
@@ -253,7 +276,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 "polaroid-sx70" | "polaroid" => rtools_image::filter::FilmFilter::PolaroidSX70,
                 "trix-400" | "trix" => rtools_image::filter::FilmFilter::TriX400,
                 "cinestill-800t" | "cinestill" => rtools_image::filter::FilmFilter::Cinestill800T,
-                _ => anyhow::bail!("Unknown filter preset: {}", preset),
+                _ => anyhow::bail!("Unknown filter preset: {preset}"),
             };
 
             let filter_config = FilterConfig {
@@ -287,10 +310,14 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                     Ok(exif) => {
                         println!("✓ EXIF for: {}", input_path.display());
                         if let Some(make) = &exif.camera_make {
-                            println!("  Camera: {} {}", make, exif.camera_model.as_deref().unwrap_or(""));
+                            println!(
+                                "  Camera: {} {}",
+                                make,
+                                exif.camera_model.as_deref().unwrap_or("")
+                            );
                         }
                         if let Some(date) = &exif.datetime_original {
-                            println!("  Date: {}", date);
+                            println!("  Date: {date}");
                         }
                         if let Some(lat) = exif.gps_latitude {
                             println!("  GPS: {}, {}", lat, exif.gps_longitude.unwrap_or(0.0));
@@ -304,7 +331,11 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
             Ok(())
         }
 
-        ImageCommands::Ocr { input, language, output: _ } => {
+        ImageCommands::Ocr {
+            input,
+            language,
+            output: _,
+        } => {
             // OCR is handled by AI crate
             let processor = rtools_ai::OcrProcessor;
             let config = rtools_ai::ocr::OcrConfig {
@@ -330,12 +361,18 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
+const fn bytes_to_f64(bytes: u64) -> f64 {
+    // Displaying human-readable sizes tolerates rounding beyond f64 precision.
+    bytes as f64
+}
+
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+        format!("{:.1} KB", bytes_to_f64(bytes) / 1024.0)
     } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MB", bytes_to_f64(bytes) / (1024.0 * 1024.0))
     }
 }

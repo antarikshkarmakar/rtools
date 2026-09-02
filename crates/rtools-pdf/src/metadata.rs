@@ -4,7 +4,7 @@ use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
 
 /// PDF metadata configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PdfMetadataConfig {
     /// Update metadata
     pub title: Option<String>,
@@ -13,18 +13,6 @@ pub struct PdfMetadataConfig {
     pub creator: Option<String>,
     /// Remove all metadata
     pub strip_all: bool,
-}
-
-impl Default for PdfMetadataConfig {
-    fn default() -> Self {
-        Self {
-            title: None,
-            author: None,
-            subject: None,
-            creator: None,
-            strip_all: false,
-        }
-    }
 }
 
 /// PDF metadata processor
@@ -37,37 +25,40 @@ impl Processor for PdfMetadataProcessor {
     type Error = RToolsError;
 
     fn process(&self, input: FileInput, _config: PdfMetadataConfig) -> RToolsResult<PdfMetadata> {
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("PDF metadata requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("PDF metadata requires a file path input"))?;
 
-        let doc = lopdf::Document::load(path)
-            .map_err(|e| RToolsError::pdf(format!("Failed to load PDF {}: {}", path.display(), e)))?;
+        let doc = lopdf::Document::load(path).map_err(|e| {
+            RToolsError::pdf(format!("Failed to load PDF {}: {}", path.display(), e))
+        })?;
 
         let pages = doc.get_pages();
         let page_count = pages.len();
         let file_size = std::fs::metadata(path)?.len();
 
-        let info_dict = doc.trailer.get(b"Info")
+        let info_dict = doc
+            .trailer
+            .get(b"Info")
             .ok()
-            .and_then(|info_obj| {
-                match info_obj {
-                    lopdf::Object::Reference(id) => doc.get_object(*id).ok().and_then(|o| o.as_dict().ok()),
-                    lopdf::Object::Dictionary(ref dict) => Some(dict),
-                    _ => None,
+            .and_then(|info_obj| match info_obj {
+                lopdf::Object::Reference(id) => {
+                    doc.get_object(*id).ok().and_then(|o| o.as_dict().ok())
                 }
+                lopdf::Object::Dictionary(ref dict) => Some(dict),
+                _ => None,
             });
 
-        let (title, author, subject, creator, producer, creation_date, modification_date) = match info_dict {
-            Some(dict) => {
+        let (title, author, subject, creator, producer, creation_date, modification_date) =
+            info_dict.map_or((None, None, None, None, None, None, None), |dict| {
                 let get_str = |key: &[u8]| -> Option<String> {
-                    dict.get(key)
-                        .ok()
-                        .and_then(|v| match v {
-                            lopdf::Object::String(ref bytes, _) => Some(String::from_utf8_lossy(bytes).to_string()),
-                            lopdf::Object::Name(ref bytes) => Some(String::from_utf8_lossy(bytes).to_string()),
-                            _ => None,
-                        })
+                    dict.get(key).ok().and_then(|v| match v {
+                        lopdf::Object::String(ref bytes, _) | lopdf::Object::Name(ref bytes) => {
+                            Some(String::from_utf8_lossy(bytes).to_string())
+                        }
+                        _ => None,
+                    })
                 };
 
                 (
@@ -79,9 +70,7 @@ impl Processor for PdfMetadataProcessor {
                     get_str(b"CreationDate"),
                     get_str(b"ModDate"),
                 )
-            }
-            None => (None, None, None, None, None, None, None),
-        };
+            });
 
         let is_encrypted = doc.is_encrypted();
 
@@ -106,7 +95,7 @@ impl Processor for PdfMetadataProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PdfMetadataProcessor"
     }
 }

@@ -1,18 +1,27 @@
-use rtools_core::{FileInput, Processor};
 use rtools_ai::{
     duplicates::{DuplicateAction, DuplicatesConfig, DuplicatesProcessor, HashAlgorithm},
     rename::{RenameConfig, RenameProcessor},
 };
+use rtools_core::{FileInput, Processor};
 use tempfile::TempDir;
 
 /// Create a test PNG filled with a deterministic pattern seeded from the file
 /// name and dimensions, so that differently-named/sized images have distinct
 /// content (and distinct perceptual hashes), while a byte-for-byte copy stays
 /// identical.
-fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32) -> std::path::PathBuf {
+fn create_test_image(
+    dir: &std::path::Path,
+    name: &str,
+    width: u32,
+    height: u32,
+) -> std::path::PathBuf {
     let mut state = name.bytes().fold(
-        width.wrapping_mul(73856093) ^ height.wrapping_mul(19349663),
-        |acc, b| acc.wrapping_mul(16777619).wrapping_add(b as u32).wrapping_add(1013904223),
+        width.wrapping_mul(73_856_093) ^ height.wrapping_mul(19_349_663),
+        |acc, b| {
+            acc.wrapping_mul(16_777_619)
+                .wrapping_add(u32::from(b))
+                .wrapping_add(1_013_904_223)
+        },
     );
     if state == 0 {
         state = 0x9e37_79b9;
@@ -33,17 +42,16 @@ fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32)
     }
 
     let path = dir.join(name);
-    use image::ImageEncoder;
-    img.write_with_encoder(image::codecs::png::PngEncoder::new(std::io::BufWriter::new(
-        std::fs::File::create(&path).unwrap(),
-    )))
+    img.write_with_encoder(image::codecs::png::PngEncoder::new(
+        std::io::BufWriter::new(std::fs::File::create(&path).unwrap()),
+    ))
     .unwrap();
     path
 }
 
 fn create_test_images(dir: &std::path::Path, count: usize) -> Vec<std::path::PathBuf> {
     (0..count)
-        .map(|i| create_test_image(dir, &format!("img_{}.png", i), 100, 100))
+        .map(|i| create_test_image(dir, &format!("img_{i}.png"), 100, 100))
         .collect()
 }
 
@@ -52,7 +60,10 @@ fn test_rename_pattern_index() {
     let tmp = TempDir::new().unwrap();
     let images = create_test_images(tmp.path(), 3);
 
-    let inputs: Vec<FileInput> = images.iter().map(|p| FileInput::from_path(p.clone())).collect();
+    let inputs: Vec<FileInput> = images
+        .iter()
+        .map(|p| FileInput::from_path(p.clone()))
+        .collect();
     let config = RenameConfig {
         pattern: "photo_{index}".to_string(),
         output_dir: Some(tmp.path().join("renamed")),
@@ -80,7 +91,10 @@ fn test_rename_dry_run_no_files() {
         .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
         .collect();
 
-    let inputs: Vec<FileInput> = images.iter().map(|p| FileInput::from_path(p.clone())).collect();
+    let inputs: Vec<FileInput> = images
+        .iter()
+        .map(|p| FileInput::from_path(p.clone()))
+        .collect();
     let config = RenameConfig {
         pattern: "{index}_renamed".to_string(),
         output_dir: None,
@@ -130,10 +144,7 @@ fn test_find_duplicates_different() {
     let img1 = create_test_image(tmp.path(), "a.png", 50, 50);
     let img2 = create_test_image(tmp.path(), "b.png", 200, 200);
 
-    let inputs: Vec<FileInput> = vec![
-        FileInput::from_path(img1),
-        FileInput::from_path(img2),
-    ];
+    let inputs: Vec<FileInput> = vec![FileInput::from_path(img1), FileInput::from_path(img2)];
 
     let config = DuplicatesConfig {
         threshold: 0.9,
@@ -167,7 +178,10 @@ fn test_rename_start_number() {
     let tmp = TempDir::new().unwrap();
     let images = create_test_images(tmp.path(), 3);
 
-    let inputs: Vec<FileInput> = images.iter().map(|p| FileInput::from_path(p.clone())).collect();
+    let inputs: Vec<FileInput> = images
+        .iter()
+        .map(|p| FileInput::from_path(p.clone()))
+        .collect();
     let config = RenameConfig {
         pattern: "shot_{index}".to_string(),
         output_dir: Some(tmp.path().join("renamed")),

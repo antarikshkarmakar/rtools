@@ -33,9 +33,10 @@ impl Processor for Pdf2ImgProcessor {
     type Error = RToolsError;
 
     fn process(&self, input: FileInput, _config: Pdf2ImgConfig) -> RToolsResult<Vec<FileOutput>> {
-        let _path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Pdf2Img requires a file path input")
-        })?;
+        let _path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Pdf2Img requires a file path input"))?;
 
         // PDFium or external renderer binding
         Ok(Vec::new())
@@ -45,7 +46,7 @@ impl Processor for Pdf2ImgProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Pdf2ImgProcessor"
     }
 }

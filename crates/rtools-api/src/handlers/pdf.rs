@@ -24,7 +24,7 @@ pub async fn merge(
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut files = Vec::new();
 
-    while let Some(field) = multipart
+    if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
@@ -82,7 +82,7 @@ pub async fn compress(
     let temp_dir =
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    while let Some(field) = multipart
+    if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
@@ -109,7 +109,7 @@ pub async fn compress(
             Ok(output) => {
                 return Ok(Json(PdfResponse {
                     success: true,
-                    message: format!("Compressed {}", file_name),
+                    message: format!("Compressed {file_name}"),
                     output_path: output
                         .destination
                         .as_path()

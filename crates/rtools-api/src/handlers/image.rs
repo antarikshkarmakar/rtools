@@ -31,7 +31,7 @@ pub async fn compress(
     let temp_dir =
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    while let Some(field) = multipart
+    if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
@@ -54,7 +54,9 @@ pub async fn compress(
         let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_image::CompressConfig {
             preset: rtools_image::compress::CompressionPreset::Custom(
-                quality.quality.unwrap_or(state.config.image.default_quality),
+                quality
+                    .quality
+                    .unwrap_or(state.config.image.default_quality),
             ),
             format: quality
                 .format
@@ -69,7 +71,7 @@ pub async fn compress(
             Ok(output) => {
                 return Ok(Json(CompressResponse {
                     success: true,
-                    message: format!("Compressed {}", file_name),
+                    message: format!("Compressed {file_name}"),
                     output_path: output
                         .destination
                         .as_path()
@@ -100,7 +102,7 @@ pub async fn convert(
     let temp_dir =
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    while let Some(field) = multipart
+    if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
@@ -131,7 +133,7 @@ pub async fn convert(
             Ok(output) => {
                 return Ok(Json(ConvertResponse {
                     success: true,
-                    message: format!("Converted {}", file_name),
+                    message: format!("Converted {file_name}"),
                     output_path: output
                         .destination
                         .as_path()
@@ -154,7 +156,7 @@ pub async fn resize(
     let temp_dir =
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    while let Some(field) = multipart
+    if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
@@ -174,7 +176,7 @@ pub async fn resize(
             width: Some(800),
             height: None,
             maintain_aspect: true,
-            algorithm: Default::default(),
+            algorithm: rtools_image::resize::ResizeAlgorithm::default(),
             output: None,
             quality: state.config.image.default_quality,
         };
@@ -184,7 +186,7 @@ pub async fn resize(
             Ok(output) => {
                 return Ok(Json(ConvertResponse {
                     success: true,
-                    message: format!("Resized {}", file_name),
+                    message: format!("Resized {file_name}"),
                     output_path: output
                         .destination
                         .as_path()
@@ -243,7 +245,7 @@ pub async fn metadata(
     let temp_dir =
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    while let Some(field) = multipart
+    if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?

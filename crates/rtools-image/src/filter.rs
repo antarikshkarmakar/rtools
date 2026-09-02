@@ -74,19 +74,29 @@ impl Processor for FilterProcessor {
     fn process(&self, input: FileInput, config: FilterConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Filter requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Filter requires a file path input"))?;
 
-        let img = image::open(path)
-            .map_err(|e| RToolsError::image(format!("Failed to open image {}: {}", path.display(), e)))?;
+        let img = image::open(path).map_err(|e| {
+            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
+        })?;
 
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();
-            let stem = out.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = out.extension().unwrap_or_default().to_string_lossy().to_string();
+            let stem = out
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let ext = out
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let filter_name = format!("{:?}", config.filter).to_lowercase();
-            out.set_file_name(format!("{}_{}.{}", stem, filter_name, ext));
+            out.set_file_name(format!("{stem}_{filter_name}.{ext}"));
             out
         });
 
@@ -96,14 +106,18 @@ impl Processor for FilterProcessor {
 
         let filtered = apply_film_filter(&img, &config.filter, config.strength.clamp(0.0, 1.0));
 
-        filtered.save(&output)
-            .map_err(|e| RToolsError::image(format!("Failed to save filtered image: {}", e)))?;
+        filtered
+            .save(&output)
+            .map_err(|e| RToolsError::image(format!("Failed to save filtered image: {e}")))?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
 
-        let format = input.format.or_else(|| rtools_core::ImageFormat::from_path(path)).unwrap_or(rtools_core::types::ImageFormat::Jpeg);
+        let format = input
+            .format
+            .or_else(|| rtools_core::ImageFormat::from_path(path))
+            .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
 
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
@@ -112,8 +126,8 @@ impl Processor for FilterProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: if input_size > 0 { output_size as f64 / input_size as f64 } else { 1.0 },
-                processing_time_ms: elapsed.as_millis() as u64,
+                compression_ratio: compression_ratio(output_size, input_size),
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
         })
@@ -121,17 +135,35 @@ impl Processor for FilterProcessor {
 
     fn validate_config(&self, config: &FilterConfig) -> RToolsResult<()> {
         if config.strength < 0.0 || config.strength > 1.0 {
-            return Err(RToolsError::invalid_input("Strength must be between 0.0 and 1.0"));
+            return Err(RToolsError::invalid_input(
+                "Strength must be between 0.0 and 1.0",
+            ));
         }
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FilterProcessor"
     }
 }
 
 /// Apply film filter to image with realistic channel color grading
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn channel(value: f64) -> u8 {
+    // Every caller clamps color-channel values to the inclusive u8 range.
+    value.clamp(0.0, f64::from(u8::MAX)).round() as u8
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
+    if input_size == 0 {
+        1.0
+    } else {
+        // A ratio remains stable even when very large byte counts are rounded.
+        output_size as f64 / input_size as f64
+    }
+}
+
 fn apply_film_filter(
     img: &image::DynamicImage,
     filter: &FilmFilter,
@@ -149,31 +181,32 @@ fn apply_film_filter(
         FilmFilter::FujiSuperia400 => (1.00, 1.04, 1.06, 1.10, false),
         FilmFilter::PolaroidSX70 => (1.15, 1.08, 0.85, 0.85, false),
         FilmFilter::Polaroid600 => (1.10, 1.05, 0.90, 0.90, false),
-        FilmFilter::IlfordHP5 => (1.00, 1.00, 1.00, 0.0, true),
-        FilmFilter::IlfordFP4 => (1.00, 1.00, 1.00, 0.0, true),
-        FilmFilter::TriX400 => (1.00, 1.00, 1.00, 0.0, true),
+        FilmFilter::IlfordHP5 | FilmFilter::IlfordFP4 | FilmFilter::TriX400 => {
+            (1.00, 1.00, 1.00, 0.0, true)
+        }
         FilmFilter::Cinestill800T => (0.90, 1.05, 1.18, 1.05, false),
         FilmFilter::Lomography400 => (1.15, 1.00, 1.12, 1.20, false),
         FilmFilter::AgfaVista200 => (1.10, 0.98, 0.95, 1.05, false),
     };
 
     for pixel in rgba.pixels_mut() {
-        let orig_r = pixel[0] as f64;
-        let orig_g = pixel[1] as f64;
-        let orig_b = pixel[2] as f64;
+        let orig_r = f64::from(pixel[0]);
+        let orig_g = f64::from(pixel[1]);
+        let orig_b = f64::from(pixel[2]);
         let a = pixel[3];
 
         if is_bw {
             // Luminance grayscale conversion
-            let lum = (0.299 * orig_r + 0.587 * orig_g + 0.114 * orig_b).clamp(0.0, 255.0);
-            let final_r = orig_r + (lum - orig_r) * strength;
-            let final_g = orig_g + (lum - orig_g) * strength;
-            let final_b = orig_b + (lum - orig_b) * strength;
+            let lum = 0.114f64
+                .mul_add(orig_b, 0.299f64.mul_add(orig_r, 0.587 * orig_g))
+                .clamp(0.0, 255.0);
+            let final_r = (lum - orig_r).mul_add(strength, orig_r);
+            let final_g = (lum - orig_g).mul_add(strength, orig_g);
+            let final_b = (lum - orig_b).mul_add(strength, orig_b);
 
-            pixel[0] = final_r.round() as u8;
-            pixel[1] = final_g.round() as u8;
-            pixel[2] = final_b.round() as u8;
-            pixel[3] = a;
+            pixel[0] = channel(final_r);
+            pixel[1] = channel(final_g);
+            pixel[2] = channel(final_b);
         } else {
             // Channel color shift
             let shifted_r = (orig_r * r_scale).clamp(0.0, 255.0);
@@ -181,21 +214,21 @@ fn apply_film_filter(
             let shifted_b = (orig_b * b_scale).clamp(0.0, 255.0);
 
             // Saturation adjustment
-            let lum = 0.299 * shifted_r + 0.587 * shifted_g + 0.114 * shifted_b;
-            let sat_r = lum + (shifted_r - lum) * sat_scale;
-            let sat_g = lum + (shifted_g - lum) * sat_scale;
-            let sat_b = lum + (shifted_b - lum) * sat_scale;
+            let lum = 0.114f64.mul_add(shifted_b, 0.299f64.mul_add(shifted_r, 0.587 * shifted_g));
+            let sat_r = (shifted_r - lum).mul_add(sat_scale, lum);
+            let sat_g = (shifted_g - lum).mul_add(sat_scale, lum);
+            let sat_b = (shifted_b - lum).mul_add(sat_scale, lum);
 
             // Blend with original according to strength
-            let target_r = orig_r + (sat_r - orig_r) * strength;
-            let target_g = orig_g + (sat_g - orig_g) * strength;
-            let target_b = orig_b + (sat_b - orig_b) * strength;
+            let target_r = (sat_r - orig_r).mul_add(strength, orig_r);
+            let target_g = (sat_g - orig_g).mul_add(strength, orig_g);
+            let target_b = (sat_b - orig_b).mul_add(strength, orig_b);
 
-            pixel[0] = target_r.clamp(0.0, 255.0).round() as u8;
-            pixel[1] = target_g.clamp(0.0, 255.0).round() as u8;
-            pixel[2] = target_b.clamp(0.0, 255.0).round() as u8;
-            pixel[3] = a;
+            pixel[0] = channel(target_r);
+            pixel[1] = channel(target_g);
+            pixel[2] = channel(target_b);
         }
+        pixel[3] = a;
     }
 
     image::DynamicImage::ImageRgba8(rgba)

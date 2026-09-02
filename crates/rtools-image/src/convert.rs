@@ -3,7 +3,7 @@ use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Configuration for format conversion
@@ -37,21 +37,33 @@ impl Default for ConvertConfig {
 }
 
 /// Get a unique output path by appending a numeric suffix if file exists
-fn unique_output_path(path: &PathBuf) -> PathBuf {
+fn unique_output_path(path: &Path) -> PathBuf {
     if !path.exists() {
-        return path.clone();
+        return path.to_path_buf();
     }
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let ext = path.extension().unwrap_or_default().to_string_lossy();
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     for i in 1..1000 {
-        let new_name = format!("{}_{}.{}", stem, i, ext);
+        let new_name = format!("{stem}_{i}.{ext}");
         let new_path = parent.join(new_name);
         if !new_path.exists() {
             return new_path;
         }
     }
-    path.clone()
+    path.to_path_buf()
+}
+
+/// Calculates a finite compression ratio for two filesystem byte counts.
+#[allow(clippy::cast_precision_loss)]
+fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
+    if input_size == 0 {
+        1.0
+    } else {
+        // File sizes beyond f64's exact integer range still have a stable,
+        // useful ratio; the conversion is intentionally localized here.
+        output_size as f64 / input_size as f64
+    }
 }
 
 /// Format conversion processor
@@ -63,12 +75,14 @@ impl Processor for ConvertProcessor {
     type Config = ConvertConfig;
     type Error = RToolsError;
 
+    #[allow(clippy::too_many_lines)] // Task 4 will split encoding by output format.
     fn process(&self, input: FileInput, config: ConvertConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
-        let path = input.source.as_path().ok_or_else(|| {
-            RToolsError::invalid_input("Convert requires a file path input")
-        })?;
+        let path = input
+            .source
+            .as_path()
+            .ok_or_else(|| RToolsError::invalid_input("Convert requires a file path input"))?;
 
         // Generate output path using target format extension
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -107,7 +121,7 @@ impl Processor for ConvertProcessor {
                     image::codecs::jpeg::JpegEncoder::new_with_quality(file, config.quality);
                 encoder
                     .encode_image(&rgb)
-                    .map_err(|e| RToolsError::image(format!("JPEG conversion failed: {}", e)))?;
+                    .map_err(|e| RToolsError::image(format!("JPEG conversion failed: {e}")))?;
             }
             ImageFormat::Png => {
                 let file = std::fs::File::create(&output_path)?;
@@ -121,9 +135,7 @@ impl Processor for ConvertProcessor {
                             rgba.height(),
                             image::ExtendedColorType::Rgba8,
                         )
-                        .map_err(|e| {
-                            RToolsError::image(format!("PNG conversion failed: {}", e))
-                        })?;
+                        .map_err(|e| RToolsError::image(format!("PNG conversion failed: {e}")))?;
                 } else {
                     let rgb = img.to_rgb8();
                     encoder
@@ -133,9 +145,7 @@ impl Processor for ConvertProcessor {
                             rgb.height(),
                             image::ExtendedColorType::Rgb8,
                         )
-                        .map_err(|e| {
-                            RToolsError::image(format!("PNG conversion failed: {}", e))
-                        })?;
+                        .map_err(|e| RToolsError::image(format!("PNG conversion failed: {e}")))?;
                 }
             }
             ImageFormat::Webp => {
@@ -158,7 +168,7 @@ impl Processor for ConvertProcessor {
                             rgba.height(),
                             image::ExtendedColorType::Rgba8,
                         )
-                        .map_err(|e| RToolsError::image(format!("WebP conversion failed: {}", e)))?;
+                        .map_err(|e| RToolsError::image(format!("WebP conversion failed: {e}")))?;
                 } else {
                     let rgb = img.to_rgb8();
                     encoder
@@ -168,38 +178,28 @@ impl Processor for ConvertProcessor {
                             rgb.height(),
                             image::ExtendedColorType::Rgb8,
                         )
-                        .map_err(|e| RToolsError::image(format!("WebP conversion failed: {}", e)))?;
+                        .map_err(|e| RToolsError::image(format!("WebP conversion failed: {e}")))?;
                 }
             }
             ImageFormat::Avif => {
                 img.save_with_format(&output_path, image::ImageFormat::Avif)
-                    .map_err(|e| {
-                        RToolsError::image(format!("AVIF conversion failed: {}", e))
-                    })?;
+                    .map_err(|e| RToolsError::image(format!("AVIF conversion failed: {e}")))?;
             }
             ImageFormat::Tiff => {
                 img.save_with_format(&output_path, image::ImageFormat::Tiff)
-                    .map_err(|e| {
-                        RToolsError::image(format!("TIFF conversion failed: {}", e))
-                    })?;
+                    .map_err(|e| RToolsError::image(format!("TIFF conversion failed: {e}")))?;
             }
             ImageFormat::Bmp => {
                 img.save_with_format(&output_path, image::ImageFormat::Bmp)
-                    .map_err(|e| {
-                        RToolsError::image(format!("BMP conversion failed: {}", e))
-                    })?;
+                    .map_err(|e| RToolsError::image(format!("BMP conversion failed: {e}")))?;
             }
             ImageFormat::Gif => {
                 img.save_with_format(&output_path, image::ImageFormat::Gif)
-                    .map_err(|e| {
-                        RToolsError::image(format!("GIF conversion failed: {}", e))
-                    })?;
+                    .map_err(|e| RToolsError::image(format!("GIF conversion failed: {e}")))?;
             }
             ImageFormat::Hdr => {
                 img.save_with_format(&output_path, image::ImageFormat::Hdr)
-                    .map_err(|e| {
-                        RToolsError::image(format!("HDR conversion failed: {}", e))
-                    })?;
+                    .map_err(|e| RToolsError::image(format!("HDR conversion failed: {e}")))?;
             }
             _ => {
                 return Err(RToolsError::unsupported_format(format!(
@@ -220,12 +220,8 @@ impl Processor for ConvertProcessor {
             stats: Some(ProcessStats {
                 input_size,
                 output_size,
-                compression_ratio: if input_size > 0 {
-                    output_size as f64 / input_size as f64
-                } else {
-                    1.0
-                },
-                processing_time_ms: elapsed.as_millis() as u64,
+                compression_ratio: compression_ratio(output_size, input_size),
+                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
         })
@@ -240,7 +236,7 @@ impl Processor for ConvertProcessor {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ConvertProcessor"
     }
 }
