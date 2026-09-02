@@ -1,4 +1,4 @@
-use rtools_core::{FileInput, Processor};
+use rtools_core::{FileInput, Processor, ResourceLimits};
 use rtools_image::{
     CompressConfig, CompressProcessor, ConvertConfig, ConvertProcessor, CropConfig, CropProcessor,
     MetadataConfig, MetadataProcessor, ResizeConfig, ResizeProcessor,
@@ -67,6 +67,75 @@ fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32)
     path
 }
 
+fn write_png_header(path: &std::path::Path, width: u32, height: u32) {
+    let mut header = Vec::with_capacity(33);
+    header.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    header.extend_from_slice(&13_u32.to_be_bytes());
+    header.extend_from_slice(b"IHDR");
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    header.extend_from_slice(&crc32(&header[12..]));
+    header.extend_from_slice(&1_u32.to_be_bytes());
+    header.extend_from_slice(b"IDAT");
+    header.push(0);
+    header.extend_from_slice(&crc32(b"IDAT\0"));
+    header.extend_from_slice(&0_u32.to_be_bytes());
+    header.extend_from_slice(b"IEND");
+    header.extend_from_slice(&crc32(b"IEND"));
+    std::fs::write(path, header).unwrap();
+}
+
+fn crc32(bytes: &[u8]) -> [u8; 4] {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    (!crc).to_be_bytes()
+}
+
+#[test]
+fn rejects_oversized_image_before_creating_output() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("oversized.png");
+    let output = tmp.path().join("created-after-decode").join("output.png");
+    write_png_header(&input, 50_000, 50_000);
+
+    let config = CompressConfig {
+        format: Some(rtools_core::ImageFormat::Png),
+        output: Some(output.clone()),
+        limits: ResourceLimits {
+            max_decoded_pixels: 1_000_000,
+            ..ResourceLimits::default()
+        },
+        ..CompressConfig::default()
+    };
+
+    let error = CompressProcessor
+        .process(FileInput::from_path(input), config)
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            rtools_core::RToolsError::ResourceLimitExceeded {
+                resource: "decoded_pixels",
+                ..
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(!output.exists());
+    assert!(!output.parent().unwrap().exists());
+}
+
 #[test]
 fn test_compress_jpeg() {
     let tmp = TempDir::new().unwrap();
@@ -79,6 +148,7 @@ fn test_compress_jpeg() {
         output: Some(tmp.path().join("out.jpg")),
         preserve_metadata: true,
         strip_gps: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = CompressProcessor;
@@ -102,6 +172,7 @@ fn test_compress_png() {
         output: Some(tmp.path().join("out.png")),
         preserve_metadata: true,
         strip_gps: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = CompressProcessor;
@@ -124,6 +195,7 @@ fn test_convert_png_to_jpeg() {
         quality: 85,
         preserve_metadata: true,
         strip_gps: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = ConvertProcessor;
@@ -147,6 +219,7 @@ fn test_resize_image() {
         algorithm: rtools_image::resize::ResizeAlgorithm::default(),
         output: Some(tmp.path().join("resized.png")),
         quality: 85,
+        limits: ResourceLimits::default(),
     };
 
     let processor = ResizeProcessor;
@@ -173,6 +246,7 @@ fn test_resize_maintain_aspect() {
         algorithm: rtools_image::resize::ResizeAlgorithm::default(),
         output: Some(tmp.path().join("aspect_out.png")),
         quality: 85,
+        limits: ResourceLimits::default(),
     };
 
     let processor = ResizeProcessor;
@@ -199,6 +273,7 @@ fn test_crop_image() {
         },
         output: Some(tmp.path().join("cropped.png")),
         quality: 85,
+        limits: ResourceLimits::default(),
     };
 
     let processor = CropProcessor;
@@ -239,6 +314,7 @@ fn test_compress_custom_quality() {
         output: Some(tmp.path().join("low_quality.jpg")),
         preserve_metadata: false,
         strip_gps: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = CompressProcessor;
@@ -255,6 +331,7 @@ fn test_compress_custom_quality() {
         output: Some(tmp.path().join("high_quality.jpg")),
         preserve_metadata: false,
         strip_gps: false,
+        limits: ResourceLimits::default(),
     };
 
     let file_input2 = FileInput::from_path(input);
@@ -282,6 +359,7 @@ fn test_output_path_created() {
         output: Some(out_dir.join("result.png")),
         preserve_metadata: true,
         strip_gps: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = CompressProcessor;

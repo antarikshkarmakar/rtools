@@ -1,6 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ImageMetadata;
-use rtools_core::{FileInput, Processor};
+use rtools_core::{FileInput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 
 /// Metadata processor configuration
@@ -12,6 +12,9 @@ pub struct MetadataConfig {
     pub include_dimensions: bool,
     /// Include file info
     pub include_file_info: bool,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 impl Default for MetadataConfig {
@@ -20,6 +23,7 @@ impl Default for MetadataConfig {
             include_exif: true,
             include_dimensions: true,
             include_file_info: true,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -43,8 +47,7 @@ impl Processor for MetadataProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Metadata requires a file path input"))?;
 
-        let img = image::open(path)
-            .map_err(|e| RToolsError::image(format!("Failed to open image for metadata: {e}")))?;
+        let img = crate::format::decode_bounded(path, &config.limits)?;
         let width = img.width();
         let height = img.height();
         let metadata = std::fs::metadata(path)?;

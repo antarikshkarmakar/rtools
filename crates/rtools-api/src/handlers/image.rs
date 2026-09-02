@@ -64,6 +64,7 @@ pub async fn compress(
             output: None,
             preserve_metadata: true,
             strip_gps: false,
+            limits: state.config.limits.clone(),
         };
 
         let processor = rtools_image::CompressProcessor;
@@ -126,6 +127,7 @@ pub async fn convert(
             quality: state.config.image.default_quality,
             preserve_metadata: true,
             strip_gps: false,
+            limits: state.config.limits.clone(),
         };
 
         let processor = rtools_image::ConvertProcessor;
@@ -179,6 +181,7 @@ pub async fn resize(
             algorithm: rtools_image::resize::ResizeAlgorithm::default(),
             output: None,
             quality: state.config.image.default_quality,
+            limits: state.config.limits.clone(),
         };
 
         let processor = rtools_image::ResizeProcessor;

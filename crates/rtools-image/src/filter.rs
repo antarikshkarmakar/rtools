@@ -1,6 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -49,6 +49,9 @@ pub struct FilterConfig {
     pub output: Option<PathBuf>,
     /// Output quality for lossy formats (0-100)
     pub quality: u8,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 impl Default for FilterConfig {
@@ -58,6 +61,7 @@ impl Default for FilterConfig {
             strength: 1.0,
             output: None,
             quality: 85,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -83,9 +87,7 @@ impl Processor for FilterProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Filter requires a file path input"))?;
 
-        let img = image::open(path).map_err(|e| {
-            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
-        })?;
+        let img = crate::format::decode_bounded(path, &config.limits)?;
 
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();

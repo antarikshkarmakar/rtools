@@ -9,7 +9,7 @@ use rtools_image::{
 };
 
 #[allow(clippy::too_many_lines)] // Task 4 will split individual image command handlers.
-pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> anyhow::Result<()> {
+pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> anyhow::Result<()> {
     std::future::ready(()).await;
     match cmd {
         ImageCommands::Compress {
@@ -27,6 +27,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 output,
                 preserve_metadata,
                 strip_gps,
+                limits: config.limits.clone(),
             };
 
             for input_path in input {
@@ -68,6 +69,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 quality,
                 preserve_metadata: true,
                 strip_gps: false,
+                limits: config.limits.clone(),
             };
 
             for input_path in input {
@@ -107,6 +109,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                 output,
                 quality: 85,
+                limits: config.limits.clone(),
             };
 
             for input_path in input {
@@ -191,6 +194,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 region: crop_region,
                 output,
                 quality: 85,
+                limits: config.limits.clone(),
             };
 
             for input_path in input {
@@ -245,6 +249,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 opacity,
                 output,
                 quality: 85,
+                limits: config.limits.clone(),
             };
 
             for input_path in input {
@@ -284,6 +289,7 @@ pub async fn handle_image_command(cmd: ImageCommands, _config: &AppConfig) -> an
                 strength,
                 output,
                 quality: 85,
+                limits: config.limits.clone(),
             };
 
             for input_path in input {

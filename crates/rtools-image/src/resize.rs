@@ -1,6 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -52,6 +52,9 @@ pub struct ResizeConfig {
     pub output: Option<PathBuf>,
     /// Output quality for lossy formats (0-100)
     pub quality: u8,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 impl Default for ResizeConfig {
@@ -63,6 +66,7 @@ impl Default for ResizeConfig {
             algorithm: ResizeAlgorithm::default(),
             output: None,
             quality: 85,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -94,9 +98,7 @@ impl Processor for ResizeProcessor {
             ));
         }
 
-        let img = image::open(path).map_err(|e| {
-            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
-        })?;
+        let img = crate::format::decode_bounded(path, &config.limits)?;
         let orig_width = img.width();
         let orig_height = img.height();
 

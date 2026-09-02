@@ -1,4 +1,4 @@
-use crate::error::RToolsResult;
+use crate::{error::RToolsResult, ResourceLimits};
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub struct AppConfig {
     /// General settings
     pub general: GeneralConfig,
+    /// Central resource limits for input processing.
+    #[serde(default)]
+    pub limits: ResourceLimits,
     /// Image processing settings
     pub image: ImageConfig,
     /// PDF processing settings

@@ -1,7 +1,7 @@
 use image::ImageEncoder;
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -50,6 +50,9 @@ pub struct CompressConfig {
     pub preserve_metadata: bool,
     /// Strip GPS data
     pub strip_gps: bool,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 impl Default for CompressConfig {
@@ -60,6 +63,7 @@ impl Default for CompressConfig {
             output: None,
             preserve_metadata: true,
             strip_gps: false,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -124,6 +128,8 @@ impl Processor for CompressProcessor {
         let quality = config.preset.quality();
         let target_format = config.format.unwrap_or(format);
 
+        let img = crate::format::decode_bounded(path, &config.limits)?;
+
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
         let ext = target_format.extensions()[0];
         let file_name = format!("{stem}_compressed.{ext}");
@@ -140,10 +146,6 @@ impl Processor for CompressProcessor {
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        let img = image::open(path).map_err(|e| {
-            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
-        })?;
 
         // Log alpha channel warning for JPEG targets
         if target_format == ImageFormat::Jpeg && img.color().has_alpha() {

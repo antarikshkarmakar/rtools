@@ -1,7 +1,7 @@
 use image::ImageEncoder;
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -21,6 +21,9 @@ pub struct ConvertConfig {
     pub preserve_metadata: bool,
     /// Strip GPS data
     pub strip_gps: bool,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 impl Default for ConvertConfig {
@@ -32,6 +35,7 @@ impl Default for ConvertConfig {
             quality: 85,
             preserve_metadata: true,
             strip_gps: false,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -88,6 +92,8 @@ impl Processor for ConvertProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Convert requires a file path input"))?;
 
+        let img = crate::format::decode_bounded(path, &config.limits)?;
+
         // Generate output path using target format extension
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
         let ext = config.target_format.extensions()[0];
@@ -105,10 +111,6 @@ impl Processor for ConvertProcessor {
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        let img = image::open(path).map_err(|e| {
-            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
-        })?;
 
         // Log alpha channel warning for JPEG targets
         if config.target_format == ImageFormat::Jpeg && img.color().has_alpha() {

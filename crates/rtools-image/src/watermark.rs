@@ -1,6 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -52,6 +52,9 @@ pub struct WatermarkConfig {
     pub output: Option<PathBuf>,
     /// Output quality for lossy formats (0-100)
     pub quality: u8,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 impl Default for WatermarkConfig {
@@ -66,6 +69,7 @@ impl Default for WatermarkConfig {
             opacity: 0.5,
             output: None,
             quality: 85,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -114,9 +118,7 @@ impl Processor for WatermarkProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Watermark requires a file path input"))?;
 
-        let img = image::open(path).map_err(|e| {
-            RToolsError::image(format!("Failed to open image {}: {}", path.display(), e))
-        })?;
+        let img = crate::format::decode_bounded(path, &config.limits)?;
         let mut base_img = img.to_rgba8();
         let (base_width, base_height) = (base_img.width(), base_img.height());
 
@@ -124,7 +126,8 @@ impl Processor for WatermarkProcessor {
 
         match &config.watermark {
             WatermarkType::Image { image_path, scale } => {
-                if let Ok(wm_dyn) = image::open(image_path) {
+                {
+                    let wm_dyn = crate::format::decode_bounded(image_path, &config.limits)?;
                     let target_scale = scale.clamp(0.01, 2.0);
                     let wm_w = bounded_dimension(f64::from(wm_dyn.width()) * target_scale).max(1);
                     let wm_h = bounded_dimension(f64::from(wm_dyn.height()) * target_scale).max(1);

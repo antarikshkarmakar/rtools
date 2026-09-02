@@ -114,8 +114,12 @@ pub enum RToolsError {
     #[error("Path policy violation: {0}")]
     PathPolicyViolation(String),
 
-    #[error("Resource limit exceeded: {0}")]
-    ResourceLimitExceeded(String),
+    #[error("Resource limit exceeded for {resource}: {actual} (limit: {limit})")]
+    ResourceLimitExceeded {
+        resource: &'static str,
+        actual: u64,
+        limit: u64,
+    },
 
     #[error("Configuration invalid: {0}")]
     ConfigurationInvalid(String),
@@ -191,8 +195,12 @@ impl RToolsError {
     }
 
     /// Create a new resource limit exceeded error.
-    pub fn resource_limit_exceeded<S: Into<String>>(msg: S) -> Self {
-        RToolsError::ResourceLimitExceeded(msg.into())
+    pub const fn resource_limit_exceeded(resource: &'static str, actual: u64, limit: u64) -> Self {
+        RToolsError::ResourceLimitExceeded {
+            resource,
+            actual,
+            limit,
+        }
     }
 
     /// Create a new configuration invalid error.
@@ -214,7 +222,7 @@ impl RToolsError {
             Self::Config(_) | Self::ConfigurationInvalid(_) => ErrorCode::ConfigurationInvalid,
             Self::InvalidInput(_) | Self::FileNotFound(_) => ErrorCode::InvalidInput,
             Self::UnsupportedFormat(_) => ErrorCode::UnsupportedFormat,
-            Self::FileTooLarge { .. } | Self::Timeout(_) | Self::ResourceLimitExceeded(_) => {
+            Self::FileTooLarge { .. } | Self::Timeout(_) | Self::ResourceLimitExceeded { .. } => {
                 ErrorCode::ResourceLimitExceeded
             }
             Self::ModelNotLoaded(_) | Self::CapabilityUnavailable(_) => {

@@ -213,6 +213,7 @@ impl RToolsServer {
                     output: input.output_path.map(PathBuf::from),
                     preserve_metadata: true,
                     strip_gps: false,
+                    limits: rtools_core::ResourceLimits::default(),
                 };
                 let processor = rtools_image::CompressProcessor;
                 match processor.process(file_input, config) {
@@ -251,6 +252,7 @@ impl RToolsServer {
                     quality: input.quality.unwrap_or(85),
                     preserve_metadata: true,
                     strip_gps: false,
+                    limits: rtools_core::ResourceLimits::default(),
                 };
                 let processor = rtools_image::ConvertProcessor;
                 match processor.process(file_input, config) {
@@ -276,6 +278,7 @@ impl RToolsServer {
                     algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                     output: None,
                     quality: 85,
+                    limits: rtools_core::ResourceLimits::default(),
                 };
                 let processor = rtools_image::ResizeProcessor;
                 match processor.process(file_input, config) {
