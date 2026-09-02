@@ -52,9 +52,12 @@ impl Processor for RenameProcessor {
                 .as_path()
                 .ok_or_else(|| RToolsError::invalid_input("Rename requires file path inputs"))?;
 
-            let index = u32::try_from(idx)
-                .unwrap_or(u32::MAX)
-                .saturating_add(config.start_number);
+            let offset = u32::try_from(idx).map_err(|_| {
+                RToolsError::invalid_input("Rename sequence index exceeds the u32 range")
+            })?;
+            let index = config.start_number.checked_add(offset).ok_or_else(|| {
+                RToolsError::invalid_input("Rename sequence exceeds the u32 range")
+            })?;
             let new_name = generate_filename(&config.pattern, path, index)?;
             let output_dir = config
                 .output_dir

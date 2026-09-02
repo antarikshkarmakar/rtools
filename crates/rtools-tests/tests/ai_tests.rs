@@ -2,7 +2,7 @@ use rtools_ai::{
     duplicates::{DuplicateAction, DuplicatesConfig, DuplicatesProcessor, HashAlgorithm},
     rename::{RenameConfig, RenameProcessor},
 };
-use rtools_core::{FileInput, Processor};
+use rtools_core::{error::RToolsError, FileInput, Processor};
 use tempfile::TempDir;
 
 /// Create a test PNG filled with a deterministic pattern seeded from the file
@@ -197,4 +197,58 @@ fn test_rename_start_number() {
     assert!(names.contains(&"shot_100.png".to_string()));
     assert!(names.contains(&"shot_101.png".to_string()));
     assert!(names.contains(&"shot_102.png".to_string()));
+}
+
+#[test]
+fn rename_sequence_overflow_returns_invalid_input() {
+    let tmp = TempDir::new().unwrap();
+    let images = create_test_images(tmp.path(), 2);
+    let inputs = images.into_iter().map(FileInput::from_path).collect();
+    let config = RenameConfig {
+        pattern: "photo_{index}".to_string(),
+        output_dir: Some(tmp.path().join("renamed")),
+        start_number: u32::MAX,
+        use_ai_descriptions: false,
+        dry_run: true,
+    };
+
+    let error = RenameProcessor
+        .process(inputs, config)
+        .expect_err("the second index must not wrap or saturate");
+
+    assert!(matches!(error, RToolsError::InvalidInput(message) if message.contains("sequence")));
+}
+
+#[test]
+fn duplicate_threshold_half_distance_rounds_up_to_include_one_bit_hash() {
+    let tmp = TempDir::new().unwrap();
+    let base_path = tmp.path().join("base.png");
+    let changed_path = tmp.path().join("one-bit-difference.png");
+    let base = image::GrayImage::new(9, 8);
+    let mut changed = base.clone();
+    changed.put_pixel(0, 0, image::Luma([1]));
+    base.save(&base_path).unwrap();
+    changed.save(&changed_path).unwrap();
+
+    let result = DuplicatesProcessor
+        .process(
+            vec![
+                FileInput::from_path(base_path),
+                FileInput::from_path(changed_path),
+            ],
+            DuplicatesConfig {
+                threshold: 0.992_187_5,
+                algorithm: HashAlgorithm::Difference,
+                action: DuplicateAction::Report,
+                dry_run: true,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        result.groups.len(),
+        1,
+        "a half-distance must round up to one"
+    );
+    assert_eq!(result.total_duplicates, 1);
 }

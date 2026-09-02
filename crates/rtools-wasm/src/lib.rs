@@ -6,9 +6,10 @@ pub struct RTools;
 
 #[wasm_bindgen]
 impl RTools {
+    // wasm-bindgen rejects const exports; keep construction free of runtime work.
+    #[allow(clippy::missing_const_for_fn)]
     #[wasm_bindgen(constructor)]
     pub fn new() -> RTools {
-        let _ = wasm_bindgen::memory();
         RTools
     }
 
@@ -177,10 +178,10 @@ fn parse_format(s: &str) -> Result<image::ImageFormat, JsError> {
     }
 }
 
+// wasm-bindgen rejects const exports; initialization intentionally has no side effects.
+#[allow(clippy::missing_const_for_fn)]
 #[wasm_bindgen]
-pub fn init() {
-    let _ = wasm_bindgen::memory();
-}
+pub fn init() {}
 
 #[cfg(test)]
 mod tests {

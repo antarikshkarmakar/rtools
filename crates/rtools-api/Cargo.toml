@@ -29,5 +29,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = "3.8"
 
+[dev-dependencies]
+tower = "0.5"
+
 [lints]
 workspace = true

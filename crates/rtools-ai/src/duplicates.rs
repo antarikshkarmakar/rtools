@@ -76,14 +76,7 @@ impl Processor for DuplicatesProcessor {
             file_hashes.push((path.clone(), hash));
         }
 
-        let distance_fraction = 1.0 - config.threshold.clamp(0.0, 1.0);
-        let max_distance = (0..=64)
-            .min_by(|left, right| {
-                (f64::from(*left) - distance_fraction * 64.0)
-                    .abs()
-                    .total_cmp(&(f64::from(*right) - distance_fraction * 64.0).abs())
-            })
-            .unwrap_or_default();
+        let max_distance = max_hamming_distance(config.threshold);
 
         // Group files by perceptual distance
         let mut visited = vec![false; file_hashes.len()];
@@ -160,6 +153,15 @@ impl Processor for DuplicatesProcessor {
     fn name(&self) -> &'static str {
         "DuplicatesProcessor"
     }
+}
+
+/// Converts a similarity threshold to the inclusive 64-bit hash distance.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn max_hamming_distance(threshold: f64) -> u32 {
+    // The clamped, rounded value is in 0..=64. This preserves the original
+    // `f64::round` half-way behavior before the validated integer conversion.
+    let distance = (1.0 - threshold.clamp(0.0, 1.0)) * 64.0;
+    distance.round().clamp(0.0, 64.0) as u32
 }
 
 /// Duplicates result

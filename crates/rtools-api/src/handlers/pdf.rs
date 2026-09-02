@@ -24,7 +24,7 @@ pub async fn merge(
         tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut files = Vec::new();
 
-    if let Some(field) = multipart
+    while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
@@ -143,4 +143,54 @@ pub async fn ocr(
         StatusCode::NOT_IMPLEMENTED,
         "PDF OCR not yet implemented".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{header::CONTENT_TYPE, Request},
+        routing::post,
+        Router,
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn merge_consumes_two_multipart_parts_before_processing() {
+        const BOUNDARY: &str = "rtools-test-boundary";
+        let body = format!(
+            "--{BOUNDARY}\r\n\
+             Content-Disposition: form-data; name=\"files\"; filename=\"first.pdf\"\r\n\
+             Content-Type: application/pdf\r\n\r\n\
+             not-a-pdf\r\n\
+             --{BOUNDARY}\r\n\
+             Content-Disposition: form-data; name=\"files\"; filename=\"second.pdf\"\r\n\
+             Content-Type: application/pdf\r\n\r\n\
+             also-not-a-pdf\r\n\
+             --{BOUNDARY}--\r\n"
+        );
+        let app = Router::new()
+            .route("/merge", post(merge))
+            .with_state(Arc::new(AppState {
+                config: rtools_core::AppConfig::default(),
+            }));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/merge")
+            .header(
+                CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(body))
+            .expect("multipart request should be valid");
+
+        let response = app.oneshot(request).await.expect("router should respond");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "two fields must reach PDF merge processing rather than the two-file guard"
+        );
+    }
 }
