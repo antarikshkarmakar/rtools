@@ -76,7 +76,11 @@ impl Processor for ResizeProcessor {
     type Config = ResizeConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: ResizeConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: ResizeConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

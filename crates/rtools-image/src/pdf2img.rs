@@ -32,7 +32,11 @@ impl Processor for Pdf2ImgProcessor {
     type Config = Pdf2ImgConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, _config: Pdf2ImgConfig) -> RToolsResult<Vec<FileOutput>> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        _config: Pdf2ImgConfig,
+    ) -> RToolsResult<Vec<FileOutput>> {
         let _path = input
             .source
             .as_path()

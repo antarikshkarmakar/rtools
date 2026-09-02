@@ -25,7 +25,7 @@ impl Processor for ExifProcessor {
     type Error = RToolsError;
 
     #[allow(clippy::too_many_lines)] // Task 7 will extract EXIF field decoders.
-    fn process(&self, input: FileInput, _config: ExifConfig) -> RToolsResult<ExifData> {
+    fn process_validated(&self, input: FileInput, _config: ExifConfig) -> RToolsResult<ExifData> {
         let path = input
             .source
             .as_path()

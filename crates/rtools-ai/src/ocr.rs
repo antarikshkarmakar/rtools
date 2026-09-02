@@ -41,7 +41,7 @@ impl Processor for OcrProcessor {
     type Config = OcrConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, _config: OcrConfig) -> RToolsResult<OcrResult> {
+    fn process_validated(&self, input: FileInput, _config: OcrConfig) -> RToolsResult<OcrResult> {
         let start = Instant::now();
 
         let path = input

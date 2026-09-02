@@ -33,7 +33,11 @@ impl Processor for MetadataProcessor {
     type Config = MetadataConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: MetadataConfig) -> RToolsResult<ImageMetadata> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: MetadataConfig,
+    ) -> RToolsResult<ImageMetadata> {
         let path = input
             .source
             .as_path()

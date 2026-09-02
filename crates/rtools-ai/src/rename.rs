@@ -39,7 +39,7 @@ impl Processor for RenameProcessor {
     type Config = RenameConfig;
     type Error = RToolsError;
 
-    fn process(
+    fn process_validated(
         &self,
         inputs: Vec<FileInput>,
         config: RenameConfig,

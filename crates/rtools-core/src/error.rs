@@ -1,4 +1,55 @@
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Stable machine-readable error code for rtools operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    /// The supplied input is invalid.
+    InvalidInput,
+    /// A required capability is unavailable.
+    CapabilityUnavailable,
+    /// The requested format is unsupported.
+    UnsupportedFormat,
+    /// A resource limit was exceeded.
+    ResourceLimitExceeded,
+    /// An output path already exists.
+    OutputExists,
+    /// A path violates an output policy.
+    PathPolicyViolation,
+    /// Processing failed.
+    ProcessingFailed,
+    /// Processing partially failed.
+    PartialFailure,
+    /// Authentication is required.
+    AuthenticationRequired,
+    /// Configuration is invalid.
+    ConfigurationInvalid,
+    /// Processing was cancelled.
+    Cancelled,
+    /// Rollback failed.
+    RollbackFailed,
+}
+
+impl ErrorCode {
+    /// Return the stable string representation of this code.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "INVALID_INPUT",
+            Self::CapabilityUnavailable => "CAPABILITY_UNAVAILABLE",
+            Self::UnsupportedFormat => "UNSUPPORTED_FORMAT",
+            Self::ResourceLimitExceeded => "RESOURCE_LIMIT_EXCEEDED",
+            Self::OutputExists => "OUTPUT_EXISTS",
+            Self::PathPolicyViolation => "PATH_POLICY_VIOLATION",
+            Self::ProcessingFailed => "PROCESSING_FAILED",
+            Self::PartialFailure => "PARTIAL_FAILURE",
+            Self::AuthenticationRequired => "AUTHENTICATION_REQUIRED",
+            Self::ConfigurationInvalid => "CONFIGURATION_INVALID",
+            Self::Cancelled => "CANCELLED",
+            Self::RollbackFailed => "ROLLBACK_FAILED",
+        }
+    }
+}
 
 /// Main error type for rtools operations
 #[derive(Error, Debug)]
@@ -53,6 +104,21 @@ pub enum RToolsError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Capability unavailable: {0}")]
+    CapabilityUnavailable(String),
+
+    #[error("Output already exists: {0}")]
+    OutputExists(String),
+
+    #[error("Path policy violation: {0}")]
+    PathPolicyViolation(String),
+
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimitExceeded(String),
+
+    #[error("Configuration invalid: {0}")]
+    ConfigurationInvalid(String),
 }
 
 /// Result type alias for rtools operations
@@ -107,6 +173,59 @@ impl RToolsError {
     /// Create a new batch processing error
     pub fn batch_error<S: Into<String>>(msg: S) -> Self {
         RToolsError::BatchError(msg.into())
+    }
+
+    /// Create a new capability unavailable error.
+    pub fn capability_unavailable<S: Into<String>>(msg: S) -> Self {
+        RToolsError::CapabilityUnavailable(msg.into())
+    }
+
+    /// Create a new output exists error.
+    pub fn output_exists<S: Into<String>>(path: S) -> Self {
+        RToolsError::OutputExists(path.into())
+    }
+
+    /// Create a new path policy violation error.
+    pub fn path_policy_violation<S: Into<String>>(msg: S) -> Self {
+        RToolsError::PathPolicyViolation(msg.into())
+    }
+
+    /// Create a new resource limit exceeded error.
+    pub fn resource_limit_exceeded<S: Into<String>>(msg: S) -> Self {
+        RToolsError::ResourceLimitExceeded(msg.into())
+    }
+
+    /// Create a new configuration invalid error.
+    pub fn configuration_invalid<S: Into<String>>(msg: S) -> Self {
+        RToolsError::ConfigurationInvalid(msg.into())
+    }
+
+    /// Return the stable machine-readable code for this error.
+    pub const fn code(&self) -> ErrorCode {
+        match self {
+            Self::Io(_)
+            | Self::Image(_)
+            | Self::Pdf(_)
+            | Self::Ai(_)
+            | Self::Mcp(_)
+            | Self::Api(_)
+            | Self::NotImplemented(_)
+            | Self::Internal(_) => ErrorCode::ProcessingFailed,
+            Self::Config(_) | Self::ConfigurationInvalid(_) => ErrorCode::ConfigurationInvalid,
+            Self::InvalidInput(_) | Self::FileNotFound(_) => ErrorCode::InvalidInput,
+            Self::UnsupportedFormat(_) => ErrorCode::UnsupportedFormat,
+            Self::FileTooLarge { .. } | Self::Timeout(_) | Self::ResourceLimitExceeded(_) => {
+                ErrorCode::ResourceLimitExceeded
+            }
+            Self::ModelNotLoaded(_) | Self::CapabilityUnavailable(_) => {
+                ErrorCode::CapabilityUnavailable
+            }
+            Self::OutputDirectoryNotFound(_) | Self::PathPolicyViolation(_) => {
+                ErrorCode::PathPolicyViolation
+            }
+            Self::BatchError(_) => ErrorCode::PartialFailure,
+            Self::OutputExists(_) => ErrorCode::OutputExists,
+        }
     }
 }
 

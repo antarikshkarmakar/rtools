@@ -104,7 +104,11 @@ impl Processor for CompressProcessor {
     type Error = RToolsError;
 
     #[allow(clippy::too_many_lines)] // Task 4 will split encoding by output format.
-    fn process(&self, input: FileInput, config: CompressConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: CompressConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

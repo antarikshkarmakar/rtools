@@ -48,7 +48,11 @@ impl Processor for PdfMergeProcessor {
     type Error = RToolsError;
 
     #[allow(clippy::too_many_lines)] // Task 7 will separate PDF document assembly.
-    fn process(&self, inputs: Vec<FileInput>, config: PdfMergeConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        inputs: Vec<FileInput>,
+        config: PdfMergeConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let mut input_paths: Vec<PathBuf> = inputs

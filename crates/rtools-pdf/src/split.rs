@@ -58,7 +58,11 @@ impl Processor for PdfSplitProcessor {
     type Config = PdfSplitConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: PdfSplitConfig) -> RToolsResult<Vec<FileOutput>> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: PdfSplitConfig,
+    ) -> RToolsResult<Vec<FileOutput>> {
         let _start = Instant::now();
 
         let path = input

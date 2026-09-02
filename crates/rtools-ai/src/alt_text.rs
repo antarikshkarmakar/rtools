@@ -45,7 +45,11 @@ impl Processor for AltTextProcessor {
     type Config = AltTextConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, _config: AltTextConfig) -> RToolsResult<AltTextResult> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        _config: AltTextConfig,
+    ) -> RToolsResult<AltTextResult> {
         let start = Instant::now();
 
         let path = input

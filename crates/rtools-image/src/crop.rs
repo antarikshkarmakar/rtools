@@ -110,7 +110,7 @@ impl Processor for CropProcessor {
     type Error = RToolsError;
 
     #[allow(clippy::too_many_lines)] // Task 4 will separate crop-region resolution.
-    fn process(&self, input: FileInput, config: CropConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(&self, input: FileInput, config: CropConfig) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

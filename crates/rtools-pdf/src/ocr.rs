@@ -54,7 +54,11 @@ impl Processor for PdfOcrProcessor {
     type Config = PdfOcrConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: PdfOcrConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: PdfOcrConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

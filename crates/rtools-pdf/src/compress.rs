@@ -53,7 +53,11 @@ impl Processor for PdfCompressProcessor {
     type Config = PdfCompressConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: PdfCompressConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: PdfCompressConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

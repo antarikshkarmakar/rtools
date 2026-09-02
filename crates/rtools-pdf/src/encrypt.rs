@@ -18,7 +18,11 @@ impl Processor for PdfEncryptProcessor {
     type Config = PdfEncryptConfig;
     type Error = RToolsError;
 
-    fn process(&self, _input: FileInput, _config: PdfEncryptConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        _input: FileInput,
+        _config: PdfEncryptConfig,
+    ) -> RToolsResult<FileOutput> {
         Err(RToolsError::not_implemented(
             "PDF encryption not yet implemented",
         ))

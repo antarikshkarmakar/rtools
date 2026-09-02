@@ -52,7 +52,11 @@ impl Processor for SortProcessor {
     type Config = SortConfig;
     type Error = RToolsError;
 
-    fn process(&self, inputs: Vec<FileInput>, config: SortConfig) -> RToolsResult<Vec<FileOutput>> {
+    fn process_validated(
+        &self,
+        inputs: Vec<FileInput>,
+        config: SortConfig,
+    ) -> RToolsResult<Vec<FileOutput>> {
         let start = Instant::now();
 
         std::fs::create_dir_all(&config.output_dir)?;

@@ -102,7 +102,11 @@ impl Processor for WatermarkProcessor {
     type Error = RToolsError;
 
     #[allow(clippy::too_many_lines)] // Task 7 will separate text and image watermark paths.
-    fn process(&self, input: FileInput, config: WatermarkConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: WatermarkConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

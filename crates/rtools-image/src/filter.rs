@@ -71,7 +71,11 @@ impl Processor for FilterProcessor {
     type Config = FilterConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, config: FilterConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        config: FilterConfig,
+    ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
         let path = input

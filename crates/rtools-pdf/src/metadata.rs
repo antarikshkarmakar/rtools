@@ -24,7 +24,11 @@ impl Processor for PdfMetadataProcessor {
     type Config = PdfMetadataConfig;
     type Error = RToolsError;
 
-    fn process(&self, input: FileInput, _config: PdfMetadataConfig) -> RToolsResult<PdfMetadata> {
+    fn process_validated(
+        &self,
+        input: FileInput,
+        _config: PdfMetadataConfig,
+    ) -> RToolsResult<PdfMetadata> {
         let path = input
             .source
             .as_path()

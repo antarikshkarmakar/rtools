@@ -58,7 +58,7 @@ impl Processor for DuplicatesProcessor {
     type Config = DuplicatesConfig;
     type Error = RToolsError;
 
-    fn process(
+    fn process_validated(
         &self,
         inputs: Vec<FileInput>,
         config: DuplicatesConfig,

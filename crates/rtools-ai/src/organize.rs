@@ -54,7 +54,7 @@ impl Processor for OrganizeProcessor {
     type Config = OrganizeConfig;
     type Error = RToolsError;
 
-    fn process(
+    fn process_validated(
         &self,
         inputs: Vec<FileInput>,
         config: OrganizeConfig,

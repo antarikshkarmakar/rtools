@@ -11,12 +11,26 @@ pub trait Processor: Send + Sync {
     /// Error type for this processor
     type Error: Into<crate::error::RToolsError> + std::fmt::Display;
 
-    /// Process a single input.
+    /// Validate and process a single input.
     ///
     /// # Errors
     ///
     /// Returns an error when processing fails.
-    fn process(&self, input: Self::Input, config: Self::Config) -> RToolsResult<Self::Output>;
+    fn process(&self, input: Self::Input, config: Self::Config) -> RToolsResult<Self::Output> {
+        self.validate_config(&config)?;
+        self.process_validated(input, config)
+    }
+
+    /// Process a single input after its configuration has been validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when processing fails.
+    fn process_validated(
+        &self,
+        input: Self::Input,
+        config: Self::Config,
+    ) -> RToolsResult<Self::Output>;
 
     /// Validate configuration before processing.
     ///

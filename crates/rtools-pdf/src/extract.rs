@@ -30,7 +30,7 @@ impl Processor for PdfExtractProcessor {
     type Config = PdfExtractConfig;
     type Error = RToolsError;
 
-    fn process(
+    fn process_validated(
         &self,
         _input: FileInput,
         _config: PdfExtractConfig,

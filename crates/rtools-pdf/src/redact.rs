@@ -18,7 +18,11 @@ impl Processor for PdfRedactProcessor {
     type Config = PdfRedactConfig;
     type Error = RToolsError;
 
-    fn process(&self, _input: FileInput, _config: PdfRedactConfig) -> RToolsResult<FileOutput> {
+    fn process_validated(
+        &self,
+        _input: FileInput,
+        _config: PdfRedactConfig,
+    ) -> RToolsResult<FileOutput> {
         Err(RToolsError::not_implemented(
             "PDF redaction not yet implemented",
         ))
