@@ -441,7 +441,25 @@ where
 }
 
 fn publish_no_replace(source: &Path, destination: &Path) -> RToolsResult<()> {
-    if let Err(error) = fs::hard_link(source, destination) {
+    publish_no_replace_using(
+        source,
+        destination,
+        |source, destination| fs::hard_link(source, destination),
+        |path| fs::remove_file(path),
+    )
+}
+
+fn publish_no_replace_using<L, U>(
+    source: &Path,
+    destination: &Path,
+    link: L,
+    unlink: U,
+) -> RToolsResult<()>
+where
+    L: FnOnce(&Path, &Path) -> std::io::Result<()>,
+    U: FnOnce(&Path) -> std::io::Result<()>,
+{
+    if let Err(error) = link(source, destination) {
         return if error.kind() == std::io::ErrorKind::AlreadyExists {
             Err(RToolsError::output_exists(
                 destination.display().to_string(),
@@ -451,15 +469,10 @@ fn publish_no_replace(source: &Path, destination: &Path) -> RToolsResult<()> {
         };
     }
 
-    if let Err(unlink_error) = fs::remove_file(source) {
-        if let Err(rollback_error) = fs::remove_file(destination) {
-            return Err(RToolsError::rollback_failed(format!(
-                "publishing {} succeeded but temporary cleanup failed ({unlink_error}); removing the published link failed: {rollback_error}",
-                destination.display()
-            )));
-        }
-        return Err(unlink_error.into());
-    }
+    // The successful link is the commit point. Cleanup of the private link is
+    // best-effort so a final-path writer can never have its entry rolled back
+    // by pathname; PendingOutput::drop retries its owned temporary instead.
+    let _ = unlink(source);
     Ok(())
 }
 
@@ -522,6 +535,49 @@ mod atomic_output_tests {
         assert_eq!(error.code(), ErrorCode::OutputExists);
         assert_eq!(fs::read(&output).unwrap(), b"external");
         assert_eq!(fs::read(&temporary).unwrap(), b"ours");
+    }
+
+    #[test]
+    fn published_output_is_never_rolled_back_after_temporary_unlink_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join("temporary.bin");
+        let output = directory.path().join("result.bin");
+        fs::write(&temporary, b"ours").unwrap();
+        let mut unlink_calls = Vec::new();
+
+        super::publish_no_replace_using(
+            &temporary,
+            &output,
+            |source, destination| fs::hard_link(source, destination),
+            |path| {
+                unlink_calls.push(path.to_owned());
+                if path == temporary {
+                    fs::remove_file(&output)?;
+                    fs::write(&output, b"foreign")?;
+                    return Err(std::io::Error::other("injected temporary unlink failure"));
+                }
+                fs::remove_file(path)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(unlink_calls.len(), 1);
+        assert_eq!(unlink_calls[0], temporary);
+        assert_eq!(fs::read(&output).unwrap(), b"foreign");
+        assert_eq!(fs::read(&temporary).unwrap(), b"ours");
+    }
+
+    #[test]
+    fn normal_no_replace_publication_removes_temporary() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join("temporary.bin");
+        let output = directory.path().join("result.bin");
+        fs::write(&temporary, b"ours").unwrap();
+
+        super::publish_no_replace(&temporary, &output).unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), b"ours");
+        assert!(!temporary.exists());
     }
 
     #[test]
