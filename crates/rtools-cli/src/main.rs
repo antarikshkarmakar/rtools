@@ -1,6 +1,7 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueHint};
 use std::path::PathBuf;
 
+mod capabilities;
 mod commands;
 
 #[derive(Parser)]
@@ -13,7 +14,7 @@ mod commands;
 )]
 #[command(
     propagate_version = true,
-    after_long_help = "Examples:\n  Compress an image:          rtools image compress -i photo.jpg -q 80\n  Convert to WebP:            rtools image convert -i photo.png -f webp\n  Resize to 1920px wide:      rtools image resize -i photo.jpg -w 1920\n  Crop to 16:9:               rtools image crop -i photo.jpg -a 16:9\n  Add a text watermark:       rtools image watermark -i photo.jpg -t \"© me\"\n  Apply a film filter:        rtools image filter -i photo.jpg -p portra\n  Read EXIF metadata:         rtools image exif -i photo.jpg\n  Merge PDFs:                 rtools pdf merge -i a.pdf b.pdf -o merged.pdf\n  Split a PDF:                rtools pdf split -i doc.pdf -o out/ -p 1-5,10\n  Find duplicate photos:      rtools ai duplicates -i photos/ -a report\n\nTip: run `rtools <command> --help` for full details on any command."
+    after_long_help = "Examples:\n  Compress an image:          rtools image compress -i photo.jpg -q 80\n  Convert to WebP:            rtools image convert -i photo.png -f webp\n  Resize to 1920px wide:      rtools image resize -i photo.jpg -w 1920\n  Crop to 16:9:               rtools image crop -i photo.jpg -a 16:9\n  Add an image watermark:     rtools image watermark -i photo.jpg --image logo.png\n  Apply a film filter:        rtools image filter -i photo.jpg -p portra\n  Read EXIF metadata:         rtools image exif -i photo.jpg\n  Merge PDFs:                 rtools pdf merge -i a.pdf b.pdf -o merged.pdf\n  Split a PDF:                rtools pdf split -i doc.pdf -o out/ -p 1-5,10\n  Find duplicate photos:      rtools ai duplicates -i photos/ -a report\n\nTip: run `rtools <command> --help` for full details on any command."
 )]
 struct Cli {
     /// Configuration file path
@@ -53,8 +54,10 @@ enum Commands {
         command: AiCommands,
     },
 
-    /// Batch processing with config file
-    #[command(after_long_help = "Example:\n  rtools batch -c batch.toml -j 4")]
+    /// Batch processing (unavailable until typed recipe execution is implemented)
+    #[command(
+        after_long_help = "Unavailable: run operations individually until typed batch execution is available."
+    )]
     Batch {
         /// Batch configuration file
         #[arg(short, long, value_hint = ValueHint::FilePath)]
@@ -102,11 +105,11 @@ enum ImageCommands {
         #[arg(short, long)]
         format: Option<String>,
 
-        /// Preserve metadata
+        /// Preserve metadata (unavailable; use drop-all until verified export exists)
         #[arg(long)]
         preserve_metadata: bool,
 
-        /// Strip GPS data
+        /// Strip only GPS metadata (unavailable; use drop-all until selective removal exists)
         #[arg(long)]
         strip_gps: bool,
     },
@@ -183,16 +186,16 @@ enum ImageCommands {
         output: Option<PathBuf>,
     },
 
-    /// Add watermark
+    /// Add a watermark (image available; text unavailable)
     #[command(
-        after_long_help = "Examples:\n  rtools image watermark -i photo.jpg -t \"© me\" -p bottom-right --opacity 0.6\n  rtools image watermark -i photo.jpg --image logo.png -p top-left"
+        after_long_help = "Example:\n  rtools image watermark -i photo.jpg --image logo.png -p top-left\n\nText watermarks are unavailable; use --image until text rendering is configured."
     )]
     Watermark {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
 
-        /// Watermark text
+        /// Watermark text (unavailable; use --image until text rendering is configured)
         #[arg(short, long)]
         text: Option<String>,
 
@@ -249,8 +252,10 @@ enum ImageCommands {
         format: String,
     },
 
-    /// Extract text from images (OCR)
-    #[command(after_long_help = "Example:\n  rtools image ocr -i scan.jpg -l eng -o text.txt")]
+    /// Extract text from images (unavailable until an OCR provider is configured)
+    #[command(
+        after_long_help = "Unavailable: configure an OCR provider; run rtools doctor once available in this release."
+    )]
     Ocr {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -316,8 +321,10 @@ enum PdfCommands {
         output: PathBuf,
     },
 
-    /// Extract text from PDF
-    #[command(after_long_help = "Note: text extraction is not implemented yet.")]
+    /// Extract text from PDF (unavailable in this release)
+    #[command(
+        after_long_help = "Unavailable: use a verified PDF text provider once one is registered."
+    )]
     Text {
         /// Input PDF file
         #[arg(short, long)]
@@ -328,9 +335,9 @@ enum PdfCommands {
         output: Option<PathBuf>,
     },
 
-    /// Convert PDF to images
+    /// Convert PDF to images (unavailable until a rendering provider is configured)
     #[command(
-        after_long_help = "Example:\n  rtools pdf to-image -i doc.pdf -o pages/ -f png --dpi 200"
+        after_long_help = "Unavailable: configure a PDF rendering provider; run rtools doctor once available in this release."
     )]
     ToImage {
         /// Input PDF file
@@ -353,9 +360,9 @@ enum PdfCommands {
 
 #[derive(Subcommand)]
 enum AiCommands {
-    /// Organize photos using AI
+    /// Organize photos using AI (unavailable until a classifier is configured)
     #[command(
-        after_long_help = "Strategy: date (default), subject, location\n\nExample:\n  rtools ai organize -i photos/ -o organized/ -s date"
+        after_long_help = "Unavailable: use explicit filesystem organization until a supported classifier is configured."
     )]
     Organize {
         /// Input directory
@@ -371,9 +378,9 @@ enum AiCommands {
         strategy: String,
     },
 
-    /// Rename photos using AI
+    /// Rename photos using AI (unavailable until a description provider is configured)
     #[command(
-        after_long_help = "Pattern tokens: {date}, {subject}, {index}\n\nExamples:\n  rtools ai rename -i photos/ --dry-run\n  rtools ai rename -i photos/ -p \"holiday_{index}\""
+        after_long_help = "Unavailable: use a deterministic rename tool until a supported description provider is configured."
     )]
     Rename {
         /// Input directory
@@ -389,8 +396,10 @@ enum AiCommands {
         dry_run: bool,
     },
 
-    /// Generate alt text for images
-    #[command(after_long_help = "Example:\n  rtools ai alt-text -i a.jpg b.png -l en")]
+    /// Generate alt text (unavailable until a captioning provider is configured)
+    #[command(
+        after_long_help = "Unavailable: configure a captioning provider; run rtools doctor once available in this release."
+    )]
     AltText {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -447,6 +456,11 @@ enum ConfigCommands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    let capability_registry = capabilities::cli_capability_registry()?;
+    for operation_id in capabilities::required_operation_ids(&cli.command)? {
+        capability_registry.require_available(operation_id)?;
+    }
 
     // Initialize tracing
     let subscriber = tracing_subscriber::fmt()

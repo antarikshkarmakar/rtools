@@ -105,8 +105,12 @@ pub enum RToolsError {
     #[error("Internal error: {0}")]
     Internal(String),
 
-    #[error("Capability unavailable: {0}")]
-    CapabilityUnavailable(String),
+    #[error("Capability unavailable for {operation_id}: {reason}. Remediation: {remediation}")]
+    CapabilityUnavailable {
+        operation_id: String,
+        reason: String,
+        remediation: String,
+    },
 
     #[error("Output already exists: {0}")]
     OutputExists(String),
@@ -186,8 +190,16 @@ impl RToolsError {
     }
 
     /// Create a new capability unavailable error.
-    pub fn capability_unavailable<S: Into<String>>(msg: S) -> Self {
-        RToolsError::CapabilityUnavailable(msg.into())
+    pub fn capability_unavailable(
+        operation_id: impl Into<String>,
+        reason: impl Into<String>,
+        remediation: impl Into<String>,
+    ) -> Self {
+        RToolsError::CapabilityUnavailable {
+            operation_id: operation_id.into(),
+            reason: reason.into(),
+            remediation: remediation.into(),
+        }
     }
 
     /// Create a new output exists error.
@@ -237,7 +249,7 @@ impl RToolsError {
             | Self::Timeout(_)
             | Self::ResourceLimitExceeded { .. }
             | Self::ResourceLimitExceededUnknownActual { .. } => ErrorCode::ResourceLimitExceeded,
-            Self::ModelNotLoaded(_) | Self::CapabilityUnavailable(_) => {
+            Self::ModelNotLoaded(_) | Self::CapabilityUnavailable { .. } => {
                 ErrorCode::CapabilityUnavailable
             }
             Self::OutputDirectoryNotFound(_) | Self::PathPolicyViolation(_) => {

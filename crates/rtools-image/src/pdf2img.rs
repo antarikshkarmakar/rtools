@@ -34,16 +34,14 @@ impl Processor for Pdf2ImgProcessor {
 
     fn process_validated(
         &self,
-        input: FileInput,
+        _input: FileInput,
         _config: Pdf2ImgConfig,
     ) -> RToolsResult<Vec<FileOutput>> {
-        let _path = input
-            .source
-            .as_path()
-            .ok_or_else(|| RToolsError::invalid_input("Pdf2Img requires a file path input"))?;
-
-        // PDFium or external renderer binding
-        Ok(Vec::new())
+        Err(RToolsError::capability_unavailable(
+            "pdf.to_image",
+            "No PDF rendering provider is configured",
+            "Configure a supported PDF rendering provider",
+        ))
     }
 
     fn validate_config(&self, _config: &Pdf2ImgConfig) -> RToolsResult<()> {

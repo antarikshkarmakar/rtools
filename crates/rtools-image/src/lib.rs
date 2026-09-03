@@ -18,3 +18,6 @@ pub use filter::{FilterConfig, FilterProcessor};
 pub use metadata::{MetadataConfig, MetadataProcessor};
 pub use resize::{ResizeConfig, ResizeProcessor};
 pub use watermark::{WatermarkConfig, WatermarkProcessor};
+
+#[cfg(test)]
+use tempfile as _;

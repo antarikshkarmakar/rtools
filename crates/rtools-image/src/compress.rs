@@ -65,7 +65,7 @@ impl Default for CompressConfig {
             format: None,
             output: None,
             output_policy: OutputPolicy::default(),
-            preserve_metadata: true,
+            preserve_metadata: false,
             strip_gps: false,
             limits: ResourceLimits::default(),
         }
@@ -239,6 +239,7 @@ impl Processor for CompressProcessor {
     }
 
     fn validate_config(&self, config: &CompressConfig) -> RToolsResult<()> {
+        validate_metadata_flags(config.preserve_metadata, config.strip_gps)?;
         if let CompressionPreset::Custom(q) = config.preset {
             if q > 100 {
                 return Err(RToolsError::invalid_input(
@@ -252,4 +253,27 @@ impl Processor for CompressProcessor {
     fn name(&self) -> &'static str {
         "CompressProcessor"
     }
+}
+
+fn validate_metadata_flags(preserve_metadata: bool, strip_gps: bool) -> RToolsResult<()> {
+    if preserve_metadata && strip_gps {
+        return Err(RToolsError::invalid_input(
+            "Metadata cannot be preserved while GPS metadata is stripped",
+        ));
+    }
+    if preserve_metadata {
+        return Err(RToolsError::capability_unavailable(
+            "image.metadata.preserve",
+            "Image metadata preservation is not implemented",
+            "Disable metadata preservation until verified metadata export is available",
+        ));
+    }
+    if strip_gps {
+        return Err(RToolsError::capability_unavailable(
+            "image.metadata.strip_gps",
+            "Selective GPS metadata removal is not implemented",
+            "Use the default drop-all metadata policy until selective removal is available",
+        ));
+    }
+    Ok(())
 }

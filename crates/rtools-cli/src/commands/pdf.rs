@@ -28,7 +28,7 @@ pub async fn handle_pdf_command(cmd: PdfCommands, _config: &AppConfig) -> anyhow
                     }
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to merge PDFs: {e}");
+                    return Err(e.into());
                 }
             }
             Ok(())
@@ -64,7 +64,7 @@ pub async fn handle_pdf_command(cmd: PdfCommands, _config: &AppConfig) -> anyhow
                     }
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to compress PDF: {e}");
+                    return Err(e.into());
                 }
             }
             Ok(())
@@ -97,31 +97,25 @@ pub async fn handle_pdf_command(cmd: PdfCommands, _config: &AppConfig) -> anyhow
                     println!("✓ Split into {} pages", outputs.len());
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to split PDF: {e}");
+                    return Err(e.into());
                 }
             }
             Ok(())
         }
 
-        PdfCommands::Text {
-            input: _,
-            output: _,
-        } => {
-            // TODO: Implement text extraction
-            println!("✓ Text extraction not yet implemented");
-            Ok(())
-        }
+        PdfCommands::Text { .. } => Err(rtools_core::RToolsError::capability_unavailable(
+            "pdf.text",
+            "PDF text extraction is not implemented in the CLI",
+            "Use a verified PDF text extraction provider once one is registered",
+        )
+        .into()),
 
-        PdfCommands::ToImage {
-            input: _,
-            output: _,
-            format: _,
-            dpi: _,
-        } => {
-            // TODO: Implement PDF to image conversion
-            println!("✓ PDF to image conversion not yet implemented");
-            Ok(())
-        }
+        PdfCommands::ToImage { .. } => Err(rtools_core::RToolsError::capability_unavailable(
+            "pdf.to_image",
+            "No PDF rendering provider is configured",
+            "Configure a supported PDF rendering provider",
+        )
+        .into()),
     }
 }
 
@@ -169,5 +163,67 @@ fn parse_page_range(s: &str) -> rtools_pdf::split::PageRange {
         rtools_pdf::split::PageRange::All
     } else {
         rtools_pdf::split::PageRange::Multiple(ranges)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_pdf_command;
+    use crate::PdfCommands;
+    use rtools_core::{AppConfig, ErrorCode, RToolsError};
+
+    #[tokio::test]
+    async fn pdf_text_does_not_print_success_without_extracting_text() {
+        let error = handle_pdf_command(
+            PdfCommands::Text {
+                input: "input.pdf".into(),
+                output: None,
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_unavailable(&error, "pdf.text");
+    }
+
+    #[tokio::test]
+    async fn pdf_to_image_does_not_print_success_without_rendering_pages() {
+        let error = handle_pdf_command(
+            PdfCommands::ToImage {
+                input: "input.pdf".into(),
+                output: "pages".into(),
+                format: "png".to_string(),
+                dpi: 300,
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_unavailable(&error, "pdf.to_image");
+    }
+
+    #[tokio::test]
+    async fn available_pdf_processor_error_is_propagated() {
+        let error = handle_pdf_command(
+            PdfCommands::Merge {
+                input: vec!["missing-a.pdf".into(), "missing-b.pdf".into()],
+                output: "merged.pdf".into(),
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<RToolsError>().is_some());
+    }
+
+    fn assert_unavailable(error: &anyhow::Error, operation: &str) {
+        let error = error.downcast_ref::<RToolsError>().unwrap();
+        assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+        assert!(matches!(
+            error,
+            RToolsError::CapabilityUnavailable { operation_id, .. }
+                if operation_id == operation
+        ));
     }
 }

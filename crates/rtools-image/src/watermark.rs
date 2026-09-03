@@ -115,6 +115,14 @@ impl Processor for WatermarkProcessor {
         input: FileInput,
         config: WatermarkConfig,
     ) -> RToolsResult<FileOutput> {
+        if matches!(config.watermark, WatermarkType::Text { .. }) {
+            return Err(RToolsError::capability_unavailable(
+                "image.watermark.text",
+                "Text rendering is not implemented for image watermarks",
+                "Use an image watermark or configure a supported text rendering provider",
+            ));
+        }
+
         let start = Instant::now();
 
         let path = input
@@ -176,43 +184,7 @@ impl Processor for WatermarkProcessor {
                     }
                 }
             }
-            WatermarkType::Text { text, .. } => {
-                // Approximate subtle corner watermark stamp
-                if !text.is_empty() {
-                    let stamp_w = u32::try_from(text.len().saturating_mul(12))
-                        .unwrap_or(u32::MAX)
-                        .min(base_width / 2)
-                        .max(20);
-                    let stamp_h = 24u32.min(base_height / 4).max(10);
-                    let (start_x, start_y) = calculate_watermark_pos(
-                        base_width,
-                        base_height,
-                        stamp_w,
-                        stamp_h,
-                        &config.position,
-                    );
-
-                    for y in 0..stamp_h {
-                        for x in 0..stamp_w {
-                            let target_x = start_x + x;
-                            let target_y = start_y + y;
-                            if target_x < base_width && target_y < base_height {
-                                let base_pixel = base_img.get_pixel_mut(target_x, target_y);
-                                let alpha = 0.3 * opacity;
-                                base_pixel[0] = channel(
-                                    f64::from(base_pixel[0]).mul_add(1.0 - alpha, 255.0 * alpha),
-                                );
-                                base_pixel[1] = channel(
-                                    f64::from(base_pixel[1]).mul_add(1.0 - alpha, 255.0 * alpha),
-                                );
-                                base_pixel[2] = channel(
-                                    f64::from(base_pixel[2]).mul_add(1.0 - alpha, 255.0 * alpha),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            WatermarkType::Text { .. } => unreachable!("text watermarks are rejected above"),
         }
 
         let stem = path

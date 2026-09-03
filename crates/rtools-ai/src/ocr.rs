@@ -3,7 +3,6 @@ use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::time::Instant;
 
 /// OCR configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,32 +40,12 @@ impl Processor for OcrProcessor {
     type Config = OcrConfig;
     type Error = RToolsError;
 
-    fn process_validated(&self, input: FileInput, _config: OcrConfig) -> RToolsResult<OcrResult> {
-        let start = Instant::now();
-
-        let path = input
-            .source
-            .as_path()
-            .ok_or_else(|| RToolsError::invalid_input("OCR requires a file path input"))?;
-
-        // TODO: Implement proper Tesseract OCR
-        let text = format!("OCR placeholder for: {}", path.display());
-
-        let elapsed = start.elapsed();
-        let input_size = std::fs::metadata(path)?.len();
-
-        Ok(OcrResult {
-            path: path.clone(),
-            text,
-            confidence: 0.9,
-            stats: ProcessStats {
-                input_size,
-                output_size: 0,
-                compression_ratio: 0.0,
-                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-                memory_used_mb: 0.0,
-            },
-        })
+    fn process_validated(&self, _input: FileInput, _config: OcrConfig) -> RToolsResult<OcrResult> {
+        Err(RToolsError::capability_unavailable(
+            "ai.ocr",
+            "No image OCR provider is configured",
+            "Configure a supported image OCR provider",
+        ))
     }
 
     fn validate_config(&self, config: &OcrConfig) -> RToolsResult<()> {

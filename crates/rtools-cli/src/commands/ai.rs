@@ -28,6 +28,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
 
             // Collect all images from input directory
             let inputs = collect_image_inputs(&input);
+            require_nonempty_inputs(&inputs)?;
             println!("Found {} images to organize", inputs.len());
 
             match processor.process(inputs, organize_config) {
@@ -35,7 +36,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                     println!("✓ Organized {} images", outputs.len());
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to organize images: {e}");
+                    return Err(e.into());
                 }
             }
             Ok(())
@@ -56,6 +57,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             };
 
             let inputs = collect_image_inputs(&input);
+            require_nonempty_inputs(&inputs)?;
             println!("Found {} images to rename", inputs.len());
 
             if dry_run {
@@ -72,7 +74,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                     }
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to rename images: {e}");
+                    return Err(e.into());
                 }
             }
             Ok(())
@@ -98,7 +100,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                         println!("  Text: {}", result.alt_text);
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to generate alt text: {e}");
+                        return Err(e.into());
                     }
                 }
             }
@@ -125,6 +127,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             };
 
             let inputs = collect_image_inputs(&input);
+            require_nonempty_inputs(&inputs)?;
             println!("Found {} images to check for duplicates", inputs.len());
 
             match processor.process(inputs, duplicates_config) {
@@ -135,11 +138,21 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                     println!("  Time: {}ms", result.processing_time_ms);
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to find duplicates: {e}");
+                    return Err(e.into());
                 }
             }
             Ok(())
         }
+    }
+}
+
+fn require_nonempty_inputs(inputs: &[FileInput]) -> rtools_core::RToolsResult<()> {
+    if inputs.is_empty() {
+        Err(rtools_core::RToolsError::invalid_input(
+            "No supported image files were found",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -163,4 +176,51 @@ fn collect_image_inputs(dir: &PathBuf) -> Vec<FileInput> {
     }
 
     inputs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_ai_command;
+    use crate::AiCommands;
+    use rtools_core::{AppConfig, ErrorCode, RToolsError};
+
+    #[tokio::test]
+    async fn alt_text_processor_error_is_propagated() {
+        let error = handle_ai_command(
+            AiCommands::AltText {
+                input: vec!["private.jpg".into()],
+                language: "en".to_string(),
+                output: None,
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+        let error = error.downcast_ref::<RToolsError>().unwrap();
+
+        assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+        assert!(matches!(
+            error,
+            RToolsError::CapabilityUnavailable { operation_id, .. }
+                if operation_id == "ai.alt_text"
+        ));
+    }
+
+    #[tokio::test]
+    async fn duplicate_scan_rejects_an_empty_input_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = handle_ai_command(
+            AiCommands::Duplicates {
+                input: temp.path().to_path_buf(),
+                threshold: 0.9,
+                action: "report".to_string(),
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+        let error = error.downcast_ref::<RToolsError>().unwrap();
+
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+    }
 }

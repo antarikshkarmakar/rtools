@@ -13,3 +13,6 @@ pub use merge::{PdfMergeConfig, PdfMergeProcessor};
 pub use metadata::{PdfMetadataConfig, PdfMetadataProcessor};
 pub use ocr::{PdfOcrConfig, PdfOcrProcessor};
 pub use split::{PdfSplitConfig, PdfSplitProcessor};
+
+#[cfg(test)]
+use tempfile as _;

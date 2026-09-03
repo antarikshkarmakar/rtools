@@ -46,7 +46,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         }
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to compress {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -69,7 +69,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                 output_policy: rtools_core::OutputPolicy::default(),
                 output_dir: None,
                 quality,
-                preserve_metadata: true,
+                preserve_metadata: false,
                 strip_gps: false,
                 limits: config.limits.clone(),
             };
@@ -89,7 +89,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         );
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to convert {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -122,7 +122,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         println!("✓ Resized: {}", input_path.display());
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to resize {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -208,7 +208,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         println!("✓ Cropped: {}", input_path.display());
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to crop {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -264,7 +264,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         println!("✓ Watermarked: {}", input_path.display());
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to watermark {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -305,7 +305,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         println!("✓ Filtered: {}", input_path.display());
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to filter {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -336,7 +336,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         }
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to read EXIF {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -364,7 +364,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                         println!("  Text: {}", result.text);
                     }
                     Err(e) => {
-                        eprintln!("✗ Failed to OCR {}: {}", input_path.display(), e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -386,5 +386,52 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes_to_f64(bytes) / 1024.0)
     } else {
         format!("{:.1} MB", bytes_to_f64(bytes) / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_image_command;
+    use crate::ImageCommands;
+    use rtools_core::{AppConfig, ErrorCode, RToolsError};
+
+    #[tokio::test]
+    async fn image_ocr_processor_error_is_propagated() {
+        let error = handle_image_command(
+            ImageCommands::Ocr {
+                input: vec!["private.png".into()],
+                language: "eng".to_string(),
+                output: None,
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+        let error = error.downcast_ref::<RToolsError>().unwrap();
+
+        assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+        assert!(matches!(
+            error,
+            RToolsError::CapabilityUnavailable { operation_id, .. }
+                if operation_id == "ai.ocr"
+        ));
+    }
+
+    #[tokio::test]
+    async fn available_image_processor_error_is_propagated() {
+        let error = handle_image_command(
+            ImageCommands::Resize {
+                input: vec!["missing.png".into()],
+                width: Some(10),
+                height: None,
+                maintain_aspect: true,
+                output: None,
+            },
+            &AppConfig::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<RToolsError>().is_some());
     }
 }

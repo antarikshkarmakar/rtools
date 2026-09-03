@@ -260,7 +260,7 @@ fn test_compress_jpeg() {
         format: None,
         output: Some(tmp.path().join("out.jpg")),
         output_policy: OutputPolicy::FailIfExists,
-        preserve_metadata: true,
+        preserve_metadata: false,
         strip_gps: false,
         limits: ResourceLimits::default(),
     };
@@ -285,7 +285,7 @@ fn test_compress_png() {
         format: None,
         output: Some(tmp.path().join("out.png")),
         output_policy: OutputPolicy::FailIfExists,
-        preserve_metadata: true,
+        preserve_metadata: false,
         strip_gps: false,
         limits: ResourceLimits::default(),
     };
@@ -309,7 +309,7 @@ fn test_convert_png_to_jpeg() {
         output_policy: OutputPolicy::FailIfExists,
         output_dir: None,
         quality: 85,
-        preserve_metadata: true,
+        preserve_metadata: false,
         strip_gps: false,
         limits: ResourceLimits::default(),
     };
@@ -479,7 +479,7 @@ fn test_output_path_created() {
         format: None,
         output: Some(out_dir.join("result.png")),
         output_policy: OutputPolicy::FailIfExists,
-        preserve_metadata: true,
+        preserve_metadata: false,
         strip_gps: false,
         limits: ResourceLimits::default(),
     };

@@ -1,3 +1,4 @@
+pub mod capability;
 pub mod config;
 pub mod error;
 pub mod input;
@@ -6,6 +7,7 @@ pub mod output;
 pub mod traits;
 pub mod types;
 
+pub use capability::{Capability, CapabilityRegistry, CapabilityState, ProviderDiagnostic};
 pub use config::AppConfig;
 pub use error::{ErrorCode, RToolsError, RToolsResult};
 pub use input::{FileInput, InputSource};

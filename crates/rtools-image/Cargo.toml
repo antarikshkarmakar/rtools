@@ -19,5 +19,8 @@ tracing = { workspace = true }
 image = { workspace = true }
 kamadak-exif = "0.5"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

@@ -3,7 +3,6 @@ use rtools_core::types::ProcessStats;
 use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::time::Instant;
 
 /// AI alt text configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,38 +46,14 @@ impl Processor for AltTextProcessor {
 
     fn process_validated(
         &self,
-        input: FileInput,
+        _input: FileInput,
         _config: AltTextConfig,
     ) -> RToolsResult<AltTextResult> {
-        let start = Instant::now();
-
-        let path = input
-            .source
-            .as_path()
-            .ok_or_else(|| RToolsError::invalid_input("Alt text requires a file path input"))?;
-
-        // TODO: Implement BLIP model for captioning
-        // For now, return a placeholder
-        let alt_text = format!(
-            "Image: {}",
-            path.file_stem().unwrap_or_default().to_string_lossy()
-        );
-
-        let elapsed = start.elapsed();
-        let input_size = std::fs::metadata(path)?.len();
-
-        Ok(AltTextResult {
-            path: path.clone(),
-            alt_text,
-            confidence: 0.8,
-            stats: ProcessStats {
-                input_size,
-                output_size: 0,
-                compression_ratio: 0.0,
-                processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-                memory_used_mb: 0.0,
-            },
-        })
+        Err(RToolsError::capability_unavailable(
+            "ai.alt_text",
+            "No image captioning provider is configured",
+            "Configure a supported image captioning provider",
+        ))
     }
 
     fn validate_config(&self, config: &AltTextConfig) -> RToolsResult<()> {
