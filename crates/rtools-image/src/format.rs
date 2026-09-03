@@ -1,11 +1,56 @@
-use image::{DynamicImage, ImageDecoder, ImageError, ImageReader, Limits};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageError, ImageReader, Limits};
 use rtools_core::types::ImageFormat;
 use rtools_core::{RToolsError, RToolsResult, ResourceLimits};
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 
 const MAX_DECODED_BYTES_PER_PIXEL: u64 = 16;
+
+/// Result of decoding one immutable, resource-bounded image snapshot.
+#[derive(Debug)]
+pub struct DecodedImage {
+    /// Pixels after any EXIF orientation transform.
+    pub image: DynamicImage,
+    /// The EXIF orientation value when a transform was applied.
+    pub orientation_applied: Option<u32>,
+}
+
+impl DecodedImage {
+    /// Return the output warning required when orientation changed the pixels.
+    pub fn warnings(&self) -> Vec<String> {
+        self.orientation_applied
+            .map_or_else(Vec::new, |orientation| {
+                vec![format!("EXIF orientation {orientation} applied")]
+            })
+    }
+}
+
+/// Apply the pixel transform defined by an EXIF orientation value.
+///
+/// Unknown values, `1`, and absent-orientation callers remain unchanged.
+pub fn apply_exif_orientation(image: DynamicImage, orientation: u32) -> DynamicImage {
+    match orientation {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.rotate90().fliph(),
+        6 => image.rotate90(),
+        7 => image.rotate90().flipv(),
+        8 => image.rotate270(),
+        _ => image,
+    }
+}
+
+fn exif_orientation(encoded: &[u8]) -> Option<u32> {
+    let mut cursor = Cursor::new(encoded);
+    let exif = exif::Reader::new().read_from_container(&mut cursor).ok()?;
+    exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|field| match &field.value {
+            exif::Value::Short(values) => values.first().copied().map(u32::from),
+            _ => None,
+        })
+}
 
 fn decoder_limits(resource_limits: &ResourceLimits) -> Limits {
     let mut decoder_limits = Limits::default();
@@ -31,6 +76,76 @@ fn map_decode_error(error: ImageError, allocation_limit: u64) -> RToolsError {
     }
 }
 
+fn multiple_frames(
+    mut frames: impl Iterator<Item = image::ImageResult<image::Frame>>,
+    allocation_limit: u64,
+) -> RToolsResult<bool> {
+    if let Some(first) = frames.next() {
+        first.map_err(|error| map_decode_error(error, allocation_limit))?;
+    } else {
+        return Ok(false);
+    }
+    match frames.next() {
+        Some(second) => {
+            second.map_err(|error| map_decode_error(error, allocation_limit))?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+fn reject_animated_input(
+    encoded: &[u8],
+    format: image::ImageFormat,
+    limits: Limits,
+    allocation_limit: u64,
+) -> RToolsResult<()> {
+    let animated = match format {
+        image::ImageFormat::Gif => {
+            let mut decoder =
+                image::codecs::gif::GifDecoder::new(BufReader::new(Cursor::new(encoded)))
+                    .map_err(|error| map_decode_error(error, allocation_limit))?;
+            decoder
+                .set_limits(limits)
+                .map_err(|error| map_decode_error(error, allocation_limit))?;
+            multiple_frames(decoder.into_frames(), allocation_limit)?
+        }
+        image::ImageFormat::Png => {
+            let mut decoder = image::codecs::png::PngDecoder::new(Cursor::new(encoded))
+                .map_err(|error| map_decode_error(error, allocation_limit))?;
+            decoder
+                .set_limits(limits)
+                .map_err(|error| map_decode_error(error, allocation_limit))?;
+            if decoder
+                .is_apng()
+                .map_err(|error| map_decode_error(error, allocation_limit))?
+            {
+                let apng = decoder
+                    .apng()
+                    .map_err(|error| map_decode_error(error, allocation_limit))?;
+                multiple_frames(apng.into_frames(), allocation_limit)?
+            } else {
+                false
+            }
+        }
+        image::ImageFormat::WebP => {
+            image::codecs::webp::WebPDecoder::new(BufReader::new(Cursor::new(encoded)))
+                .map_err(|error| map_decode_error(error, allocation_limit))?
+                .has_animation()
+        }
+        _ => false,
+    };
+
+    if animated {
+        return Err(RToolsError::capability_unavailable(
+            "image.animation.single_frame",
+            "Animated inputs cannot be processed by single-frame image operations",
+            "Use a non-animated image or an animation-aware processor",
+        ));
+    }
+    Ok(())
+}
+
 /// Decode an image after checking its input size and decoded pixel count.
 ///
 /// # Errors
@@ -38,20 +153,25 @@ fn map_decode_error(error: ImageError, allocation_limit: u64) -> RToolsError {
 /// Returns a structured resource-limit error when the input or decoder exceeds
 /// a configured limit, or an image/I/O error when the source cannot be read or
 /// decoded.
-pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<DynamicImage> {
+pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<DecodedImage> {
     // Open once, validate that handle, and make every decoder consume the
     // resulting immutable bytes. The bounded read also catches files that grow
     // after the metadata check without reading beyond the configured limit + 1.
-    let file = File::open(path)?;
-    limits.check_input_bytes(file.metadata()?.len())?;
-    let mut encoded = Vec::new();
-    file.take(limits.max_input_bytes.saturating_add(1))
-        .read_to_end(&mut encoded)?;
-    limits.check_input_bytes(u64::try_from(encoded.len()).unwrap_or(u64::MAX))?;
+    let encoded = read_bounded_snapshot(path, limits)?;
 
     let decoder_limits = decoder_limits(limits);
     let per_enforcement_point_cap = decoder_limits.max_alloc.unwrap_or(u64::MAX);
+    let orientation = exif_orientation(&encoded);
     let mut reader = ImageReader::new(Cursor::new(encoded.as_slice())).with_guessed_format()?;
+    let format = reader
+        .format()
+        .ok_or_else(|| RToolsError::unsupported_format("Cannot determine image format"))?;
+    reject_animated_input(
+        &encoded,
+        format,
+        decoder_limits.clone(),
+        per_enforcement_point_cap,
+    )?;
     reader.limits(decoder_limits.clone());
     let decoder = reader
         .into_decoder()
@@ -65,9 +185,29 @@ pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<Dyna
     // `DynamicImage::from_decoder` allocates that buffer.
     let mut reader = ImageReader::new(Cursor::new(encoded.as_slice())).with_guessed_format()?;
     reader.limits(decoder_limits);
-    reader
+    let image = reader
         .decode()
-        .map_err(|error| map_decode_error(error, per_enforcement_point_cap))
+        .map_err(|error| map_decode_error(error, per_enforcement_point_cap))?;
+    let orientation_applied = orientation.filter(|orientation| (2..=8).contains(orientation));
+    let image = match orientation_applied {
+        Some(orientation) => apply_exif_orientation(image, orientation),
+        None => image,
+    };
+
+    Ok(DecodedImage {
+        image,
+        orientation_applied,
+    })
+}
+
+pub(crate) fn read_bounded_snapshot(path: &Path, limits: &ResourceLimits) -> RToolsResult<Vec<u8>> {
+    let file = File::open(path)?;
+    limits.check_input_bytes(file.metadata()?.len())?;
+    let mut encoded = Vec::new();
+    file.take(limits.max_input_bytes.saturating_add(1))
+        .read_to_end(&mut encoded)?;
+    limits.check_input_bytes(u64::try_from(encoded.len()).unwrap_or(u64::MAX))?;
+    Ok(encoded)
 }
 
 /// Reopen and fully decode a newly encoded image before it becomes visible.

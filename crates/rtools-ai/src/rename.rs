@@ -89,6 +89,7 @@ impl Processor for RenameProcessor {
                     .map(|n| n.to_string_lossy().to_string()),
                 mime_type: None,
                 stats: None,
+                warnings: Vec::new(),
             });
         }
 

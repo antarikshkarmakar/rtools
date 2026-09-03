@@ -323,3 +323,25 @@ fn drop_never_deletes_a_changed_reservation() {
     assert!(!temporary.exists());
     assert_eq!(fs::read(reservation).unwrap(), b"foreign-owner");
 }
+
+#[test]
+fn legacy_file_output_without_warnings_deserializes_to_an_empty_list() {
+    let value = serde_json::json!({
+        "destination": { "File": "result.png" },
+        "name": "result.png",
+        "mime_type": "image/png",
+        "stats": null
+    });
+
+    let output: rtools_core::FileOutput = serde_json::from_value(value).unwrap();
+
+    assert!(output.warnings.is_empty());
+}
+
+#[test]
+fn empty_file_output_warnings_are_omitted_from_serialized_output() {
+    let output = rtools_core::FileOutput::to_file(PathBuf::from("result.png"));
+    let value = serde_json::to_value(output).unwrap();
+
+    assert!(value.get("warnings").is_none());
+}

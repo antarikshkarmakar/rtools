@@ -116,6 +116,7 @@ impl Processor for SortProcessor {
                 name: Some(format!("{:04}_{}", idx + 1, file_name.to_string_lossy())),
                 mime_type: None,
                 stats: None,
+                warnings: Vec::new(),
             });
         }
 

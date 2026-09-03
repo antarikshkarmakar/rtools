@@ -797,6 +797,9 @@ pub struct FileOutput {
     pub mime_type: Option<String>,
     /// Processing statistics
     pub stats: Option<ProcessStats>,
+    /// Deterministic, user-visible warnings produced while creating the output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl FileOutput {
@@ -812,6 +815,7 @@ impl FileOutput {
             name,
             mime_type: None,
             stats: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -827,6 +831,7 @@ impl FileOutput {
             name,
             mime_type: None,
             stats: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -837,6 +842,7 @@ impl FileOutput {
             name: None,
             mime_type: None,
             stats: None,
+            warnings: Vec::new(),
         }
     }
 }

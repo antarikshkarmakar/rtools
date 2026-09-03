@@ -13,6 +13,7 @@ rtools-ai = { path = "../rtools-ai", version = "0.1.0" }
 image = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+base64 = "0.22"
 
 [[test]]
 name = "image_tests"

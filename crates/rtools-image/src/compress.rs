@@ -106,15 +106,17 @@ impl Processor for CompressProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Compress requires a file path input"))?;
 
-        let format = input
-            .format
-            .or_else(|| ImageFormat::from_path(path))
-            .ok_or_else(|| RToolsError::invalid_input("Cannot determine input format"))?;
-
         let quality = config.preset.quality();
-        let target_format = config.format.unwrap_or(format);
-
-        let img = crate::format::decode_bounded(path, &config.limits)?;
+        let decoded = crate::format::decode_bounded(path, &config.limits)?;
+        let warnings = decoded.warnings();
+        let img = decoded.image;
+        let target_format = match config.format {
+            Some(format) => format,
+            None => input
+                .format
+                .or_else(|| ImageFormat::from_path(path))
+                .ok_or_else(|| RToolsError::invalid_input("Cannot determine input format"))?,
+        };
 
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
         let ext = target_format.extensions()[0];
@@ -218,7 +220,10 @@ impl Processor for CompressProcessor {
             }
         }
 
-        let output_path = pending.commit(crate::format::validate_image_artifact)?;
+        let output_path = pending.commit(|artifact| {
+            crate::format::validate_image_artifact(artifact)?;
+            crate::metadata::verify_drop_all_artifact(artifact, &config.limits)
+        })?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
@@ -235,11 +240,12 @@ impl Processor for CompressProcessor {
                 processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
+            warnings,
         })
     }
 
     fn validate_config(&self, config: &CompressConfig) -> RToolsResult<()> {
-        validate_metadata_flags(config.preserve_metadata, config.strip_gps)?;
+        crate::metadata::MetadataPolicy::from_flags(config.preserve_metadata, config.strip_gps)?;
         if let CompressionPreset::Custom(q) = config.preset {
             if q > 100 {
                 return Err(RToolsError::invalid_input(
@@ -253,27 +259,4 @@ impl Processor for CompressProcessor {
     fn name(&self) -> &'static str {
         "CompressProcessor"
     }
-}
-
-fn validate_metadata_flags(preserve_metadata: bool, strip_gps: bool) -> RToolsResult<()> {
-    if preserve_metadata && strip_gps {
-        return Err(RToolsError::invalid_input(
-            "Metadata cannot be preserved while GPS metadata is stripped",
-        ));
-    }
-    if preserve_metadata {
-        return Err(RToolsError::capability_unavailable(
-            "image.metadata.preserve",
-            "Image metadata preservation is not implemented",
-            "Disable metadata preservation until verified metadata export is available",
-        ));
-    }
-    if strip_gps {
-        return Err(RToolsError::capability_unavailable(
-            "image.metadata.strip_gps",
-            "Selective GPS metadata removal is not implemented",
-            "Use the default drop-all metadata policy until selective removal is available",
-        ));
-    }
-    Ok(())
 }

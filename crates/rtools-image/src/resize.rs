@@ -102,7 +102,9 @@ impl Processor for ResizeProcessor {
             ));
         }
 
-        let img = crate::format::decode_bounded(path, &config.limits)?;
+        let decoded = crate::format::decode_bounded(path, &config.limits)?;
+        let warnings = decoded.warnings();
+        let img = decoded.image;
         let orig_width = img.width();
         let orig_height = img.height();
 
@@ -185,6 +187,7 @@ impl Processor for ResizeProcessor {
                 processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
+            warnings,
         })
     }
 

@@ -185,6 +185,7 @@ impl Processor for PdfMergeProcessor {
                 processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
+            warnings: Vec::new(),
         })
     }
 

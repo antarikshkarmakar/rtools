@@ -112,6 +112,7 @@ impl Processor for PdfSplitProcessor {
                 name: Some(filename),
                 mime_type: Some("application/pdf".to_string()),
                 stats: None,
+                warnings: Vec::new(),
             });
         }
 

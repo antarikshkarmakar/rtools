@@ -186,7 +186,12 @@ impl Processor for ExifProcessor {
         })
     }
 
-    fn validate_config(&self, _config: &ExifConfig) -> RToolsResult<()> {
+    fn validate_config(&self, config: &ExifConfig) -> RToolsResult<()> {
+        if config.remove_gps || config.remove_all || config.output.is_some() {
+            return Err(RToolsError::invalid_input(
+                "EXIF processing is read-only; mutation flags and output paths are unsupported",
+            ));
+        }
         Ok(())
     }
 

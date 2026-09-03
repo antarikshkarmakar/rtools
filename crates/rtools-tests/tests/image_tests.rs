@@ -1,11 +1,324 @@
+use base64::Engine as _;
+use image::GenericImageView;
 use rtools_core::{ErrorCode, FileInput, OutputPolicy, PendingOutput, Processor, ResourceLimits};
+use rtools_image::crop::{AspectRatio, CropRegion, Gravity};
+use rtools_image::watermark::{WatermarkPosition, WatermarkType};
 use rtools_image::{
     CompressConfig, CompressProcessor, ConvertConfig, ConvertProcessor, CropConfig, CropProcessor,
-    MetadataConfig, MetadataProcessor, ResizeConfig, ResizeProcessor,
+    ExifConfig, ExifProcessor, FilterConfig, FilterProcessor, MetadataConfig, MetadataProcessor,
+    ResizeConfig, ResizeProcessor, WatermarkConfig, WatermarkProcessor,
 };
 use std::io::Write;
 use std::path::PathBuf;
 use tempfile::TempDir;
+
+fn decode_fixture(dir: &std::path::Path, name: &str, encoded: &str) -> PathBuf {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn exif_orientations_2_through_8_map_every_pixel_to_the_literal_position() {
+    let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(3, 2, |x, y| {
+        image::Rgba([u8::try_from(y * 3 + x + 1).unwrap(), 0, 0, 255])
+    }));
+    let cases: &[(u32, u32, u32, &[u8])] = &[
+        (2, 3, 2, &[3, 2, 1, 6, 5, 4]),
+        (3, 3, 2, &[6, 5, 4, 3, 2, 1]),
+        (4, 3, 2, &[4, 5, 6, 1, 2, 3]),
+        (5, 2, 3, &[1, 4, 2, 5, 3, 6]),
+        (6, 2, 3, &[4, 1, 5, 2, 6, 3]),
+        (7, 2, 3, &[6, 3, 5, 2, 4, 1]),
+        (8, 2, 3, &[3, 6, 2, 5, 1, 4]),
+    ];
+
+    for &(orientation, expected_width, expected_height, expected_pixels) in cases {
+        let transformed = rtools_image::format::apply_exif_orientation(image.clone(), orientation);
+        assert_eq!(
+            transformed.dimensions(),
+            (expected_width, expected_height),
+            "orientation {orientation} dimensions"
+        );
+        let actual: Vec<_> = transformed
+            .to_rgba8()
+            .pixels()
+            .map(|pixel| pixel[0])
+            .collect();
+        assert_eq!(actual, expected_pixels, "orientation {orientation} pixels");
+    }
+}
+
+#[test]
+fn bounded_decode_applies_real_jpeg_orientation_before_returning_pixels() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "orientation.jpg",
+        include_str!("../fixtures/images/orientation-6.jpg.b64"),
+    );
+
+    let decoded = rtools_image::format::decode_bounded(&input, &ResourceLimits::default()).unwrap();
+
+    assert_eq!(decoded.orientation_applied, Some(6));
+    assert_eq!(decoded.image.dimensions(), (36, 24));
+    let pixels = decoded.image.to_rgb8();
+    for (x, y, expected) in [
+        (6, 6, [240, 20, 240]),
+        (30, 6, [240, 20, 20]),
+        (6, 18, [20, 240, 240]),
+        (30, 18, [20, 240, 20]),
+    ] {
+        let actual = pixels.get_pixel(x, y).0;
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 8),
+            "pixel ({x},{y}) was {actual:?}, expected near {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn convert_records_exact_orientation_warning_and_uses_oriented_geometry() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "orientation.jpg",
+        include_str!("../fixtures/images/orientation-6.jpg.b64"),
+    );
+    let output = tmp.path().join("oriented.png");
+
+    let result = ConvertProcessor
+        .process(
+            FileInput::from_path(input),
+            ConvertConfig {
+                target_format: rtools_core::ImageFormat::Png,
+                output: Some(output.clone()),
+                ..ConvertConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(result.warnings, ["EXIF orientation 6 applied"]);
+    assert_eq!(image::open(output).unwrap().dimensions(), (36, 24));
+}
+
+#[test]
+fn convert_without_exif_orientation_has_no_warnings() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "plain.png", 3, 2);
+    let result = ConvertProcessor
+        .process(
+            FileInput::from_path(input),
+            ConvertConfig {
+                target_format: rtools_core::ImageFormat::Bmp,
+                output: Some(tmp.path().join("plain.bmp")),
+                ..ConvertConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert!(result.warnings.is_empty());
+}
+
+#[test]
+fn every_single_frame_processor_rejects_a_renamed_animated_gif_before_output_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "animation.dat",
+        include_str!("../fixtures/images/two-frame.gif.b64"),
+    );
+    let watermark = create_test_image(tmp.path(), "watermark.png", 1, 1);
+
+    let operations: Vec<(
+        &str,
+        PathBuf,
+        rtools_core::RToolsResult<rtools_core::FileOutput>,
+    )> = vec![
+        (
+            "compress",
+            tmp.path().join("compress/output.png"),
+            CompressProcessor.process(
+                FileInput::from_path(input.clone()),
+                CompressConfig {
+                    format: Some(rtools_core::ImageFormat::Png),
+                    output: Some(tmp.path().join("compress/output.png")),
+                    ..CompressConfig::default()
+                },
+            ),
+        ),
+        (
+            "convert",
+            tmp.path().join("convert/output.png"),
+            ConvertProcessor.process(
+                FileInput::from_path(input.clone()),
+                ConvertConfig {
+                    target_format: rtools_core::ImageFormat::Png,
+                    output: Some(tmp.path().join("convert/output.png")),
+                    ..ConvertConfig::default()
+                },
+            ),
+        ),
+        (
+            "resize",
+            tmp.path().join("resize/output.png"),
+            ResizeProcessor.process(
+                FileInput::from_path(input.clone()),
+                ResizeConfig {
+                    width: Some(2),
+                    output: Some(tmp.path().join("resize/output.png")),
+                    ..ResizeConfig::default()
+                },
+            ),
+        ),
+        (
+            "crop",
+            tmp.path().join("crop/output.png"),
+            CropProcessor.process(
+                FileInput::from_path(input.clone()),
+                CropConfig {
+                    output: Some(tmp.path().join("crop/output.png")),
+                    ..CropConfig::default()
+                },
+            ),
+        ),
+        (
+            "filter",
+            tmp.path().join("filter/output.png"),
+            FilterProcessor.process(
+                FileInput::from_path(input.clone()),
+                FilterConfig {
+                    output: Some(tmp.path().join("filter/output.png")),
+                    ..FilterConfig::default()
+                },
+            ),
+        ),
+        (
+            "watermark",
+            tmp.path().join("watermark/output.png"),
+            WatermarkProcessor.process(
+                FileInput::from_path(input),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::TopLeft,
+                    output: Some(tmp.path().join("watermark/output.png")),
+                    ..WatermarkConfig::default()
+                },
+            ),
+        ),
+    ];
+
+    for (name, output, result) in operations {
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.code(),
+            ErrorCode::CapabilityUnavailable,
+            "{name}: {error}"
+        );
+        assert!(!output.exists(), "{name} created final output");
+        assert!(
+            !output.parent().unwrap().exists(),
+            "{name} created output directory"
+        );
+    }
+}
+
+#[test]
+fn drop_all_validator_rejects_a_real_gps_exif_artifact() {
+    let tmp = TempDir::new().unwrap();
+    let gps = decode_fixture(
+        tmp.path(),
+        "gps.jpg",
+        include_str!("../fixtures/images/gps.jpg.b64"),
+    );
+
+    let source = ExifProcessor
+        .process(FileInput::from_path(gps.clone()), ExifConfig::default())
+        .unwrap();
+    assert!(source.gps_latitude.is_some());
+    assert!(source.gps_longitude.is_some());
+
+    let error = rtools_image::metadata::verify_drop_all_artifact(&gps, &ResourceLimits::default())
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+}
+
+#[test]
+fn compress_and_convert_drop_real_gps_and_orientation_metadata_before_commit() {
+    let tmp = TempDir::new().unwrap();
+    for operation in ["compress", "convert"] {
+        let input = decode_fixture(
+            tmp.path(),
+            &format!("gps-{operation}.jpg"),
+            include_str!("../fixtures/images/gps.jpg.b64"),
+        );
+        let output = tmp.path().join(format!("{operation}-drop-all.jpg"));
+        let result = if operation == "compress" {
+            CompressProcessor.process(
+                FileInput::from_path(input),
+                CompressConfig {
+                    format: Some(rtools_core::ImageFormat::Jpeg),
+                    output: Some(output.clone()),
+                    ..CompressConfig::default()
+                },
+            )
+        } else {
+            ConvertProcessor.process(
+                FileInput::from_path(input),
+                ConvertConfig {
+                    target_format: rtools_core::ImageFormat::Jpeg,
+                    output: Some(output.clone()),
+                    ..ConvertConfig::default()
+                },
+            )
+        }
+        .unwrap();
+
+        assert_eq!(result.destination.as_path(), Some(&output));
+        rtools_image::metadata::verify_drop_all_artifact(&output, &ResourceLimits::default())
+            .unwrap();
+        let exif = ExifProcessor
+            .process(FileInput::from_path(output), ExifConfig::default())
+            .unwrap();
+        assert!(exif.gps_latitude.is_none());
+        assert!(exif.gps_longitude.is_none());
+        assert!(exif.orientation.is_none());
+    }
+}
+
+#[test]
+fn exif_mutation_settings_fail_validation_before_input_or_output_access() {
+    let tmp = TempDir::new().unwrap();
+    for config in [
+        ExifConfig {
+            remove_gps: true,
+            ..ExifConfig::default()
+        },
+        ExifConfig {
+            remove_all: true,
+            ..ExifConfig::default()
+        },
+        ExifConfig {
+            output: Some(tmp.path().join("forbidden.jpg")),
+            ..ExifConfig::default()
+        },
+    ] {
+        let error = ExifProcessor
+            .process(FileInput::from_path(tmp.path().join("missing.jpg")), config)
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+    }
+    assert!(!tmp.path().join("forbidden.jpg").exists());
+}
 
 /// Create a test image filled with a deterministic pseudo-random pattern.
 ///
@@ -65,6 +378,20 @@ fn create_test_image(dir: &std::path::Path, name: &str, width: u32, height: u32)
                 .unwrap();
         }
     }
+    path
+}
+
+fn create_solid_png(
+    dir: &std::path::Path,
+    name: &str,
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+) -> PathBuf {
+    let path = dir.join(name);
+    image::RgbaImage::from_pixel(width, height, image::Rgba(color))
+        .save(&path)
+        .unwrap();
     path
 }
 
@@ -605,4 +932,298 @@ fn legacy_image_configs_default_missing_output_policy_to_fail_if_exists() {
         rtools_image::WatermarkConfig::default(),
         rtools_image::WatermarkConfig
     );
+}
+
+#[test]
+fn watermark_resource_errors_are_structured_and_create_no_output() {
+    let tmp = TempDir::new().unwrap();
+    let base = create_solid_png(tmp.path(), "base.png", 40, 40, [0, 0, 0, 255]);
+    let unsupported = tmp.path().join("unsupported.txt");
+    std::fs::write(&unsupported, b"not an image format").unwrap();
+    let corrupt = tmp.path().join("corrupt.png");
+    std::fs::write(&corrupt, b"\x89PNG\r\n\x1a\ntruncated").unwrap();
+    let cases = [
+        (tmp.path().join("missing.png"), ErrorCode::InvalidInput),
+        (unsupported, ErrorCode::UnsupportedFormat),
+        (corrupt, ErrorCode::ProcessingFailed),
+    ];
+
+    for (index, (image_path, expected_code)) in cases.into_iter().enumerate() {
+        let output = tmp.path().join(format!("case-{index}/output.png"));
+        let error = WatermarkProcessor
+            .process(
+                FileInput::from_path(base.clone()),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(output.clone()),
+                    ..WatermarkConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), expected_code, "case {index}: {error}");
+        assert!(!output.exists());
+        assert!(!output.parent().unwrap().exists());
+    }
+}
+
+#[test]
+fn watermark_rejects_nonfinite_and_out_of_range_numbers_before_input_access() {
+    let missing_input = FileInput::from_path(PathBuf::from("missing-base.png"));
+    let image_path = PathBuf::from("missing-watermark.png");
+    for (opacity, scale) in [
+        (f64::NAN, 1.0),
+        (f64::INFINITY, 1.0),
+        (-0.1, 1.0),
+        (1.1, 1.0),
+        (0.5, f64::NAN),
+        (0.5, f64::INFINITY),
+        (0.5, 0.0),
+        (0.5, -1.0),
+    ] {
+        let error = WatermarkProcessor
+            .process(
+                missing_input.clone(),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: image_path.clone(),
+                        scale,
+                    },
+                    opacity,
+                    ..WatermarkConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ErrorCode::InvalidInput,
+            "opacity={opacity}, scale={scale}"
+        );
+    }
+}
+
+#[test]
+fn watermark_rejects_zero_or_oversized_scaled_overlay_and_out_of_bounds_placement() {
+    let tmp = TempDir::new().unwrap();
+    let base = create_solid_png(tmp.path(), "base.png", 10, 10, [0, 0, 0, 255]);
+    let watermark = create_solid_png(tmp.path(), "mark.png", 2, 2, [255, 255, 255, 255]);
+    let cases = [
+        (0.1, WatermarkPosition::Pixels { x: 0, y: 0 }),
+        (6.0, WatermarkPosition::Pixels { x: 0, y: 0 }),
+        (1.0, WatermarkPosition::Pixels { x: 9, y: 9 }),
+        (1.0, WatermarkPosition::Percentage { x: 100.0, y: 0.0 }),
+        (1.0, WatermarkPosition::BottomRight),
+    ];
+
+    for (index, (scale, position)) in cases.into_iter().enumerate() {
+        let output = tmp.path().join(format!("bounds-{index}/output.png"));
+        let error = WatermarkProcessor
+            .process(
+                FileInput::from_path(base.clone()),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark.clone(),
+                        scale,
+                    },
+                    position,
+                    output: Some(output.clone()),
+                    ..WatermarkConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ErrorCode::InvalidInput,
+            "case {index}: {error}"
+        );
+        assert!(!output.exists());
+        assert!(!output.parent().unwrap().exists());
+    }
+}
+
+#[test]
+fn image_watermark_places_and_blends_the_full_overlay_at_requested_opacity() {
+    let tmp = TempDir::new().unwrap();
+    let base = create_solid_png(tmp.path(), "base.png", 10, 10, [0, 0, 0, 255]);
+    let watermark = create_solid_png(tmp.path(), "mark.png", 2, 2, [255, 255, 255, 255]);
+    let output = tmp.path().join("output.png");
+
+    WatermarkProcessor
+        .process(
+            FileInput::from_path(base),
+            WatermarkConfig {
+                watermark: WatermarkType::Image {
+                    image_path: watermark,
+                    scale: 1.0,
+                },
+                position: WatermarkPosition::Pixels { x: 2, y: 3 },
+                opacity: 0.5,
+                output: Some(output.clone()),
+                ..WatermarkConfig::default()
+            },
+        )
+        .unwrap();
+
+    let pixels = image::open(output).unwrap().to_rgba8();
+    assert_eq!(pixels.get_pixel(1, 3).0, [0, 0, 0, 255]);
+    for (x, y) in [(2, 3), (3, 3), (2, 4), (3, 4)] {
+        let pixel = pixels.get_pixel(x, y).0;
+        assert!(pixel[..3].iter().all(|channel| channel.abs_diff(128) <= 1));
+    }
+    assert_eq!(pixels.get_pixel(4, 4).0, [0, 0, 0, 255]);
+}
+
+#[test]
+fn metadata_flag_policies_are_identical_for_compress_and_convert_before_output_access() {
+    let tmp = TempDir::new().unwrap();
+    for (index, (preserve_metadata, strip_gps, expected)) in [
+        (true, false, ErrorCode::CapabilityUnavailable),
+        (false, true, ErrorCode::CapabilityUnavailable),
+        (true, true, ErrorCode::InvalidInput),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let compress_output = tmp.path().join(format!("compress-{index}/output.png"));
+        let compress_error = CompressProcessor
+            .process(
+                FileInput::from_path(tmp.path().join("missing.png")),
+                CompressConfig {
+                    format: Some(rtools_core::ImageFormat::Png),
+                    output: Some(compress_output.clone()),
+                    preserve_metadata,
+                    strip_gps,
+                    ..CompressConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(compress_error.code(), expected);
+        assert!(!compress_output.parent().unwrap().exists());
+
+        let convert_output = tmp.path().join(format!("convert-{index}/output.png"));
+        let convert_error = ConvertProcessor
+            .process(
+                FileInput::from_path(tmp.path().join("missing.png")),
+                ConvertConfig {
+                    target_format: rtools_core::ImageFormat::Png,
+                    output: Some(convert_output.clone()),
+                    preserve_metadata,
+                    strip_gps,
+                    ..ConvertConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(convert_error.code(), expected);
+        assert!(!convert_output.parent().unwrap().exists());
+    }
+}
+
+#[test]
+fn every_single_frame_processor_records_orientation_and_uses_oriented_geometry() {
+    let tmp = TempDir::new().unwrap();
+    let encoded = include_str!("../fixtures/images/orientation-6.jpg.b64");
+    let watermark = create_solid_png(tmp.path(), "mark.png", 2, 2, [255, 255, 255, 255]);
+    let input = |name: &str| decode_fixture(tmp.path(), name, encoded);
+    let outputs = [
+        CompressProcessor
+            .process(
+                FileInput::from_path(input("compress.jpg")),
+                CompressConfig {
+                    format: Some(rtools_core::ImageFormat::Png),
+                    output: Some(tmp.path().join("compress.png")),
+                    ..CompressConfig::default()
+                },
+            )
+            .unwrap(),
+        ConvertProcessor
+            .process(
+                FileInput::from_path(input("convert.jpg")),
+                ConvertConfig {
+                    target_format: rtools_core::ImageFormat::Png,
+                    output: Some(tmp.path().join("convert.png")),
+                    ..ConvertConfig::default()
+                },
+            )
+            .unwrap(),
+        ResizeProcessor
+            .process(
+                FileInput::from_path(input("resize.jpg")),
+                ResizeConfig {
+                    width: Some(36),
+                    output: Some(tmp.path().join("resize.png")),
+                    ..ResizeConfig::default()
+                },
+            )
+            .unwrap(),
+        CropProcessor
+            .process(
+                FileInput::from_path(input("crop.jpg")),
+                CropConfig {
+                    region: CropRegion::AspectRatio {
+                        ratio: AspectRatio::Original,
+                        gravity: Gravity::Center,
+                    },
+                    output: Some(tmp.path().join("crop.png")),
+                    ..CropConfig::default()
+                },
+            )
+            .unwrap(),
+        FilterProcessor
+            .process(
+                FileInput::from_path(input("filter.jpg")),
+                FilterConfig {
+                    output: Some(tmp.path().join("filter.png")),
+                    ..FilterConfig::default()
+                },
+            )
+            .unwrap(),
+        WatermarkProcessor
+            .process(
+                FileInput::from_path(input("watermark.jpg")),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(tmp.path().join("watermark.png")),
+                    ..WatermarkConfig::default()
+                },
+            )
+            .unwrap(),
+    ];
+
+    for output in outputs {
+        assert_eq!(output.warnings, ["EXIF orientation 6 applied"]);
+        assert_eq!(
+            image::open(output.destination.as_path().unwrap())
+                .unwrap()
+                .dimensions(),
+            (36, 24)
+        );
+    }
+}
+
+#[test]
+fn absent_orientation_and_malformed_exif_leave_geometry_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let plain = create_test_image(tmp.path(), "plain.jpg", 7, 5);
+    let plain_bytes = std::fs::read(&plain).unwrap();
+    let mut malformed = Vec::with_capacity(plain_bytes.len() + 14);
+    malformed.extend_from_slice(&plain_bytes[..2]);
+    malformed.extend_from_slice(b"\xff\xe1\x00\x0cExif\0\0bad!");
+    malformed.extend_from_slice(&plain_bytes[2..]);
+    let malformed_path = tmp.path().join("malformed.jpg");
+    std::fs::write(&malformed_path, malformed).unwrap();
+
+    for path in [plain, malformed_path] {
+        let decoded =
+            rtools_image::format::decode_bounded(&path, &ResourceLimits::default()).unwrap();
+        assert_eq!(decoded.orientation_applied, None);
+        assert_eq!(decoded.image.dimensions(), (7, 5));
+        assert!(decoded.warnings().is_empty());
+    }
 }

@@ -91,7 +91,9 @@ impl Processor for FilterProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Filter requires a file path input"))?;
 
-        let img = crate::format::decode_bounded(path, &config.limits)?;
+        let decoded = crate::format::decode_bounded(path, &config.limits)?;
+        let warnings = decoded.warnings();
+        let img = decoded.image;
 
         let output = config.output.unwrap_or_else(|| {
             let mut out = path.clone();
@@ -145,6 +147,7 @@ impl Processor for FilterProcessor {
                 processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
+            warnings,
         })
     }
 

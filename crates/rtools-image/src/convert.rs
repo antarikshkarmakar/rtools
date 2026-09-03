@@ -78,7 +78,9 @@ impl Processor for ConvertProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Convert requires a file path input"))?;
 
-        let img = crate::format::decode_bounded(path, &config.limits)?;
+        let decoded = crate::format::decode_bounded(path, &config.limits)?;
+        let warnings = decoded.warnings();
+        let img = decoded.image;
 
         // Generate output path using target format extension
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -200,7 +202,10 @@ impl Processor for ConvertProcessor {
             }
         }
 
-        let output_path = pending.commit(crate::format::validate_image_artifact)?;
+        let output_path = pending.commit(|artifact| {
+            crate::format::validate_image_artifact(artifact)?;
+            crate::metadata::verify_drop_all_artifact(artifact, &config.limits)
+        })?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
@@ -217,11 +222,12 @@ impl Processor for ConvertProcessor {
                 processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
+            warnings,
         })
     }
 
     fn validate_config(&self, config: &ConvertConfig) -> RToolsResult<()> {
-        validate_metadata_flags(config.preserve_metadata, config.strip_gps)?;
+        crate::metadata::MetadataPolicy::from_flags(config.preserve_metadata, config.strip_gps)?;
         if config.quality > 100 {
             return Err(RToolsError::invalid_input(
                 "Quality must be between 0 and 100",
@@ -233,27 +239,4 @@ impl Processor for ConvertProcessor {
     fn name(&self) -> &'static str {
         "ConvertProcessor"
     }
-}
-
-fn validate_metadata_flags(preserve_metadata: bool, strip_gps: bool) -> RToolsResult<()> {
-    if preserve_metadata && strip_gps {
-        return Err(RToolsError::invalid_input(
-            "Metadata cannot be preserved while GPS metadata is stripped",
-        ));
-    }
-    if preserve_metadata {
-        return Err(RToolsError::capability_unavailable(
-            "image.metadata.preserve",
-            "Image metadata preservation is not implemented",
-            "Disable metadata preservation until verified metadata export is available",
-        ));
-    }
-    if strip_gps {
-        return Err(RToolsError::capability_unavailable(
-            "image.metadata.strip_gps",
-            "Selective GPS metadata removal is not implemented",
-            "Use the default drop-all metadata policy until selective removal is available",
-        ));
-    }
-    Ok(())
 }

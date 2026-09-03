@@ -87,6 +87,22 @@ fn bounded_dimension(value: f64) -> u32 {
     value.clamp(0.0, f64::from(u32::MAX)).round() as u32
 }
 
+fn scaled_dimension(dimension: u32, scale: f64) -> RToolsResult<u32> {
+    let scaled = f64::from(dimension) * scale;
+    if !scaled.is_finite() || scaled > f64::from(u32::MAX) {
+        return Err(RToolsError::invalid_input(
+            "Scaled watermark dimensions exceed supported bounds",
+        ));
+    }
+    let scaled = bounded_dimension(scaled);
+    if scaled == 0 {
+        return Err(RToolsError::invalid_input(
+            "Scaled watermark dimensions must be nonzero",
+        ));
+    }
+    Ok(scaled)
+}
+
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn channel(value: f64) -> u8 {
     // Blend inputs are clamped to the inclusive 8-bit color-channel range.
@@ -130,19 +146,38 @@ impl Processor for WatermarkProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("Watermark requires a file path input"))?;
 
-        let img = crate::format::decode_bounded(path, &config.limits)?;
+        let decoded = crate::format::decode_bounded(path, &config.limits)?;
+        let mut warnings = decoded.warnings();
+        let img = decoded.image;
         let mut base_img = img.to_rgba8();
         let (base_width, base_height) = (base_img.width(), base_img.height());
 
-        let opacity = config.opacity.clamp(0.0, 1.0);
+        let opacity = config.opacity;
 
         match &config.watermark {
             WatermarkType::Image { image_path, scale } => {
                 {
-                    let wm_dyn = crate::format::decode_bounded(image_path, &config.limits)?;
-                    let target_scale = scale.clamp(0.01, 2.0);
-                    let wm_w = bounded_dimension(f64::from(wm_dyn.width()) * target_scale).max(1);
-                    let wm_h = bounded_dimension(f64::from(wm_dyn.height()) * target_scale).max(1);
+                    let wm_decoded = crate::format::decode_bounded(image_path, &config.limits)
+                        .map_err(|error| match error {
+                            RToolsError::Io(io_error)
+                                if io_error.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                RToolsError::invalid_input(format!(
+                                    "Watermark image does not exist: {}",
+                                    image_path.display()
+                                ))
+                            }
+                            other => other,
+                        })?;
+                    let mut watermark_warnings = wm_decoded.warnings();
+                    let wm_dyn = wm_decoded.image;
+                    let wm_w = scaled_dimension(wm_dyn.width(), *scale)?;
+                    let wm_h = scaled_dimension(wm_dyn.height(), *scale)?;
+                    if wm_w > base_width || wm_h > base_height {
+                        return Err(RToolsError::invalid_input(
+                            "Scaled watermark does not fit within the base image",
+                        ));
+                    }
                     let wm_resized = wm_dyn
                         .resize(wm_w, wm_h, image::imageops::FilterType::Lanczos3)
                         .to_rgba8();
@@ -153,33 +188,32 @@ impl Processor for WatermarkProcessor {
                         wm_resized.width(),
                         wm_resized.height(),
                         &config.position,
-                    );
+                    )?;
+                    warnings.append(&mut watermark_warnings);
 
                     // Blend watermark onto base image
                     for y in 0..wm_resized.height() {
                         for x in 0..wm_resized.width() {
                             let target_x = start_x + x;
                             let target_y = start_y + y;
-                            if target_x < base_width && target_y < base_height {
-                                let wm_pixel = wm_resized.get_pixel(x, y);
-                                let base_pixel = base_img.get_pixel_mut(target_x, target_y);
+                            let wm_pixel = wm_resized.get_pixel(x, y);
+                            let base_pixel = base_img.get_pixel_mut(target_x, target_y);
 
-                                let wm_alpha = (f64::from(wm_pixel[3]) / 255.0) * opacity;
-                                let inv_alpha = 1.0 - wm_alpha;
+                            let wm_alpha = (f64::from(wm_pixel[3]) / 255.0) * opacity;
+                            let inv_alpha = 1.0 - wm_alpha;
 
-                                base_pixel[0] = channel(
-                                    f64::from(base_pixel[0])
-                                        .mul_add(inv_alpha, f64::from(wm_pixel[0]) * wm_alpha),
-                                );
-                                base_pixel[1] = channel(
-                                    f64::from(base_pixel[1])
-                                        .mul_add(inv_alpha, f64::from(wm_pixel[1]) * wm_alpha),
-                                );
-                                base_pixel[2] = channel(
-                                    f64::from(base_pixel[2])
-                                        .mul_add(inv_alpha, f64::from(wm_pixel[2]) * wm_alpha),
-                                );
-                            }
+                            base_pixel[0] = channel(
+                                f64::from(base_pixel[0])
+                                    .mul_add(inv_alpha, f64::from(wm_pixel[0]) * wm_alpha),
+                            );
+                            base_pixel[1] = channel(
+                                f64::from(base_pixel[1])
+                                    .mul_add(inv_alpha, f64::from(wm_pixel[1]) * wm_alpha),
+                            );
+                            base_pixel[2] = channel(
+                                f64::from(base_pixel[2])
+                                    .mul_add(inv_alpha, f64::from(wm_pixel[2]) * wm_alpha),
+                            );
                         }
                     }
                 }
@@ -239,14 +273,39 @@ impl Processor for WatermarkProcessor {
                 processing_time_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 memory_used_mb: 0.0,
             }),
+            warnings,
         })
     }
 
     fn validate_config(&self, config: &WatermarkConfig) -> RToolsResult<()> {
-        if config.opacity < 0.0 || config.opacity > 1.0 {
+        if !config.opacity.is_finite() || config.opacity < 0.0 || config.opacity > 1.0 {
             return Err(RToolsError::invalid_input(
                 "Opacity must be between 0.0 and 1.0",
             ));
+        }
+        if let WatermarkType::Image { image_path, scale } = &config.watermark {
+            if !scale.is_finite() || *scale <= 0.0 {
+                return Err(RToolsError::invalid_input(
+                    "Watermark scale must be finite and positive",
+                ));
+            }
+            if !image_path.is_file() {
+                return Err(RToolsError::invalid_input(format!(
+                    "Watermark image does not exist or is not a file: {}",
+                    image_path.display()
+                )));
+            }
+        }
+        if let WatermarkPosition::Percentage { x, y } = &config.position {
+            if !x.is_finite()
+                || !y.is_finite()
+                || !(0.0..=100.0).contains(x)
+                || !(0.0..=100.0).contains(y)
+            {
+                return Err(RToolsError::invalid_input(
+                    "Watermark percentage position must be finite and between 0.0 and 100.0",
+                ));
+            }
         }
         Ok(())
     }
@@ -262,16 +321,27 @@ fn calculate_watermark_pos(
     wm_w: u32,
     wm_h: u32,
     pos: &WatermarkPosition,
-) -> (u32, u32) {
+) -> RToolsResult<(u32, u32)> {
     let padding = 16u32;
-    match pos {
+    let right = || {
+        wm_w.checked_add(padding)
+            .and_then(|offset| base_w.checked_sub(offset))
+            .ok_or_else(|| {
+                RToolsError::invalid_input("Watermark placement exceeds base image bounds")
+            })
+    };
+    let bottom = || {
+        wm_h.checked_add(padding)
+            .and_then(|offset| base_h.checked_sub(offset))
+            .ok_or_else(|| {
+                RToolsError::invalid_input("Watermark placement exceeds base image bounds")
+            })
+    };
+    let position = match pos {
         WatermarkPosition::TopLeft => (padding, padding),
-        WatermarkPosition::TopRight => (base_w.saturating_sub(wm_w + padding), padding),
-        WatermarkPosition::BottomLeft => (padding, base_h.saturating_sub(wm_h + padding)),
-        WatermarkPosition::BottomRight => (
-            base_w.saturating_sub(wm_w + padding),
-            base_h.saturating_sub(wm_h + padding),
-        ),
+        WatermarkPosition::TopRight => (right()?, padding),
+        WatermarkPosition::BottomLeft => (padding, bottom()?),
+        WatermarkPosition::BottomRight => (right()?, bottom()?),
         WatermarkPosition::Center => (
             (base_w.saturating_sub(wm_w)) / 2,
             (base_h.saturating_sub(wm_h)) / 2,
@@ -281,5 +351,19 @@ fn calculate_watermark_pos(
             bounded_dimension(x * f64::from(base_w) / 100.0),
             bounded_dimension(y * f64::from(base_h) / 100.0),
         ),
+    };
+    let fits = position
+        .0
+        .checked_add(wm_w)
+        .is_some_and(|right| right <= base_w)
+        && position
+            .1
+            .checked_add(wm_h)
+            .is_some_and(|bottom| bottom <= base_h);
+    if !fits {
+        return Err(RToolsError::invalid_input(
+            "Watermark placement exceeds base image bounds",
+        ));
     }
+    Ok(position)
 }

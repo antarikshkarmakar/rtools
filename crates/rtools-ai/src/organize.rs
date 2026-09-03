@@ -122,6 +122,7 @@ impl Processor for OrganizeProcessor {
                     .map(|s| s.to_string_lossy().to_string()),
                 mime_type: None,
                 stats: None,
+                warnings: Vec::new(),
             });
         }
 
