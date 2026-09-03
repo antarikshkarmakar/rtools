@@ -52,16 +52,35 @@ fn redact_secrets(value: &mut toml::Value) {
 }
 
 fn is_secret_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
+    let mut normalized = String::with_capacity(key.len());
+    for character in key.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.ends_with('_') {
+            normalized.push('_');
+        }
+    }
+    let key = normalized.trim_matches('_');
     matches!(
-        key.as_str(),
-        "api_key" | "password" | "passphrase" | "secret" | "token" | "private_key"
+        key,
+        "api_key"
+            | "credential"
+            | "credentials"
+            | "password"
+            | "passphrase"
+            | "private_key"
+            | "secret"
+            | "secret_key"
+            | "token"
     ) || key.ends_with("_password")
         || key.ends_with("_passphrase")
         || key.ends_with("_secret")
+        || key.ends_with("_secret_key")
         || key.ends_with("_token")
         || key.ends_with("_api_key")
         || key.ends_with("_private_key")
+        || key.ends_with("_credential")
+        || key.ends_with("_credentials")
 }
 
 #[cfg(test)]
@@ -84,7 +103,7 @@ mod tests {
     #[test]
     fn secret_redaction_is_key_aware_and_recursive() {
         let mut value: toml::Value = toml::from_str(
-            "[outer]\npassword = \"first-secret\"\nmonkey = \"public-value\"\n\n[outer.child]\naccess_token = \"second-secret\"\n",
+            "[outer]\npassword = \"first-secret\"\nmonkey = \"public-value\"\nsecret_key = \"third-secret\"\nclient_credentials = \"fourth-secret\"\ntokenizer = \"benign-tokenizer\"\nsecretary = \"benign-secretary\"\n\n[outer.child]\naccess_token = \"second-secret\"\n",
         )
         .unwrap();
 
@@ -96,7 +115,11 @@ mod tests {
         for output in [&serialized, &json, &debug] {
             assert!(!output.contains("first-secret"));
             assert!(!output.contains("second-secret"));
+            assert!(!output.contains("third-secret"));
+            assert!(!output.contains("fourth-secret"));
         }
         assert!(serialized.contains("public-value"));
+        assert!(serialized.contains("benign-tokenizer"));
+        assert!(serialized.contains("benign-secretary"));
     }
 }
