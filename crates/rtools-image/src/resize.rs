@@ -1,6 +1,6 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
-use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
+use rtools_core::{FileInput, FileOutput, OutputPolicy, PendingOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -50,6 +50,9 @@ pub struct ResizeConfig {
     pub algorithm: ResizeAlgorithm,
     /// Output path (None = overwrite)
     pub output: Option<PathBuf>,
+    /// Collision behavior for the final output path.
+    #[serde(default)]
+    pub output_policy: OutputPolicy,
     /// Output quality for lossy formats (0-100)
     pub quality: u8,
     /// Resource limits enforced before image decoding.
@@ -65,6 +68,7 @@ impl Default for ResizeConfig {
             maintain_aspect: true,
             algorithm: ResizeAlgorithm::default(),
             output: None,
+            output_policy: OutputPolicy::default(),
             quality: 85,
             limits: ResourceLimits::default(),
         }
@@ -149,12 +153,17 @@ impl Processor for ResizeProcessor {
         };
 
         if let Some(parent) = output.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
+        let image_format = image::ImageFormat::from_path(&output).map_err(|error| {
+            RToolsError::image(format!("Invalid resize output format: {error}"))
+        })?;
+        let pending = PendingOutput::new(&output, config.output_policy)?;
 
         resized
-            .save(&output)
+            .save_with_format(pending.temporary_path(), image_format)
             .map_err(|e| RToolsError::image(format!("Failed to save resized image: {e}")))?;
+        let output = pending.commit(crate::format::validate_image_artifact)?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();

@@ -1,4 +1,4 @@
-use rtools_core::{FileInput, Processor, ResourceLimits};
+use rtools_core::{ErrorCode, FileInput, OutputPolicy, Processor, ResourceLimits};
 use rtools_image::{
     CompressConfig, CompressProcessor, ConvertConfig, ConvertProcessor, CropConfig, CropProcessor,
     MetadataConfig, MetadataProcessor, ResizeConfig, ResizeProcessor,
@@ -237,6 +237,7 @@ fn test_compress_jpeg() {
         preset: rtools_image::compress::CompressionPreset::Balanced,
         format: None,
         output: Some(tmp.path().join("out.jpg")),
+        output_policy: OutputPolicy::FailIfExists,
         preserve_metadata: true,
         strip_gps: false,
         limits: ResourceLimits::default(),
@@ -261,6 +262,7 @@ fn test_compress_png() {
         preset: rtools_image::compress::CompressionPreset::Custom(90),
         format: None,
         output: Some(tmp.path().join("out.png")),
+        output_policy: OutputPolicy::FailIfExists,
         preserve_metadata: true,
         strip_gps: false,
         limits: ResourceLimits::default(),
@@ -282,6 +284,7 @@ fn test_convert_png_to_jpeg() {
     let config = ConvertConfig {
         target_format: rtools_core::ImageFormat::Jpeg,
         output: Some(tmp.path().join("converted.jpg")),
+        output_policy: OutputPolicy::FailIfExists,
         output_dir: None,
         quality: 85,
         preserve_metadata: true,
@@ -309,6 +312,7 @@ fn test_resize_image() {
         maintain_aspect: true,
         algorithm: rtools_image::resize::ResizeAlgorithm::default(),
         output: Some(tmp.path().join("resized.png")),
+        output_policy: OutputPolicy::FailIfExists,
         quality: 85,
         limits: ResourceLimits::default(),
     };
@@ -336,6 +340,7 @@ fn test_resize_maintain_aspect() {
         maintain_aspect: true,
         algorithm: rtools_image::resize::ResizeAlgorithm::default(),
         output: Some(tmp.path().join("aspect_out.png")),
+        output_policy: OutputPolicy::FailIfExists,
         quality: 85,
         limits: ResourceLimits::default(),
     };
@@ -363,6 +368,7 @@ fn test_crop_image() {
             height: 100,
         },
         output: Some(tmp.path().join("cropped.png")),
+        output_policy: OutputPolicy::FailIfExists,
         quality: 85,
         limits: ResourceLimits::default(),
     };
@@ -403,6 +409,7 @@ fn test_compress_custom_quality() {
         preset: rtools_image::compress::CompressionPreset::Custom(10),
         format: None,
         output: Some(tmp.path().join("low_quality.jpg")),
+        output_policy: OutputPolicy::FailIfExists,
         preserve_metadata: false,
         strip_gps: false,
         limits: ResourceLimits::default(),
@@ -420,6 +427,7 @@ fn test_compress_custom_quality() {
         preset: rtools_image::compress::CompressionPreset::Custom(95),
         format: None,
         output: Some(tmp.path().join("high_quality.jpg")),
+        output_policy: OutputPolicy::FailIfExists,
         preserve_metadata: false,
         strip_gps: false,
         limits: ResourceLimits::default(),
@@ -448,6 +456,7 @@ fn test_output_path_created() {
         preset: rtools_image::compress::CompressionPreset::Balanced,
         format: None,
         output: Some(out_dir.join("result.png")),
+        output_policy: OutputPolicy::FailIfExists,
         preserve_metadata: true,
         strip_gps: false,
         limits: ResourceLimits::default(),
@@ -457,4 +466,89 @@ fn test_output_path_created() {
     let result = processor.process(file_input, config).unwrap();
 
     assert!(result.destination.as_path().unwrap().exists());
+}
+
+#[test]
+fn image_fail_if_exists_preserves_original_bytes_and_leaves_no_temporary() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "collision-input.png", 16, 16);
+    let output = tmp.path().join("collision-output.png");
+    std::fs::write(&output, b"original").unwrap();
+
+    let error = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Png),
+                output: Some(output.clone()),
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(output).unwrap(), b"original");
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains("rtools"))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
+fn image_unique_name_commits_a_decodable_unicode_output() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "unicode-input.png", 16, 16);
+    let output = tmp.path().join("结果-🌌.png");
+    std::fs::write(&output, b"occupied").unwrap();
+
+    let result = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Png),
+                output: Some(output),
+                output_policy: OutputPolicy::UniqueName,
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap();
+
+    let committed = result.destination.as_path().unwrap();
+    assert_eq!(committed.file_name().unwrap(), "结果-🌌_1.png");
+    image::ImageReader::open(committed)
+        .unwrap()
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap();
+}
+
+#[test]
+fn failed_image_encode_leaves_no_final_or_temporary_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "unsupported-input.png", 16, 16);
+    let output = tmp.path().join("unsupported-output.heic");
+
+    let error = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Heic),
+                output: Some(output.clone()),
+                output_policy: OutputPolicy::FailIfExists,
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    assert!(!output.exists());
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains("rtools"))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
 }

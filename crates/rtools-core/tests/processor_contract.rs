@@ -1,7 +1,7 @@
 use rtools_core::{Processor, RToolsError, RToolsResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 use {derive_more as _, dirs as _, figment as _, serde as _, serde_json as _, thiserror as _};
-use {toml as _, tracing as _};
+use {tempfile as _, toml as _, tracing as _};
 
 struct RejectingProcessor {
     ran: AtomicBool,

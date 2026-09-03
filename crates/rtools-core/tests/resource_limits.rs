@@ -1,7 +1,7 @@
 use rtools_core::{RToolsError, ResourceLimits};
 use {
-    derive_more as _, dirs as _, figment as _, serde as _, serde_json as _, thiserror as _,
-    toml as _, tracing as _,
+    derive_more as _, dirs as _, figment as _, serde as _, serde_json as _, tempfile as _,
+    thiserror as _, toml as _, tracing as _,
 };
 
 #[test]

@@ -10,9 +10,12 @@ pub use config::AppConfig;
 pub use error::{ErrorCode, RToolsError, RToolsResult};
 pub use input::{FileInput, InputSource};
 pub use limits::ResourceLimits;
-pub use output::{resolve_output_path, FileOutput, OutputDestination};
+pub use output::{resolve_output_path, FileOutput, OutputDestination, OutputPolicy, PendingOutput};
 pub use traits::{AIProcessor, BatchProcessor, MetadataExtractor, Processor};
 pub use types::{
     ContentType, ExifData, ImageFormat, ImageMetadata, PageSize, PageSizeUnit, PdfMetadata,
     PdfOutputFormat, ProcessStats,
 };
+
+#[cfg(test)]
+use tempfile as _;

@@ -126,6 +126,9 @@ pub enum RToolsError {
 
     #[error("Configuration invalid: {0}")]
     ConfigurationInvalid(String),
+
+    #[error("Rollback failed: {0}")]
+    RollbackFailed(String),
 }
 
 /// Result type alias for rtools operations
@@ -211,6 +214,11 @@ impl RToolsError {
         RToolsError::ConfigurationInvalid(msg.into())
     }
 
+    /// Create a new rollback failed error.
+    pub fn rollback_failed<S: Into<String>>(msg: S) -> Self {
+        RToolsError::RollbackFailed(msg.into())
+    }
+
     /// Return the stable machine-readable code for this error.
     pub const fn code(&self) -> ErrorCode {
         match self {
@@ -237,6 +245,7 @@ impl RToolsError {
             }
             Self::BatchError(_) => ErrorCode::PartialFailure,
             Self::OutputExists(_) => ErrorCode::OutputExists,
+            Self::RollbackFailed(_) => ErrorCode::RollbackFailed,
         }
     }
 }

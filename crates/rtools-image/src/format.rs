@@ -70,6 +70,15 @@ pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<Dyna
         .map_err(|error| map_decode_error(error, per_enforcement_point_cap))
 }
 
+/// Reopen and fully decode a newly encoded image before it becomes visible.
+pub(crate) fn validate_image_artifact(path: &Path) -> RToolsResult<()> {
+    ImageReader::open(path)?
+        .with_guessed_format()?
+        .decode()
+        .map_err(|error| RToolsError::image(format!("encoded image validation failed: {error}")))?;
+    Ok(())
+}
+
 /// Image format utilities
 pub const fn is_lossy(format: &ImageFormat) -> bool {
     matches!(

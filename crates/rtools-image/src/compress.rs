@@ -1,9 +1,9 @@
 use image::ImageEncoder;
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::{ImageFormat, ProcessStats};
-use rtools_core::{FileInput, FileOutput, Processor, ResourceLimits};
+use rtools_core::{FileInput, FileOutput, OutputPolicy, PendingOutput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// Compression quality preset
@@ -46,6 +46,9 @@ pub struct CompressConfig {
     pub format: Option<ImageFormat>,
     /// Output path (None = {stem}_compressed.{ext})
     pub output: Option<PathBuf>,
+    /// Collision behavior for the final output path.
+    #[serde(default)]
+    pub output_policy: OutputPolicy,
     /// Preserve metadata
     pub preserve_metadata: bool,
     /// Strip GPS data
@@ -61,29 +64,12 @@ impl Default for CompressConfig {
             preset: CompressionPreset::Balanced,
             format: None,
             output: None,
+            output_policy: OutputPolicy::default(),
             preserve_metadata: true,
             strip_gps: false,
             limits: ResourceLimits::default(),
         }
     }
-}
-
-/// Get a unique output path by appending a numeric suffix if file exists
-fn unique_output_path(path: &Path) -> PathBuf {
-    if !path.exists() {
-        return path.to_path_buf();
-    }
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let ext = path.extension().unwrap_or_default().to_string_lossy();
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    for i in 1..1000 {
-        let new_name = format!("{stem}_{i}.{ext}");
-        let new_path = parent.join(new_name);
-        if !new_path.exists() {
-            return new_path;
-        }
-    }
-    path.to_path_buf()
 }
 
 /// Calculates a finite compression ratio for two filesystem byte counts.
@@ -141,11 +127,10 @@ impl Processor for CompressProcessor {
                 .join(file_name),
         };
 
-        let output_path = unique_output_path(&output_path);
-
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let pending = PendingOutput::new(&output_path, config.output_policy)?;
 
         // Log alpha channel warning for JPEG targets
         if target_format == ImageFormat::Jpeg && img.color().has_alpha() {
@@ -157,14 +142,14 @@ impl Processor for CompressProcessor {
         match target_format {
             ImageFormat::Jpeg => {
                 let rgb = img.to_rgb8();
-                let file = std::fs::File::create(&output_path)?;
+                let file = std::fs::File::create(pending.temporary_path())?;
                 let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
                 encoder
                     .encode_image(&rgb)
                     .map_err(|e| RToolsError::image(format!("JPEG compression failed: {e}")))?;
             }
             ImageFormat::Png => {
-                let file = std::fs::File::create(&output_path)?;
+                let file = std::fs::File::create(pending.temporary_path())?;
                 let encoder = image::codecs::png::PngEncoder::new_with_quality(
                     file,
                     image::codecs::png::CompressionType::Best,
@@ -194,7 +179,7 @@ impl Processor for CompressProcessor {
             }
             ImageFormat::Webp => {
                 // image 0.25 only exposes lossless WebP encoding (VP8L)
-                let file = std::fs::File::create(&output_path)?;
+                let file = std::fs::File::create(pending.temporary_path())?;
                 let encoder = image::codecs::webp::WebPEncoder::new_lossless(file);
                 if img.color().has_alpha() {
                     let rgba = img.to_rgba8();
@@ -219,15 +204,21 @@ impl Processor for CompressProcessor {
                 }
             }
             ImageFormat::Avif => {
-                img.save_with_format(&output_path, image::ImageFormat::Avif)
+                img.save_with_format(pending.temporary_path(), image::ImageFormat::Avif)
                     .map_err(|e| RToolsError::image(format!("AVIF compression failed: {e}")))?;
             }
             _ => {
-                img.save(&output_path).map_err(|e| {
-                    RToolsError::image(format!("Compression failed for {target_format:?}: {e}"))
+                let image_format = image::ImageFormat::from_path(&output_path).map_err(|e| {
+                    RToolsError::image(format!("Unsupported compression output format: {e}"))
                 })?;
+                img.save_with_format(pending.temporary_path(), image_format)
+                    .map_err(|e| {
+                        RToolsError::image(format!("Compression failed for {target_format:?}: {e}"))
+                    })?;
             }
         }
+
+        let output_path = pending.commit(crate::format::validate_image_artifact)?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();

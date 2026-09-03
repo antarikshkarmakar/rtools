@@ -62,6 +62,7 @@ pub async fn compress(
                 .format
                 .and_then(|f| rtools_core::ImageFormat::from_extension(&f)),
             output: None,
+            output_policy: rtools_core::OutputPolicy::default(),
             preserve_metadata: true,
             strip_gps: false,
             limits: state.config.limits.clone(),
@@ -123,6 +124,7 @@ pub async fn convert(
             target_format: rtools_core::ImageFormat::from_extension(&file_name)
                 .unwrap_or(rtools_core::ImageFormat::Jpeg),
             output: None,
+            output_policy: rtools_core::OutputPolicy::default(),
             output_dir: None,
             quality: state.config.image.default_quality,
             preserve_metadata: true,
@@ -180,6 +182,7 @@ pub async fn resize(
             maintain_aspect: true,
             algorithm: rtools_image::resize::ResizeAlgorithm::default(),
             output: None,
+            output_policy: rtools_core::OutputPolicy::default(),
             quality: state.config.image.default_quality,
             limits: state.config.limits.clone(),
         };

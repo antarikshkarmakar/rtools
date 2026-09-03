@@ -25,6 +25,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                 preset: rtools_image::compress::CompressionPreset::Custom(quality),
                 format: format.and_then(|f| rtools_core::ImageFormat::from_extension(&f)),
                 output,
+                output_policy: rtools_core::OutputPolicy::default(),
                 preserve_metadata,
                 strip_gps,
                 limits: config.limits.clone(),
@@ -65,6 +66,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             let convert_config = ConvertConfig {
                 target_format,
                 output,
+                output_policy: rtools_core::OutputPolicy::default(),
                 output_dir: None,
                 quality,
                 preserve_metadata: true,
@@ -108,6 +110,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                 maintain_aspect,
                 algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                 output,
+                output_policy: rtools_core::OutputPolicy::default(),
                 quality: 85,
                 limits: config.limits.clone(),
             };
@@ -193,6 +196,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             let crop_config = CropConfig {
                 region: crop_region,
                 output,
+                output_policy: rtools_core::OutputPolicy::default(),
                 quality: 85,
                 limits: config.limits.clone(),
             };
@@ -248,6 +252,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                 },
                 opacity,
                 output,
+                output_policy: rtools_core::OutputPolicy::default(),
                 quality: 85,
                 limits: config.limits.clone(),
             };
@@ -288,6 +293,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                 filter,
                 strength,
                 output,
+                output_policy: rtools_core::OutputPolicy::default(),
                 quality: 85,
                 limits: config.limits.clone(),
             };

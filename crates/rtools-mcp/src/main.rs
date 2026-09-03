@@ -211,6 +211,7 @@ impl RToolsServer {
                     ),
                     format: None,
                     output: input.output_path.map(PathBuf::from),
+                    output_policy: rtools_core::OutputPolicy::default(),
                     preserve_metadata: true,
                     strip_gps: false,
                     limits: rtools_core::ResourceLimits::default(),
@@ -248,6 +249,7 @@ impl RToolsServer {
                 let config = rtools_image::ConvertConfig {
                     target_format,
                     output: input.output_path.map(PathBuf::from),
+                    output_policy: rtools_core::OutputPolicy::default(),
                     output_dir: None,
                     quality: input.quality.unwrap_or(85),
                     preserve_metadata: true,
@@ -277,6 +279,7 @@ impl RToolsServer {
                     maintain_aspect: input.maintain_aspect.unwrap_or(true),
                     algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                     output: None,
+                    output_policy: rtools_core::OutputPolicy::default(),
                     quality: 85,
                     limits: rtools_core::ResourceLimits::default(),
                 };
