@@ -99,6 +99,7 @@ mod tests {
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
+    use base64::Engine as _;
     use image::ImageFormat;
     use std::collections::BTreeSet;
     use std::io::Cursor;
@@ -114,6 +115,12 @@ mod tests {
             .write_to(&mut bytes, ImageFormat::Png)
             .expect("test PNG must encode");
         bytes.into_inner()
+    }
+
+    fn orientation_jpeg_bytes() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(include_str!("../../rtools-tests/fixtures/images/orientation-6.jpg.b64").trim())
+            .expect("orientation fixture must decode")
     }
 
     fn multipart_request(path: &str, file: Option<(&str, Vec<u8>)>) -> Request<Body> {
@@ -180,6 +187,7 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
             let document: serde_json::Value =
                 serde_json::from_slice(&body).expect("response must be JSON");
+            assert!(document.get("warnings").is_none(), "{path}: {document}");
             let output_path = document["output_path"]
                 .as_str()
                 .map(std::path::PathBuf::from)
@@ -201,6 +209,74 @@ mod tests {
             );
             assert!(!output_path.display().to_string().contains("private"));
             std::fs::remove_dir_all(artifact_dir).expect("test artifact cleanup");
+        }
+    }
+
+    #[test]
+    fn image_response_warnings_are_backward_compatible_and_skip_empty_serialization() {
+        let compress: handlers::image::CompressResponse =
+            serde_json::from_value(serde_json::json!({
+                "success": true,
+                "message": "ok",
+                "output_path": null,
+                "stats": null
+            }))
+            .unwrap();
+        assert!(compress.warnings.is_empty());
+        assert!(serde_json::to_value(compress)
+            .unwrap()
+            .get("warnings")
+            .is_none());
+
+        let convert: handlers::image::ConvertResponse = serde_json::from_value(serde_json::json!({
+            "success": true,
+            "message": "ok",
+            "output_path": null
+        }))
+        .unwrap();
+        assert!(convert.warnings.is_empty());
+        assert!(serde_json::to_value(convert)
+            .unwrap()
+            .get("warnings")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn image_adapter_returns_orientation_warnings_and_oriented_live_artifacts() {
+        let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
+        for (path, expected_dimensions) in [
+            ("/compress", (36, 24)),
+            ("/convert", (36, 24)),
+            ("/resize", (800, 533)),
+        ] {
+            let response = test_app()
+                .oneshot(multipart_request(
+                    path,
+                    Some(("orientation.jpg", orientation_jpeg_bytes())),
+                ))
+                .await
+                .expect("router call must complete");
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body must read");
+            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+            let document: serde_json::Value =
+                serde_json::from_slice(&body).expect("response must be JSON");
+            assert_eq!(
+                document["warnings"],
+                serde_json::json!(["EXIF orientation 6 applied"]),
+                "{path}: {}",
+                String::from_utf8_lossy(&body)
+            );
+            let output_path = PathBuf::from(
+                document["output_path"]
+                    .as_str()
+                    .expect("response must include an output path"),
+            );
+            let image = image::open(&output_path).unwrap();
+            assert_eq!((image.width(), image.height()), expected_dimensions);
+            std::fs::remove_dir_all(output_path.parent().unwrap()).unwrap();
         }
     }
 

@@ -129,9 +129,13 @@ fn reject_animated_input(
             }
         }
         image::ImageFormat::WebP => {
-            image::codecs::webp::WebPDecoder::new(BufReader::new(Cursor::new(encoded)))
-                .map_err(|error| map_decode_error(error, allocation_limit))?
-                .has_animation()
+            let mut decoder =
+                image::codecs::webp::WebPDecoder::new(BufReader::new(Cursor::new(encoded)))
+                    .map_err(|error| map_decode_error(error, allocation_limit))?;
+            decoder
+                .set_limits(limits)
+                .map_err(|error| map_decode_error(error, allocation_limit))?;
+            multiple_frames(decoder.into_frames(), allocation_limit)?
         }
         _ => false,
     };

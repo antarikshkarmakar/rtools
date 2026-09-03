@@ -109,6 +109,26 @@ fn channel(value: f64) -> u8 {
     value.clamp(0.0, f64::from(u8::MAX)).round() as u8
 }
 
+fn blend_source_over(destination: &mut image::Rgba<u8>, source: image::Rgba<u8>, opacity: f64) {
+    let source_alpha = (f64::from(source[3]) / 255.0) * opacity;
+    let destination_alpha = f64::from(destination[3]) / 255.0;
+    let inverse_source_alpha = 1.0 - source_alpha;
+    let output_alpha = source_alpha + destination_alpha * inverse_source_alpha;
+    if output_alpha == 0.0 {
+        *destination = image::Rgba([0, 0, 0, 0]);
+        return;
+    }
+
+    for channel_index in 0..3 {
+        let source_premultiplied = f64::from(source[channel_index]) * source_alpha;
+        let destination_premultiplied =
+            f64::from(destination[channel_index]) * destination_alpha * inverse_source_alpha;
+        destination[channel_index] =
+            channel((source_premultiplied + destination_premultiplied) / output_alpha);
+    }
+    destination[3] = channel(output_alpha * 255.0);
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
     if input_size == 0 {
@@ -199,21 +219,7 @@ impl Processor for WatermarkProcessor {
                             let wm_pixel = wm_resized.get_pixel(x, y);
                             let base_pixel = base_img.get_pixel_mut(target_x, target_y);
 
-                            let wm_alpha = (f64::from(wm_pixel[3]) / 255.0) * opacity;
-                            let inv_alpha = 1.0 - wm_alpha;
-
-                            base_pixel[0] = channel(
-                                f64::from(base_pixel[0])
-                                    .mul_add(inv_alpha, f64::from(wm_pixel[0]) * wm_alpha),
-                            );
-                            base_pixel[1] = channel(
-                                f64::from(base_pixel[1])
-                                    .mul_add(inv_alpha, f64::from(wm_pixel[1]) * wm_alpha),
-                            );
-                            base_pixel[2] = channel(
-                                f64::from(base_pixel[2])
-                                    .mul_add(inv_alpha, f64::from(wm_pixel[2]) * wm_alpha),
-                            );
+                            blend_source_over(base_pixel, *wm_pixel, opacity);
                         }
                     }
                 }

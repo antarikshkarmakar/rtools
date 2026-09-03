@@ -20,6 +20,12 @@ struct ExifJsonResult {
     exif: rtools_core::types::ExifData,
 }
 
+fn print_warnings(warnings: &[String]) {
+    for warning in warnings {
+        println!("  Warning: {warning}");
+    }
+}
+
 #[allow(clippy::too_many_lines)] // Task 4 will split individual image command handlers.
 pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> anyhow::Result<()> {
     std::future::ready(()).await;
@@ -56,6 +62,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                                 stats.compression_ratio * 100.0
                             );
                         }
+                        print_warnings(&output.warnings);
                     }
                     Err(e) => {
                         return Err(e.into());
@@ -99,6 +106,7 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_default()
                         );
+                        print_warnings(&output.warnings);
                     }
                     Err(e) => {
                         return Err(e.into());
@@ -130,8 +138,9 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, resize_config.clone()) {
-                    Ok(_output) => {
+                    Ok(output) => {
                         println!("✓ Resized: {}", input_path.display());
+                        print_warnings(&output.warnings);
                     }
                     Err(e) => {
                         return Err(e.into());
@@ -216,8 +225,9 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, crop_config.clone()) {
-                    Ok(_output) => {
+                    Ok(output) => {
                         println!("✓ Cropped: {}", input_path.display());
+                        print_warnings(&output.warnings);
                     }
                     Err(e) => {
                         return Err(e.into());
@@ -272,8 +282,9 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, watermark_config.clone()) {
-                    Ok(_output) => {
+                    Ok(output) => {
                         println!("✓ Watermarked: {}", input_path.display());
+                        print_warnings(&output.warnings);
                     }
                     Err(e) => {
                         return Err(e.into());
@@ -313,8 +324,9 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, filter_config.clone()) {
-                    Ok(_output) => {
+                    Ok(output) => {
                         println!("✓ Filtered: {}", input_path.display());
+                        print_warnings(&output.warnings);
                     }
                     Err(e) => {
                         return Err(e.into());

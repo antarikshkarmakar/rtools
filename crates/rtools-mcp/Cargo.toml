@@ -34,6 +34,7 @@ walkdir = { workspace = true }
 [dev-dependencies]
 image = { workspace = true }
 tempfile = "3.8"
+base64 = "0.22"
 
 [lints]
 workspace = true

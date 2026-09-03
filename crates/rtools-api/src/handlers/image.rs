@@ -59,12 +59,14 @@ pub struct CompressRequest {
     pub format: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CompressResponse {
     pub success: bool,
     pub message: String,
     pub output_path: Option<String>,
     pub stats: Option<rtools_core::types::ProcessStats>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 pub async fn compress(
@@ -119,6 +121,7 @@ pub async fn compress(
                     message: format!("Compressed {file_name}"),
                     output_path: Some(output_path.display().to_string()),
                     stats: output.stats,
+                    warnings: output.warnings,
                 }));
             }
             Err(e) => {
@@ -130,11 +133,13 @@ pub async fn compress(
     Err((StatusCode::BAD_REQUEST, "No file uploaded".to_string()))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ConvertResponse {
     pub success: bool,
     pub message: String,
     pub output_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 pub async fn convert(
@@ -178,6 +183,7 @@ pub async fn convert(
                     success: true,
                     message: format!("Converted {file_name}"),
                     output_path: Some(output_path.display().to_string()),
+                    warnings: output.warnings,
                 }));
             }
             Err(e) => {
@@ -230,6 +236,7 @@ pub async fn resize(
                     success: true,
                     message: format!("Resized {file_name}"),
                     output_path: Some(output_path.display().to_string()),
+                    warnings: output.warnings,
                 }));
             }
             Err(e) => {

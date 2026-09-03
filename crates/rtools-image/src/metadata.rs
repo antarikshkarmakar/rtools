@@ -56,10 +56,23 @@ pub fn verify_drop_all_artifact(path: &Path, limits: &ResourceLimits) -> RToolsR
     })?;
     let mut cursor = Cursor::new(encoded);
     match exif::Reader::new().read_from_container(&mut cursor) {
-        Ok(exif) if exif.fields().next().is_none() => Ok(()),
-        Ok(_) => Err(RToolsError::image(
-            "encoded artifact retained EXIF metadata under the drop-all policy",
-        )),
+        Ok(exif) => {
+            let retained = exif
+                .fields()
+                .filter(|field| {
+                    format != image::ImageFormat::Tiff || !is_structural_tiff_field(field)
+                })
+                .map(|field| field.tag.to_string())
+                .collect::<Vec<_>>();
+            if retained.is_empty() {
+                Ok(())
+            } else {
+                Err(RToolsError::image(format!(
+                    "encoded artifact retained EXIF metadata under the drop-all policy: {}",
+                    retained.join(", ")
+                )))
+            }
+        }
         Err(exif::Error::NotFound(_)) => Ok(()),
         Err(exif::Error::InvalidFormat(_))
             if !matches!(
@@ -77,6 +90,30 @@ pub fn verify_drop_all_artifact(path: &Path, limits: &ResourceLimits) -> RToolsR
             "encoded artifact metadata validation failed: {error}"
         ))),
     }
+}
+
+fn is_structural_tiff_field(field: &exif::Field) -> bool {
+    field.ifd_num == exif::In::PRIMARY
+        && field.tag.context() == exif::Context::Tiff
+        && matches!(
+            field.tag.number(),
+            0x0100 // ImageWidth
+                | 0x0101 // ImageLength
+                | 0x0102 // BitsPerSample
+                | 0x0103 // Compression
+                | 0x0106 // PhotometricInterpretation
+                | 0x0111 // StripOffsets
+                | 0x0115 // SamplesPerPixel
+                | 0x0116 // RowsPerStrip
+                | 0x0117 // StripByteCounts
+                | 0x011a // XResolution
+                | 0x011b // YResolution
+                | 0x011c // PlanarConfiguration
+                | 0x0128 // ResolutionUnit
+                | 0x013d // Predictor
+                | 0x0152 // ExtraSamples
+                | 0x0153 // SampleFormat
+        )
 }
 
 /// Metadata processor configuration
@@ -159,5 +196,27 @@ impl Processor for MetadataProcessor {
 
     fn name(&self) -> &'static str {
         "MetadataProcessor"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_structural_tiff_field;
+
+    #[test]
+    fn tiff_allowlist_is_primary_ifd_only_and_rejects_non_structural_tags() {
+        let mut field = exif::Field {
+            tag: exif::Tag::ImageWidth,
+            ifd_num: exif::In::PRIMARY,
+            value: exif::Value::Long(vec![2]),
+        };
+        assert!(is_structural_tiff_field(&field));
+
+        field.ifd_num = exif::In::THUMBNAIL;
+        assert!(!is_structural_tiff_field(&field));
+
+        field.ifd_num = exif::In::PRIMARY;
+        field.tag = exif::Tag::Software;
+        assert!(!is_structural_tiff_field(&field));
     }
 }

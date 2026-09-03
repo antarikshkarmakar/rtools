@@ -126,14 +126,11 @@ fn convert_without_exif_orientation_has_no_warnings() {
     assert!(result.warnings.is_empty());
 }
 
-#[test]
-fn every_single_frame_processor_rejects_a_renamed_animated_gif_before_output_artifacts() {
-    let tmp = TempDir::new().unwrap();
-    let input = decode_fixture(
-        tmp.path(),
-        "animation.dat",
-        include_str!("../fixtures/images/two-frame.gif.b64"),
-    );
+fn assert_all_single_frame_processors_reject_animation(
+    tmp: &TempDir,
+    input: &std::path::Path,
+    case: &str,
+) {
     let watermark = create_test_image(tmp.path(), "watermark.png", 1, 1);
 
     let operations: Vec<(
@@ -143,74 +140,74 @@ fn every_single_frame_processor_rejects_a_renamed_animated_gif_before_output_art
     )> = vec![
         (
             "compress",
-            tmp.path().join("compress/output.png"),
+            tmp.path().join(format!("{case}-compress/output.png")),
             CompressProcessor.process(
-                FileInput::from_path(input.clone()),
+                FileInput::from_path(input.to_path_buf()),
                 CompressConfig {
                     format: Some(rtools_core::ImageFormat::Png),
-                    output: Some(tmp.path().join("compress/output.png")),
+                    output: Some(tmp.path().join(format!("{case}-compress/output.png"))),
                     ..CompressConfig::default()
                 },
             ),
         ),
         (
             "convert",
-            tmp.path().join("convert/output.png"),
+            tmp.path().join(format!("{case}-convert/output.png")),
             ConvertProcessor.process(
-                FileInput::from_path(input.clone()),
+                FileInput::from_path(input.to_path_buf()),
                 ConvertConfig {
                     target_format: rtools_core::ImageFormat::Png,
-                    output: Some(tmp.path().join("convert/output.png")),
+                    output: Some(tmp.path().join(format!("{case}-convert/output.png"))),
                     ..ConvertConfig::default()
                 },
             ),
         ),
         (
             "resize",
-            tmp.path().join("resize/output.png"),
+            tmp.path().join(format!("{case}-resize/output.png")),
             ResizeProcessor.process(
-                FileInput::from_path(input.clone()),
+                FileInput::from_path(input.to_path_buf()),
                 ResizeConfig {
                     width: Some(2),
-                    output: Some(tmp.path().join("resize/output.png")),
+                    output: Some(tmp.path().join(format!("{case}-resize/output.png"))),
                     ..ResizeConfig::default()
                 },
             ),
         ),
         (
             "crop",
-            tmp.path().join("crop/output.png"),
+            tmp.path().join(format!("{case}-crop/output.png")),
             CropProcessor.process(
-                FileInput::from_path(input.clone()),
+                FileInput::from_path(input.to_path_buf()),
                 CropConfig {
-                    output: Some(tmp.path().join("crop/output.png")),
+                    output: Some(tmp.path().join(format!("{case}-crop/output.png"))),
                     ..CropConfig::default()
                 },
             ),
         ),
         (
             "filter",
-            tmp.path().join("filter/output.png"),
+            tmp.path().join(format!("{case}-filter/output.png")),
             FilterProcessor.process(
-                FileInput::from_path(input.clone()),
+                FileInput::from_path(input.to_path_buf()),
                 FilterConfig {
-                    output: Some(tmp.path().join("filter/output.png")),
+                    output: Some(tmp.path().join(format!("{case}-filter/output.png"))),
                     ..FilterConfig::default()
                 },
             ),
         ),
         (
             "watermark",
-            tmp.path().join("watermark/output.png"),
+            tmp.path().join(format!("{case}-watermark/output.png")),
             WatermarkProcessor.process(
-                FileInput::from_path(input),
+                FileInput::from_path(input.to_path_buf()),
                 WatermarkConfig {
                     watermark: WatermarkType::Image {
                         image_path: watermark,
                         scale: 1.0,
                     },
-                    position: WatermarkPosition::TopLeft,
-                    output: Some(tmp.path().join("watermark/output.png")),
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(tmp.path().join(format!("{case}-watermark/output.png"))),
                     ..WatermarkConfig::default()
                 },
             ),
@@ -229,6 +226,171 @@ fn every_single_frame_processor_rejects_a_renamed_animated_gif_before_output_art
             !output.parent().unwrap().exists(),
             "{name} created output directory"
         );
+    }
+}
+
+#[test]
+fn every_single_frame_processor_rejects_a_renamed_animated_gif_before_output_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "animation.dat",
+        include_str!("../fixtures/images/two-frame.gif.b64"),
+    );
+    assert_all_single_frame_processors_reject_animation(&tmp, &input, "gif");
+}
+
+#[test]
+fn every_single_frame_processor_rejects_renamed_multiframe_webp_and_apng() {
+    let tmp = TempDir::new().unwrap();
+    for (case, fixture) in [
+        (
+            "webp",
+            include_str!("../fixtures/images/two-frame.webp.b64"),
+        ),
+        (
+            "apng",
+            include_str!("../fixtures/images/two-frame.apng.b64"),
+        ),
+    ] {
+        let input = decode_fixture(tmp.path(), &format!("{case}-animation.bin"), fixture);
+        assert_all_single_frame_processors_reject_animation(&tmp, &input, case);
+    }
+}
+
+fn assert_all_single_frame_processors_accept(tmp: &TempDir, input: &std::path::Path, case: &str) {
+    let watermark = create_test_image(tmp.path(), &format!("{case}-mark.png"), 1, 1);
+    let operations: Vec<(
+        &str,
+        PathBuf,
+        rtools_core::RToolsResult<rtools_core::FileOutput>,
+    )> = vec![
+        (
+            "compress",
+            tmp.path().join(format!("{case}-one-compress.png")),
+            CompressProcessor.process(
+                FileInput::from_path(input.to_path_buf()),
+                CompressConfig {
+                    format: Some(rtools_core::ImageFormat::Png),
+                    output: Some(tmp.path().join(format!("{case}-one-compress.png"))),
+                    ..CompressConfig::default()
+                },
+            ),
+        ),
+        (
+            "convert",
+            tmp.path().join(format!("{case}-one-convert.png")),
+            ConvertProcessor.process(
+                FileInput::from_path(input.to_path_buf()),
+                ConvertConfig {
+                    target_format: rtools_core::ImageFormat::Png,
+                    output: Some(tmp.path().join(format!("{case}-one-convert.png"))),
+                    ..ConvertConfig::default()
+                },
+            ),
+        ),
+        (
+            "resize",
+            tmp.path().join(format!("{case}-one-resize.png")),
+            ResizeProcessor.process(
+                FileInput::from_path(input.to_path_buf()),
+                ResizeConfig {
+                    width: Some(3),
+                    output: Some(tmp.path().join(format!("{case}-one-resize.png"))),
+                    ..ResizeConfig::default()
+                },
+            ),
+        ),
+        (
+            "crop",
+            tmp.path().join(format!("{case}-one-crop.png")),
+            CropProcessor.process(
+                FileInput::from_path(input.to_path_buf()),
+                CropConfig {
+                    output: Some(tmp.path().join(format!("{case}-one-crop.png"))),
+                    ..CropConfig::default()
+                },
+            ),
+        ),
+        (
+            "filter",
+            tmp.path().join(format!("{case}-one-filter.png")),
+            FilterProcessor.process(
+                FileInput::from_path(input.to_path_buf()),
+                FilterConfig {
+                    output: Some(tmp.path().join(format!("{case}-one-filter.png"))),
+                    ..FilterConfig::default()
+                },
+            ),
+        ),
+        (
+            "watermark",
+            tmp.path().join(format!("{case}-one-watermark.png")),
+            WatermarkProcessor.process(
+                FileInput::from_path(input.to_path_buf()),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(tmp.path().join(format!("{case}-one-watermark.png"))),
+                    ..WatermarkConfig::default()
+                },
+            ),
+        ),
+    ];
+
+    for (name, output, result) in operations {
+        let result = result.unwrap_or_else(|error| panic!("{case} {name}: {error}"));
+        assert_eq!(result.destination.as_path(), Some(&output));
+        image::open(output).unwrap();
+    }
+}
+
+#[test]
+fn every_single_frame_processor_accepts_renamed_one_frame_extended_webp_and_apng() {
+    let tmp = TempDir::new().unwrap();
+    for (case, fixture) in [
+        (
+            "webp",
+            include_str!("../fixtures/images/single-frame-extended.webp.b64"),
+        ),
+        (
+            "apng",
+            include_str!("../fixtures/images/single-frame.apng.b64"),
+        ),
+    ] {
+        let input = decode_fixture(tmp.path(), &format!("{case}-one-frame.bin"), fixture);
+        assert_all_single_frame_processors_accept(&tmp, &input, case);
+    }
+}
+
+#[test]
+fn malformed_animated_webp_and_apng_return_decode_errors_without_flattening() {
+    let tmp = TempDir::new().unwrap();
+    for (case, fixture, removed_bytes) in [
+        (
+            "webp",
+            include_str!("../fixtures/images/two-frame.webp.b64"),
+            8,
+        ),
+        (
+            "apng",
+            include_str!("../fixtures/images/two-frame.apng.b64"),
+            24,
+        ),
+    ] {
+        let mut bytes = base64::engine::general_purpose::STANDARD
+            .decode(fixture.trim())
+            .unwrap();
+        bytes.truncate(bytes.len() - removed_bytes);
+        let input = tmp.path().join(format!("malformed-{case}.bin"));
+        std::fs::write(&input, bytes).unwrap();
+
+        let error =
+            rtools_image::format::decode_bounded(&input, &ResourceLimits::default()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed, "{case}: {error}");
     }
 }
 
@@ -293,6 +455,67 @@ fn compress_and_convert_drop_real_gps_and_orientation_metadata_before_commit() {
         assert!(exif.gps_longitude.is_none());
         assert!(exif.orientation.is_none());
     }
+}
+
+#[test]
+fn converting_real_gps_and_orientation_jpeg_to_tiff_keeps_only_structural_fields() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "gps-orientation-6.jpg",
+        include_str!("../fixtures/images/gps-orientation-6.jpg.b64"),
+    );
+    let source = ExifProcessor
+        .process(FileInput::from_path(input.clone()), ExifConfig::default())
+        .unwrap();
+    assert_eq!(source.orientation, Some(6));
+    assert!(source.gps_latitude.is_some());
+    assert!(source.gps_longitude.is_some());
+
+    let output = tmp.path().join("drop-all.tiff");
+    let result = ConvertProcessor
+        .process(
+            FileInput::from_path(input),
+            ConvertConfig {
+                target_format: rtools_core::ImageFormat::Tiff,
+                output: Some(output.clone()),
+                ..ConvertConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(result.destination.as_path(), Some(&output));
+    assert_eq!(result.warnings, ["EXIF orientation 6 applied"]);
+    assert_eq!(image::open(&output).unwrap().dimensions(), (16, 16));
+    rtools_image::metadata::verify_drop_all_artifact(&output, &ResourceLimits::default()).unwrap();
+    let exif = ExifProcessor
+        .process(FileInput::from_path(output), ExifConfig::default())
+        .unwrap();
+    assert!(exif.orientation.is_none());
+    assert!(exif.gps_latitude.is_none());
+    assert!(exif.gps_longitude.is_none());
+    assert!(exif.camera_make.is_none());
+    assert!(exif.camera_model.is_none());
+}
+
+#[test]
+fn drop_all_validator_rejects_non_structural_tiff_metadata() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "private-metadata.tiff",
+        include_str!("../fixtures/images/private-metadata.tiff.b64"),
+    );
+
+    let error =
+        rtools_image::metadata::verify_drop_all_artifact(&input, &ResourceLimits::default())
+            .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    let message = error.to_string();
+    assert!(message.contains("ImageDescription"), "{message}");
+    assert!(message.contains("Orientation"), "{message}");
+    assert!(message.contains("Software"), "{message}");
 }
 
 #[test]
@@ -1074,6 +1297,82 @@ fn image_watermark_places_and_blends_the_full_overlay_at_requested_opacity() {
         assert!(pixel[..3].iter().all(|channel| channel.abs_diff(128) <= 1));
     }
     assert_eq!(pixels.get_pixel(4, 4).0, [0, 0, 0, 255]);
+}
+
+#[test]
+fn image_watermark_uses_straight_alpha_source_over_for_translucent_pixels() {
+    let tmp = TempDir::new().unwrap();
+    let cases = [
+        (
+            "transparent",
+            [0, 0, 0, 0],
+            [255, 255, 255, 255],
+            [255, 255, 255, 128],
+        ),
+        (
+            "translucent",
+            [20, 40, 80, 128],
+            [200, 100, 50, 128],
+            [92, 64, 68, 160],
+        ),
+    ];
+
+    for (name, base_color, watermark_color, expected) in cases {
+        let base = create_solid_png(tmp.path(), &format!("{name}-base.png"), 1, 1, base_color);
+        let watermark = create_solid_png(
+            tmp.path(),
+            &format!("{name}-mark.png"),
+            1,
+            1,
+            watermark_color,
+        );
+        let output = tmp.path().join(format!("{name}-output.png"));
+        WatermarkProcessor
+            .process(
+                FileInput::from_path(base),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    opacity: 0.5,
+                    output: Some(output.clone()),
+                    ..WatermarkConfig::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            image::open(output).unwrap().to_rgba8().get_pixel(0, 0).0,
+            expected
+        );
+    }
+
+    let base = create_solid_png(tmp.path(), "vary-base.png", 2, 1, [0, 0, 0, 0]);
+    let watermark = tmp.path().join("vary-mark.png");
+    let mut pixels = image::RgbaImage::new(2, 1);
+    pixels.put_pixel(0, 0, image::Rgba([255, 0, 0, 0]));
+    pixels.put_pixel(1, 0, image::Rgba([255, 255, 255, 255]));
+    pixels.save(&watermark).unwrap();
+    let output = tmp.path().join("vary-output.png");
+    WatermarkProcessor
+        .process(
+            FileInput::from_path(base),
+            WatermarkConfig {
+                watermark: WatermarkType::Image {
+                    image_path: watermark,
+                    scale: 1.0,
+                },
+                position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                opacity: 0.5,
+                output: Some(output.clone()),
+                ..WatermarkConfig::default()
+            },
+        )
+        .unwrap();
+    let pixels = image::open(output).unwrap().to_rgba8();
+    assert_eq!(pixels.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    assert_eq!(pixels.get_pixel(1, 0).0, [255, 255, 255, 128]);
 }
 
 #[test]

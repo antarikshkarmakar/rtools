@@ -86,6 +86,12 @@ struct MetadataInput {
     input_path: String,
 }
 
+fn file_output_content(output: &rtools_core::FileOutput) -> Result<ContentBlock, McpError> {
+    serde_json::to_string(output)
+        .map(ContentBlock::text)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))
+}
+
 impl RToolsServer {
     #[allow(clippy::too_many_lines)] // Task 7 will group tool schemas by domain.
     fn tools() -> Vec<Tool> {
@@ -226,7 +232,10 @@ impl RToolsServer {
                             let _ =
                                 write!(result, "\nRatio: {:.1}%", stats.compression_ratio * 100.0);
                         }
-                        Ok(CallToolResult::success(vec![ContentBlock::text(result)]))
+                        Ok(CallToolResult::success(vec![
+                            ContentBlock::text(result),
+                            file_output_content(&output)?,
+                        ]))
                     }
                     Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
                         e.to_string(),
@@ -258,10 +267,10 @@ impl RToolsServer {
                 };
                 let processor = rtools_image::ConvertProcessor;
                 match processor.process(file_input, config) {
-                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                        "Converted to {}",
-                        input.target_format
-                    ))])),
+                    Ok(output) => Ok(CallToolResult::success(vec![
+                        ContentBlock::text(format!("Converted to {}", input.target_format)),
+                        file_output_content(&output)?,
+                    ])),
                     Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
                         e.to_string(),
                     )])),
@@ -285,9 +294,10 @@ impl RToolsServer {
                 };
                 let processor = rtools_image::ResizeProcessor;
                 match processor.process(file_input, config) {
-                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "Resized successfully",
-                    )])),
+                    Ok(output) => Ok(CallToolResult::success(vec![
+                        ContentBlock::text("Resized successfully"),
+                        file_output_content(&output)?,
+                    ])),
                     Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
                         e.to_string(),
                     )])),
@@ -573,6 +583,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use image::ImageFormat;
     use std::io::Cursor;
 
@@ -586,6 +597,74 @@ mod tests {
 
     fn is_error(result: &CallToolResult) -> bool {
         result.is_error == Some(true)
+    }
+
+    fn serialized_file_output(result: &CallToolResult) -> serde_json::Value {
+        let result = serde_json::to_value(result).expect("tool result must serialize");
+        result["content"]
+            .as_array()
+            .expect("tool content must be an array")
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .find_map(|text| {
+                serde_json::from_str::<serde_json::Value>(text)
+                    .ok()
+                    .filter(|document| document.get("destination").is_some())
+            })
+            .expect("tool result must contain a serialized FileOutput")
+    }
+
+    #[tokio::test]
+    async fn image_tools_serialize_orientation_warnings_and_oriented_outputs() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let fixture = base64::engine::general_purpose::STANDARD
+            .decode(include_str!("../../rtools-tests/fixtures/images/orientation-6.jpg.b64").trim())
+            .unwrap();
+
+        for tool in ["compress_image", "convert_image", "resize_image"] {
+            let directory = temp.path().join(tool);
+            std::fs::create_dir(&directory).unwrap();
+            let input = directory.join("orientation.jpg");
+            std::fs::write(&input, &fixture).unwrap();
+            let explicit_output = directory.join("output.png");
+            let arguments = match tool {
+                "compress_image" => serde_json::json!({
+                    "input_path": input,
+                    "output_path": directory.join("output.jpg"),
+                    "quality": 85
+                }),
+                "convert_image" => serde_json::json!({
+                    "input_path": input,
+                    "output_path": explicit_output,
+                    "target_format": "png",
+                    "quality": 85
+                }),
+                "resize_image" => serde_json::json!({
+                    "input_path": input,
+                    "width": 36,
+                    "height": null,
+                    "maintain_aspect": true
+                }),
+                _ => unreachable!(),
+            };
+            let result = RToolsServer
+                .handle_tool(tool, arguments)
+                .await
+                .expect("tool dispatch must complete");
+            assert!(!is_error(&result), "{result:?}");
+            let output = serialized_file_output(&result);
+            assert_eq!(
+                output["warnings"],
+                serde_json::json!(["EXIF orientation 6 applied"]),
+                "{tool}: {output}"
+            );
+            let path = output["destination"]["File"]
+                .as_str()
+                .map(PathBuf::from)
+                .expect("serialized destination must be a file");
+            let image = image::open(path).unwrap();
+            assert_eq!((image.width(), image.height()), (36, 24), "{tool}");
+        }
     }
 
     #[tokio::test]
