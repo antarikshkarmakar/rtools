@@ -1,10 +1,53 @@
 use crate::{error::RToolsResult, ResourceLimits};
 use figment::{
-    providers::{Format, Serialized, Toml},
-    Figment,
+    providers::{Env, Format, Serialized, Toml},
+    Provider,
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Discovered configuration files, ordered from system to project scope.
+///
+/// This is public so integrations can provide sandboxed locations without
+/// changing the process home or working directory.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct ConfigLocations {
+    /// Machine-wide configuration file.
+    pub system: Option<PathBuf>,
+    /// Per-user configuration file.
+    pub user: Option<PathBuf>,
+    /// Project configuration file.
+    pub project: Option<PathBuf>,
+}
+
+impl ConfigLocations {
+    fn discover() -> Self {
+        #[cfg(windows)]
+        let system = std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("rtools").join("config.toml"));
+        #[cfg(not(windows))]
+        let system = Some(PathBuf::from("/etc/rtools/config.toml"));
+
+        let user = dirs::config_dir().map(|path| path.join("rtools").join("config.toml"));
+        let project = std::env::current_dir().ok().map(|directory| {
+            let primary = directory.join("rtools.toml");
+            let legacy = directory.join(".rtools.toml");
+            if matches!(primary.try_exists(), Ok(false)) {
+                legacy
+            } else {
+                primary
+            }
+        });
+
+        Self {
+            system,
+            user,
+            project,
+        }
+    }
+}
 
 /// Main application configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -219,43 +262,148 @@ impl AppConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when configuration cannot be loaded or the temporary
-    /// directory cannot be created.
+    /// Returns an error when configuration cannot be loaded or is invalid.
     pub fn load(path: Option<&PathBuf>) -> RToolsResult<Self> {
-        let mut figment = Figment::from(Serialized::defaults(Self::default()));
+        Self::load_with_provider(
+            path,
+            &ConfigLocations::discover(),
+            Env::prefixed("RTOOLS_").split("__"),
+        )
+    }
 
-        if let Some(path) = path {
-            if path.exists() {
-                figment = figment.merge(Toml::file(path));
-            }
+    /// Load from explicit sandboxed discovery locations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any present configuration source is unreadable,
+    /// malformed, or semantically invalid.
+    #[doc(hidden)]
+    pub fn load_from_locations(
+        path: Option<&PathBuf>,
+        locations: &ConfigLocations,
+    ) -> RToolsResult<Self> {
+        Self::load_with_provider(path, locations, Env::prefixed("RTOOLS_").split("__"))
+    }
+
+    fn load_with_provider<P>(
+        path: Option<&PathBuf>,
+        locations: &ConfigLocations,
+        environment: P,
+    ) -> RToolsResult<Self>
+    where
+        P: Provider,
+    {
+        let mut figment = figment::Figment::from(Serialized::defaults(Self::default()));
+
+        for discovered in [
+            locations.system.as_deref(),
+            locations.user.as_deref(),
+            locations.project.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            figment = merge_config_file(figment, discovered, false)?;
         }
 
-        // Also try default locations
-        let default_locations = [
-            PathBuf::from("rtools.toml"),
-            PathBuf::from(".rtools.toml"),
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("rtools")
-                .join("config.toml"),
-        ];
-
-        for loc in &default_locations {
-            if loc.exists() {
-                figment = figment.merge(Toml::file(loc));
-                break;
-            }
+        if let Some(explicit) = path {
+            figment = merge_config_file(figment, explicit, true)?;
         }
 
         let config: Self = figment
+            .merge(environment)
             .extract()
-            .map_err(|e| crate::error::RToolsError::config(e.to_string()))?;
-
-        // Ensure temp directory exists
-        std::fs::create_dir_all(&config.general.temp_dir)
-            .map_err(|e| crate::error::RToolsError::config(e.to_string()))?;
-
+            .map_err(|error| crate::error::RToolsError::configuration_invalid(error.to_string()))?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Validate configuration relationships and documented value ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigurationInvalid` when a setting cannot be used safely.
+    pub fn validate(&self) -> RToolsResult<()> {
+        if self.general.parallel_jobs == 0 {
+            return Err(invalid_setting(
+                "general.parallel_jobs",
+                "must be at least 1",
+            ));
+        }
+        if self.general.temp_dir.as_os_str().is_empty() {
+            return Err(invalid_setting("general.temp_dir", "must not be empty"));
+        }
+        if !matches!(
+            self.general.log_level.to_ascii_lowercase().as_str(),
+            "trace" | "debug" | "info" | "warn" | "error"
+        ) {
+            return Err(invalid_setting(
+                "general.log_level",
+                "must be trace, debug, info, warn, or error",
+            ));
+        }
+        if self.general.max_file_size == 0 {
+            return Err(invalid_setting("general.max_file_size", "must be positive"));
+        }
+
+        validate_nonzero_limits(&self.limits)?;
+        validate_quality("image.default_quality", self.image.default_quality)?;
+        validate_quality("image.jpeg_quality", self.image.jpeg_quality)?;
+        if self.image.max_dimension == 0 {
+            return Err(invalid_setting("image.max_dimension", "must be positive"));
+        }
+        if self.image.png_compression > 9 {
+            return Err(invalid_setting(
+                "image.png_compression",
+                "must be between 0 and 9",
+            ));
+        }
+
+        if self.pdf.ocr_language.trim().is_empty() {
+            return Err(invalid_setting("pdf.ocr_language", "must not be empty"));
+        }
+        if self.pdf.ocr_dpi == 0 {
+            return Err(invalid_setting("pdf.ocr_dpi", "must be positive"));
+        }
+        validate_quality("pdf.image_quality", self.pdf.image_quality)?;
+
+        if self.ai.batch_size == 0 {
+            return Err(invalid_setting("ai.batch_size", "must be at least 1"));
+        }
+        if self.api.host.trim().is_empty() {
+            return Err(invalid_setting("api.host", "must not be empty"));
+        }
+        if self.api.port == 0 {
+            return Err(invalid_setting("api.port", "must be positive"));
+        }
+        if self.api.max_upload_size == 0 {
+            return Err(invalid_setting("api.max_upload_size", "must be positive"));
+        }
+        if self.api.auth_enabled
+            && self
+                .api
+                .api_key
+                .as_deref()
+                .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(invalid_setting(
+                "api.api_key",
+                "must be set when authentication is enabled",
+            ));
+        }
+        if self.api.tls_enabled
+            && (self.api.tls_cert_path.is_none() || self.api.tls_key_path.is_none())
+        {
+            return Err(invalid_setting(
+                "api.tls_cert_path/api.tls_key_path",
+                "must both be set when TLS is enabled",
+            ));
+        }
+        if self.mcp.server_name.trim().is_empty() {
+            return Err(invalid_setting("mcp.server_name", "must not be empty"));
+        }
+
+        Ok(())
     }
 
     /// Save configuration to file.
@@ -272,6 +420,51 @@ impl AppConfig {
         std::fs::write(path, toml)?;
         Ok(())
     }
+}
+
+fn merge_config_file(
+    figment: figment::Figment,
+    path: &Path,
+    explicit: bool,
+) -> RToolsResult<figment::Figment> {
+    match path.try_exists() {
+        Ok(false) if !explicit => Ok(figment),
+        Ok(false) => Err(crate::error::RToolsError::configuration_invalid(format!(
+            "explicit configuration file does not exist: {}",
+            path.display()
+        ))),
+        Err(error) => Err(crate::error::RToolsError::configuration_invalid(format!(
+            "cannot access configuration file {}: {error}",
+            path.display()
+        ))),
+        Ok(true) => Ok(figment.merge(Toml::file_exact(path))),
+    }
+}
+
+fn invalid_setting(name: &str, reason: &str) -> crate::error::RToolsError {
+    crate::error::RToolsError::configuration_invalid(format!("{name} {reason}"))
+}
+
+fn validate_quality(name: &str, value: u8) -> RToolsResult<()> {
+    if !(1..=100).contains(&value) {
+        return Err(invalid_setting(name, "must be between 1 and 100"));
+    }
+    Ok(())
+}
+
+fn validate_nonzero_limits(limits: &ResourceLimits) -> RToolsResult<()> {
+    for (name, value) in [
+        ("limits.max_input_bytes", limits.max_input_bytes),
+        ("limits.max_decoded_pixels", limits.max_decoded_pixels),
+        ("limits.max_pdf_pages", limits.max_pdf_pages),
+        ("limits.max_batch_items", limits.max_batch_items),
+        ("limits.max_duration_ms", limits.max_duration_ms),
+    ] {
+        if value == 0 {
+            return Err(invalid_setting(name, "must be positive"));
+        }
+    }
+    Ok(())
 }
 
 /// Get number of CPUs

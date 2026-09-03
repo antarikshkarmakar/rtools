@@ -475,6 +475,6 @@ async fn main() -> anyhow::Result<()> {
             clap_complete::generate(shell, &mut cmd, "rtools", &mut std::io::stdout());
             Ok(())
         }
-        Commands::Config { command } => commands::config::handle_config_command(command),
+        Commands::Config { command } => commands::config::handle_config_command(command, &config),
     }
 }
