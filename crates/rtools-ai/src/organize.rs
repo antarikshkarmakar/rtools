@@ -61,6 +61,12 @@ impl Processor for OrganizeProcessor {
     ) -> RToolsResult<Vec<FileOutput>> {
         let _start = Instant::now();
 
+        if inputs.is_empty() {
+            return Err(RToolsError::invalid_input(
+                "Organize requires at least one input file",
+            ));
+        }
+
         std::fs::create_dir_all(&config.output_dir)?;
 
         let mut outputs = Vec::new();
@@ -71,13 +77,7 @@ impl Processor for OrganizeProcessor {
                 .as_path()
                 .ok_or_else(|| RToolsError::invalid_input("Organize requires file path inputs"))?;
 
-            let target_folder = match config.strategy {
-                OrganizeStrategy::ByDate => Self::get_date_folder(path)?,
-                OrganizeStrategy::BySubject => PathBuf::from("subject"),
-                OrganizeStrategy::ByLocation => PathBuf::from("location"),
-                OrganizeStrategy::ByCamera => PathBuf::from("camera"),
-                OrganizeStrategy::Custom => PathBuf::from("custom"),
-            };
+            let target_folder = Self::get_date_folder(path)?;
 
             let target_dir = config.output_dir.join(&target_folder);
             std::fs::create_dir_all(&target_dir)?;
@@ -128,8 +128,19 @@ impl Processor for OrganizeProcessor {
         Ok(outputs)
     }
 
-    fn validate_config(&self, _config: &OrganizeConfig) -> RToolsResult<()> {
-        Ok(())
+    fn validate_config(&self, config: &OrganizeConfig) -> RToolsResult<()> {
+        let operation_id = match config.strategy {
+            OrganizeStrategy::ByDate => return Ok(()),
+            OrganizeStrategy::BySubject => "ai.organize.subject",
+            OrganizeStrategy::ByLocation => "ai.organize.location",
+            OrganizeStrategy::ByCamera => "ai.organize.camera",
+            OrganizeStrategy::Custom => "ai.organize.custom",
+        };
+        Err(RToolsError::capability_unavailable(
+            operation_id,
+            "This organization strategy is not implemented",
+            "Use date organization",
+        ))
     }
 
     fn name(&self) -> &'static str {

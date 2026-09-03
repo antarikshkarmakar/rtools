@@ -5,6 +5,9 @@ pub mod organize;
 pub mod rename;
 pub mod sort;
 
+#[cfg(test)]
+use tempfile as _;
+
 // Re-export main types
 pub use alt_text::{AltTextConfig, AltTextProcessor};
 pub use duplicates::{DuplicatesConfig, DuplicatesProcessor};

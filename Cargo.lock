@@ -2250,6 +2250,7 @@ dependencies = [
  "image",
  "rtools-core",
  "serde",
+ "tempfile",
 ]
 
 [[package]]
@@ -2258,6 +2259,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "image",
  "rtools-ai",
  "rtools-core",
  "rtools-image",
@@ -2324,6 +2326,7 @@ name = "rtools-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "rmcp",
  "rtools-ai",
  "rtools-core",
@@ -2332,6 +2335,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
  "walkdir",

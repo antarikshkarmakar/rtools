@@ -91,3 +91,116 @@ async fn health() -> impl IntoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use image::ImageFormat;
+    use std::io::Cursor;
+    use tower::ServiceExt;
+
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .expect("test PNG must encode");
+        bytes.into_inner()
+    }
+
+    fn multipart_request(path: &str, file: Option<(&str, Vec<u8>)>) -> Request<Body> {
+        let boundary = "rtools-test-boundary";
+        let mut body = Vec::new();
+        if let Some((name, data)) = file {
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: image/png\r\n\r\n").as_bytes());
+            body.extend_from_slice(&data);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .expect("request must build")
+    }
+
+    fn test_app() -> Router {
+        Router::new()
+            .route("/compress", post(handlers::image::compress))
+            .route("/convert", post(handlers::image::convert))
+            .route("/rename", post(handlers::ai::rename))
+            .route("/organize", post(handlers::ai::organize))
+            .route("/duplicates", post(handlers::ai::duplicates))
+            .with_state(Arc::new(AppState {
+                config: rtools_core::AppConfig::default(),
+            }))
+    }
+
+    #[tokio::test]
+    async fn image_adapter_defaults_do_not_request_unavailable_metadata_modes() {
+        for path in ["/compress", "/convert"] {
+            let response = test_app()
+                .oneshot(multipart_request(path, Some(("input.png", png_bytes()))))
+                .await
+                .expect("router call must complete");
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body must read");
+            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        }
+    }
+
+    #[tokio::test]
+    async fn ai_adapter_rejects_empty_duplicates_and_uses_deterministic_rename() {
+        let organize_response = test_app()
+            .oneshot(multipart_request("/organize", None))
+            .await
+            .expect("router call must complete");
+        assert_eq!(
+            organize_response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        let duplicate_response = test_app()
+            .oneshot(multipart_request("/duplicates", None))
+            .await
+            .expect("router call must complete");
+        assert_eq!(
+            duplicate_response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let duplicate_body = to_bytes(duplicate_response.into_body(), usize::MAX)
+            .await
+            .expect("response body must read");
+        let duplicate_text = String::from_utf8_lossy(&duplicate_body);
+        assert!(
+            duplicate_text
+                .to_ascii_lowercase()
+                .contains("invalid input"),
+            "{duplicate_text}"
+        );
+
+        let rename_response = test_app()
+            .oneshot(multipart_request(
+                "/rename",
+                Some(("input.png", png_bytes())),
+            ))
+            .await
+            .expect("router call must complete");
+        let status = rename_response.status();
+        let rename_body = to_bytes(rename_response.into_body(), usize::MAX)
+            .await
+            .expect("response body must read");
+        let text = String::from_utf8_lossy(&rename_body);
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(!text.contains("{subject}"), "{text}");
+    }
+}

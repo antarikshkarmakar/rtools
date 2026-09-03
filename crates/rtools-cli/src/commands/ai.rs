@@ -1,4 +1,4 @@
-use crate::AiCommands;
+use crate::{AiCommands, DuplicateMode, OrganizeMode};
 use rtools_core::AppConfig;
 use rtools_core::FileInput;
 use rtools_core::Processor;
@@ -16,10 +16,12 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             let processor = rtools_ai::OrganizeProcessor;
             let organize_config = rtools_ai::organize::OrganizeConfig {
                 output_dir: output,
-                strategy: match strategy.as_str() {
-                    "subject" => rtools_ai::organize::OrganizeStrategy::BySubject,
-                    "location" => rtools_ai::organize::OrganizeStrategy::ByLocation,
-                    _ => rtools_ai::organize::OrganizeStrategy::ByDate,
+                strategy: match strategy {
+                    OrganizeMode::Date => rtools_ai::organize::OrganizeStrategy::ByDate,
+                    OrganizeMode::Subject => rtools_ai::organize::OrganizeStrategy::BySubject,
+                    OrganizeMode::Location => rtools_ai::organize::OrganizeStrategy::ByLocation,
+                    OrganizeMode::Camera => rtools_ai::organize::OrganizeStrategy::ByCamera,
+                    OrganizeMode::Custom => rtools_ai::organize::OrganizeStrategy::Custom,
                 },
                 by_date: true,
                 by_subject: false,
@@ -52,7 +54,7 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
                 pattern,
                 output_dir: None,
                 start_number: 1,
-                use_ai_descriptions: true,
+                use_ai_descriptions: false,
                 dry_run,
             };
 
@@ -116,12 +118,13 @@ pub async fn handle_ai_command(cmd: AiCommands, _config: &AppConfig) -> anyhow::
             let duplicates_config = rtools_ai::duplicates::DuplicatesConfig {
                 threshold,
                 algorithm: rtools_ai::duplicates::HashAlgorithm::Perceptual,
-                action: match action.as_str() {
-                    "move" => rtools_ai::duplicates::DuplicateAction::Move {
+                action: match action {
+                    DuplicateMode::Report => rtools_ai::duplicates::DuplicateAction::Report,
+                    DuplicateMode::Move => rtools_ai::duplicates::DuplicateAction::Move {
                         destination: PathBuf::from("duplicates"),
                     },
-                    "delete" => rtools_ai::duplicates::DuplicateAction::Delete,
-                    _ => rtools_ai::duplicates::DuplicateAction::Report,
+                    DuplicateMode::Delete => rtools_ai::duplicates::DuplicateAction::Delete,
+                    DuplicateMode::Symlink => rtools_ai::duplicates::DuplicateAction::Symlink,
                 },
                 dry_run: false,
             };
@@ -181,7 +184,7 @@ fn collect_image_inputs(dir: &PathBuf) -> Vec<FileInput> {
 #[cfg(test)]
 mod tests {
     use super::handle_ai_command;
-    use crate::AiCommands;
+    use crate::{AiCommands, DuplicateMode};
     use rtools_core::{AppConfig, ErrorCode, RToolsError};
 
     #[tokio::test]
@@ -213,7 +216,7 @@ mod tests {
             AiCommands::Duplicates {
                 input: temp.path().to_path_buf(),
                 threshold: 0.9,
-                action: "report".to_string(),
+                action: DuplicateMode::Report,
             },
             &AppConfig::default(),
         )

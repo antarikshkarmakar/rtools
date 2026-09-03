@@ -31,6 +31,7 @@ tempfile = "3.8"
 
 [dev-dependencies]
 tower = "0.5"
+image = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand, ValueHint};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
 use std::path::PathBuf;
 
 mod capabilities;
@@ -247,15 +247,13 @@ enum ImageCommands {
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
 
-        /// Output format (json, text)
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = ExifOutputFormat::Human)]
+        format: ExifOutputFormat,
     },
 
     /// Extract text from images (unavailable until an OCR provider is configured)
-    #[command(
-        after_long_help = "Unavailable: configure an OCR provider; run rtools doctor once available in this release."
-    )]
+    #[command(after_long_help = "Unavailable: configure a supported OCR provider.")]
     Ocr {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -336,9 +334,7 @@ enum PdfCommands {
     },
 
     /// Convert PDF to images (unavailable until a rendering provider is configured)
-    #[command(
-        after_long_help = "Unavailable: configure a PDF rendering provider; run rtools doctor once available in this release."
-    )]
+    #[command(after_long_help = "Unavailable: configure a supported PDF rendering provider.")]
     ToImage {
         /// Input PDF file
         #[arg(short, long)]
@@ -360,9 +356,9 @@ enum PdfCommands {
 
 #[derive(Subcommand)]
 enum AiCommands {
-    /// Organize photos using AI (unavailable until a classifier is configured)
+    /// Organize photos (date available experimentally; classifier modes unavailable)
     #[command(
-        after_long_help = "Unavailable: use explicit filesystem organization until a supported classifier is configured."
+        after_long_help = "Date organization is experimental. Subject, location, camera, and custom classification are unavailable."
     )]
     Organize {
         /// Input directory
@@ -373,14 +369,14 @@ enum AiCommands {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Organization strategy (date, subject, location)
-        #[arg(short, long, default_value = "date")]
-        strategy: String,
+        /// Organization strategy
+        #[arg(short, long, value_enum, default_value_t = OrganizeMode::Date)]
+        strategy: OrganizeMode,
     },
 
-    /// Rename photos using AI (unavailable until a description provider is configured)
+    /// Rename photos using deterministic filename tokens
     #[command(
-        after_long_help = "Unavailable: use a deterministic rename tool until a supported description provider is configured."
+        after_long_help = "Deterministic tokens date, time, datetime, index, name, and ext are supported. AI subject descriptions are unavailable."
     )]
     Rename {
         /// Input directory
@@ -388,7 +384,7 @@ enum AiCommands {
         input: PathBuf,
 
         /// Filename pattern
-        #[arg(short, long, default_value = "{date}_{subject}_{index}")]
+        #[arg(short, long, default_value = "{date}_{name}_{index}")]
         pattern: String,
 
         /// Dry run mode
@@ -397,9 +393,7 @@ enum AiCommands {
     },
 
     /// Generate alt text (unavailable until a captioning provider is configured)
-    #[command(
-        after_long_help = "Unavailable: configure a captioning provider; run rtools doctor once available in this release."
-    )]
+    #[command(after_long_help = "Unavailable: configure a supported captioning provider.")]
     AltText {
         /// Input file(s)
         #[arg(short, long, num_args = 1..)]
@@ -416,7 +410,7 @@ enum AiCommands {
 
     /// Find duplicate images
     #[command(
-        after_long_help = "Action: report (default), move, delete\n\nExample:\n  rtools ai duplicates -i photos/ -t 0.95 -a report"
+        after_long_help = "Report is experimental. Move, delete, and symlink actions are unavailable.\n\nExample:\n  rtools ai duplicates -i photos/ -t 0.95 -a report"
     )]
     Duplicates {
         /// Input directory
@@ -427,10 +421,33 @@ enum AiCommands {
         #[arg(short, long, default_value = "0.9")]
         threshold: f64,
 
-        /// Action (report, move, delete)
-        #[arg(short, long, default_value = "report")]
-        action: String,
+        /// Action to take
+        #[arg(short, long, value_enum, default_value_t = DuplicateMode::Report)]
+        action: DuplicateMode,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OrganizeMode {
+    Date,
+    Subject,
+    Location,
+    Camera,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DuplicateMode {
+    Report,
+    Move,
+    Delete,
+    Symlink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ExifOutputFormat {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]

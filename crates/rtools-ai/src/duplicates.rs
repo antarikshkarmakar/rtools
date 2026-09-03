@@ -65,6 +65,12 @@ impl Processor for DuplicatesProcessor {
     ) -> RToolsResult<DuplicatesResult> {
         let start = std::time::Instant::now();
 
+        if inputs.is_empty() {
+            return Err(RToolsError::invalid_input(
+                "Duplicate detection requires at least one input file",
+            ));
+        }
+
         let mut file_hashes: Vec<(PathBuf, u64)> = Vec::new();
 
         for input in &inputs {
@@ -109,27 +115,6 @@ impl Processor for DuplicatesProcessor {
             }
         }
 
-        // Apply action if needed
-        if !config.dry_run {
-            for group in &duplicate_groups {
-                for duplicate in group.files.iter().skip(1) {
-                    match &config.action {
-                        DuplicateAction::Delete => {
-                            let _ = std::fs::remove_file(duplicate);
-                        }
-                        DuplicateAction::Move { destination } => {
-                            let _ = std::fs::create_dir_all(destination);
-                            if let Some(file_name) = duplicate.file_name() {
-                                let target = destination.join(file_name);
-                                let _ = std::fs::rename(duplicate, target);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
         let elapsed = start.elapsed();
         let total_duplicates: usize = duplicate_groups.iter().map(|g| g.files.len() - 1).sum();
 
@@ -147,7 +132,17 @@ impl Processor for DuplicatesProcessor {
                 "Threshold must be between 0.0 and 1.0",
             ));
         }
-        Ok(())
+        let operation_id = match &config.action {
+            DuplicateAction::Report => return Ok(()),
+            DuplicateAction::Move { .. } => "ai.duplicates.move",
+            DuplicateAction::Delete => "ai.duplicates.delete",
+            DuplicateAction::Symlink => "ai.duplicates.symlink",
+        };
+        Err(RToolsError::capability_unavailable(
+            operation_id,
+            "This duplicate-file action is not implemented safely",
+            "Use report-only duplicate detection",
+        ))
     }
 
     fn name(&self) -> &'static str {

@@ -2,7 +2,7 @@ use crate::{RToolsError, RToolsResult};
 use serde::de::Error as _;
 use serde::ser::SerializeSeq as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Execution state for a registered operation or provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,7 +144,7 @@ impl CapabilityRegistry {
     ///
     /// Returns `INVALID_INPUT` for an invalid operation identifier and
     /// `CONFIGURATION_INVALID` for duplicates or invalid state diagnostics.
-    pub fn register(&mut self, capability: Capability) -> RToolsResult<()> {
+    pub fn register(&mut self, mut capability: Capability) -> RToolsResult<()> {
         validate_operation_id(&capability.operation_id)?;
         validate_diagnostic_state(
             capability.state,
@@ -152,6 +152,7 @@ impl CapabilityRegistry {
             capability.remediation.as_deref(),
             "capability",
         )?;
+        let mut provider_ids = BTreeSet::new();
         for diagnostic in &capability.provider_diagnostics {
             if diagnostic.provider_id.trim().is_empty()
                 || diagnostic.provider_id.chars().any(char::is_whitespace)
@@ -166,7 +167,15 @@ impl CapabilityRegistry {
                 diagnostic.remediation.as_deref(),
                 "provider diagnostic",
             )?;
+            if !provider_ids.insert(diagnostic.provider_id.as_str()) {
+                return Err(RToolsError::configuration_invalid(
+                    "A provider identifier was registered more than once for a capability",
+                ));
+            }
         }
+        capability
+            .provider_diagnostics
+            .sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
 
         if self.capabilities.contains_key(&capability.operation_id) {
             return Err(RToolsError::configuration_invalid(
@@ -251,8 +260,9 @@ impl<'de> Deserialize<'de> for CapabilityRegistry {
 }
 
 fn validate_operation_id(operation_id: &str) -> RToolsResult<()> {
-    let valid = !operation_id.is_empty()
-        && operation_id.split('.').all(|segment| {
+    let segments: Vec<_> = operation_id.split('.').collect();
+    let valid = segments.len() >= 2
+        && segments.into_iter().all(|segment| {
             let mut characters = segment.chars();
             characters
                 .next()
@@ -265,7 +275,7 @@ fn validate_operation_id(operation_id: &str) -> RToolsResult<()> {
         Ok(())
     } else {
         Err(RToolsError::invalid_input(
-            "Operation identifiers must contain lowercase dotted segments beginning with a letter",
+            "Operation identifiers must contain at least two lowercase dotted segments beginning with a letter",
         ))
     }
 }

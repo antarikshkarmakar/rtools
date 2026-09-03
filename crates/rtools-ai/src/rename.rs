@@ -21,10 +21,10 @@ pub struct RenameConfig {
 impl Default for RenameConfig {
     fn default() -> Self {
         Self {
-            pattern: "{date}_{subject}_{index}".to_string(),
+            pattern: "{date}_{name}_{index}".to_string(),
             output_dir: None,
             start_number: 1,
-            use_ai_descriptions: true,
+            use_ai_descriptions: false,
             dry_run: false,
         }
     }
@@ -99,12 +99,73 @@ impl Processor for RenameProcessor {
         if config.pattern.is_empty() {
             return Err(RToolsError::invalid_input("Pattern cannot be empty"));
         }
+        if config.use_ai_descriptions || config.pattern.contains("{subject}") {
+            return Err(RToolsError::capability_unavailable(
+                "ai.rename.ai",
+                "AI-assisted rename descriptions are not implemented",
+                "Disable AI descriptions and use deterministic filename tokens",
+            ));
+        }
+        validate_deterministic_pattern(&config.pattern)?;
         Ok(())
     }
 
     fn name(&self) -> &'static str {
         "RenameProcessor"
     }
+}
+
+/// Validate that a rename pattern contains only supported deterministic tokens.
+///
+/// # Errors
+///
+/// Returns `INVALID_INPUT` for unknown, nested, or unbalanced tokens.
+pub fn validate_deterministic_pattern(pattern: &str) -> RToolsResult<()> {
+    if pattern.is_empty() {
+        return Err(RToolsError::invalid_input("Pattern cannot be empty"));
+    }
+    let supported = ["date", "time", "datetime", "index", "name", "ext"];
+    let mut characters = pattern.char_indices().peekable();
+    while let Some((_, character)) = characters.next() {
+        match character {
+            '}' => {
+                return Err(RToolsError::invalid_input(
+                    "Filename pattern contains an unmatched closing brace",
+                ));
+            }
+            '{' => {
+                let token_start = characters.peek().map_or(pattern.len(), |(index, _)| *index);
+                let mut token_end = None;
+                for (index, token_character) in characters.by_ref() {
+                    match token_character {
+                        '}' => {
+                            token_end = Some(index);
+                            break;
+                        }
+                        '{' => {
+                            return Err(RToolsError::invalid_input(
+                                "Filename pattern contains a nested opening brace",
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(token_end) = token_end else {
+                    return Err(RToolsError::invalid_input(
+                        "Filename pattern contains an unterminated token",
+                    ));
+                };
+                let token = &pattern[token_start..token_end];
+                if !supported.contains(&token) {
+                    return Err(RToolsError::invalid_input(format!(
+                        "Unsupported filename pattern token: {{{token}}}"
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Generate filename from pattern, avoiding double extensions

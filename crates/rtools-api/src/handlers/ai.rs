@@ -88,10 +88,10 @@ pub async fn rename(
     }
 
     let config = rtools_ai::rename::RenameConfig {
-        pattern: "{date}_{subject}_{index}".to_string(),
+        pattern: "{date}_{name}_{index}".to_string(),
         output_dir: None,
         start_number: 1,
-        use_ai_descriptions: true,
+        use_ai_descriptions: false,
         dry_run: false,
     };
 

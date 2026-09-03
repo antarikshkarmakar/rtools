@@ -63,7 +63,7 @@ pub async fn compress(
                 .and_then(|f| rtools_core::ImageFormat::from_extension(&f)),
             output: None,
             output_policy: rtools_core::OutputPolicy::default(),
-            preserve_metadata: true,
+            preserve_metadata: false,
             strip_gps: false,
             limits: state.config.limits.clone(),
         };
@@ -121,13 +121,12 @@ pub async fn convert(
 
         let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_image::ConvertConfig {
-            target_format: rtools_core::ImageFormat::from_extension(&file_name)
-                .unwrap_or(rtools_core::ImageFormat::Jpeg),
+            target_format: rtools_core::ImageFormat::Webp,
             output: None,
             output_policy: rtools_core::OutputPolicy::default(),
             output_dir: None,
             quality: state.config.image.default_quality,
-            preserve_metadata: true,
+            preserve_metadata: false,
             strip_gps: false,
             limits: state.config.limits.clone(),
         };

@@ -70,8 +70,6 @@ impl Processor for PdfSplitProcessor {
             .as_path()
             .ok_or_else(|| RToolsError::invalid_input("PDF split requires a file path input"))?;
 
-        std::fs::create_dir_all(&config.output_dir)?;
-
         let doc = lopdf::Document::load(path)
             .map_err(|e| RToolsError::pdf(format!("Failed to load PDF: {e}")))?;
 
@@ -79,6 +77,12 @@ impl Processor for PdfSplitProcessor {
         let page_count = u32::try_from(pages.len()).unwrap_or(u32::MAX);
 
         let pages_to_extract = resolve_page_range(&config.range, page_count);
+        if pages_to_extract.is_empty() {
+            return Err(RToolsError::invalid_input(
+                "The requested page selection contains no pages in this PDF",
+            ));
+        }
+        std::fs::create_dir_all(&config.output_dir)?;
         let mut outputs = Vec::new();
 
         for &page_num in &pages_to_extract {

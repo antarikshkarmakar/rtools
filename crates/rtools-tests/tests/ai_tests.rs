@@ -166,11 +166,9 @@ fn test_find_duplicates_different() {
 fn test_find_duplicates_empty_input() {
     let config = DuplicatesConfig::default();
     let processor = DuplicatesProcessor;
-    let result = processor.process(vec![], config).unwrap();
+    let error = processor.process(vec![], config).unwrap_err();
 
-    assert!(result.groups.is_empty());
-    assert_eq!(result.total_originals, 0);
-    assert_eq!(result.total_duplicates, 0);
+    assert_eq!(error.code(), rtools_core::ErrorCode::InvalidInput);
 }
 
 #[test]

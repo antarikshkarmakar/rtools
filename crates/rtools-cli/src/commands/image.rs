@@ -1,4 +1,4 @@
-use crate::ImageCommands;
+use crate::{ExifOutputFormat, ImageCommands};
 use rtools_core::AppConfig;
 use rtools_core::FileInput;
 use rtools_core::Processor;
@@ -312,29 +312,34 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             Ok(())
         }
 
-        ImageCommands::Exif { input, format: _ } => {
+        ImageCommands::Exif { input, format } => {
             let processor = rtools_image::ExifProcessor;
             let config = rtools_image::exif::ExifConfig::default();
 
             for input_path in input {
                 let file_input = FileInput::from_path(input_path.clone());
                 match processor.process(file_input, config.clone()) {
-                    Ok(exif) => {
-                        println!("✓ EXIF for: {}", input_path.display());
-                        if let Some(make) = &exif.camera_make {
-                            println!(
-                                "  Camera: {} {}",
-                                make,
-                                exif.camera_model.as_deref().unwrap_or("")
-                            );
+                    Ok(exif) => match format {
+                        ExifOutputFormat::Json => {
+                            println!("{}", serde_json::to_string_pretty(&exif)?);
                         }
-                        if let Some(date) = &exif.datetime_original {
-                            println!("  Date: {date}");
+                        ExifOutputFormat::Human => {
+                            println!("✓ EXIF for: {}", input_path.display());
+                            if let Some(make) = &exif.camera_make {
+                                println!(
+                                    "  Camera: {} {}",
+                                    make,
+                                    exif.camera_model.as_deref().unwrap_or("")
+                                );
+                            }
+                            if let Some(date) = &exif.datetime_original {
+                                println!("  Date: {date}");
+                            }
+                            if let Some(lat) = exif.gps_latitude {
+                                println!("  GPS: {}, {}", lat, exif.gps_longitude.unwrap_or(0.0));
+                            }
                         }
-                        if let Some(lat) = exif.gps_latitude {
-                            println!("  GPS: {}, {}", lat, exif.gps_longitude.unwrap_or(0.0));
-                        }
-                    }
+                    },
                     Err(e) => {
                         return Err(e.into());
                     }
@@ -343,33 +348,12 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             Ok(())
         }
 
-        ImageCommands::Ocr {
-            input,
-            language,
-            output: _,
-        } => {
-            // OCR is handled by AI crate
-            let processor = rtools_ai::OcrProcessor;
-            let config = rtools_ai::ocr::OcrConfig {
-                language,
-                dpi: 300,
-                output_format: rtools_ai::ocr::OcrOutputFormat::Text,
-            };
-
-            for input_path in input {
-                let file_input = FileInput::from_path(input_path.clone());
-                match processor.process(file_input, config.clone()) {
-                    Ok(result) => {
-                        println!("✓ OCR for: {}", input_path.display());
-                        println!("  Text: {}", result.text);
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                }
-            }
-            Ok(())
-        }
+        ImageCommands::Ocr { .. } => Err(rtools_core::RToolsError::capability_unavailable(
+            "image.ocr",
+            "No image OCR provider is configured",
+            "Configure a supported image OCR provider",
+        )
+        .into()),
     }
 }
 
@@ -413,7 +397,7 @@ mod tests {
         assert!(matches!(
             error,
             RToolsError::CapabilityUnavailable { operation_id, .. }
-                if operation_id == "ai.ocr"
+                if operation_id == "image.ocr"
         ));
     }
 

@@ -52,6 +52,7 @@ fn operation_ids_reject_non_lowercase_dotted_syntax() {
         "image-resize",
         "1image.resize",
         "image.$resize",
+        "image",
     ];
 
     for operation_id in invalid {
@@ -66,6 +67,35 @@ fn operation_ids_reject_non_lowercase_dotted_syntax() {
     registry
         .register(Capability::available("image.metadata.strip_gps2"))
         .unwrap();
+}
+
+#[test]
+fn provider_diagnostics_are_canonical_and_duplicate_ids_are_rejected() {
+    let mut registry = CapabilityRegistry::default();
+    registry
+        .register(
+            Capability::available("image.resize")
+                .with_provider_diagnostic(ProviderDiagnostic::available("z-provider"))
+                .with_provider_diagnostic(ProviderDiagnostic::available("a-provider")),
+        )
+        .unwrap();
+    let provider_ids: Vec<&str> = registry
+        .lookup("image.resize")
+        .unwrap()
+        .provider_diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.provider_id.as_str())
+        .collect();
+    assert_eq!(provider_ids, ["a-provider", "z-provider"]);
+
+    let duplicate = Capability::available("image.crop")
+        .with_provider_diagnostic(ProviderDiagnostic::available("native-image"))
+        .with_provider_diagnostic(ProviderDiagnostic::experimental(
+            "native-image",
+            "second registration",
+        ));
+    let error = registry.register(duplicate).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ConfigurationInvalid);
 }
 
 #[test]

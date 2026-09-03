@@ -212,7 +212,7 @@ impl RToolsServer {
                     format: None,
                     output: input.output_path.map(PathBuf::from),
                     output_policy: rtools_core::OutputPolicy::default(),
-                    preserve_metadata: true,
+                    preserve_metadata: false,
                     strip_gps: false,
                     limits: rtools_core::ResourceLimits::default(),
                 };
@@ -252,7 +252,7 @@ impl RToolsServer {
                     output_policy: rtools_core::OutputPolicy::default(),
                     output_dir: None,
                     quality: input.quality.unwrap_or(85),
-                    preserve_metadata: true,
+                    preserve_metadata: false,
                     strip_gps: false,
                     limits: rtools_core::ResourceLimits::default(),
                 };
@@ -301,9 +301,17 @@ impl RToolsServer {
                 let config = rtools_ai::organize::OrganizeConfig {
                     output_dir: PathBuf::from(&input.output_dir),
                     strategy: match input.strategy.as_deref().unwrap_or("date") {
+                        "date" => rtools_ai::organize::OrganizeStrategy::ByDate,
                         "subject" => rtools_ai::organize::OrganizeStrategy::BySubject,
                         "location" => rtools_ai::organize::OrganizeStrategy::ByLocation,
-                        _ => rtools_ai::organize::OrganizeStrategy::ByDate,
+                        "camera" => rtools_ai::organize::OrganizeStrategy::ByCamera,
+                        "custom" => rtools_ai::organize::OrganizeStrategy::Custom,
+                        other => {
+                            return Err(McpError::invalid_params(
+                                format!("Unsupported organization strategy: {other}"),
+                                None,
+                            ));
+                        }
                     },
                     by_date: true,
                     by_subject: false,
@@ -328,10 +336,10 @@ impl RToolsServer {
                 let config = rtools_ai::rename::RenameConfig {
                     pattern: input
                         .pattern
-                        .unwrap_or_else(|| "{date}_{subject}_{index}".to_string()),
+                        .unwrap_or_else(|| "{date}_{name}_{index}".to_string()),
                     output_dir: None,
                     start_number: 1,
-                    use_ai_descriptions: true,
+                    use_ai_descriptions: false,
                     dry_run: input.dry_run.unwrap_or(false),
                 };
                 let processor = rtools_ai::RenameProcessor;
@@ -560,4 +568,103 @@ async fn main() -> anyhow::Result<()> {
     service.waiting().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::ImageFormat;
+    use std::io::Cursor;
+
+    fn write_png(path: &std::path::Path) {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .expect("test PNG must encode");
+        std::fs::write(path, bytes.into_inner()).expect("test PNG must write");
+    }
+
+    fn is_error(result: &CallToolResult) -> bool {
+        result.is_error == Some(true)
+    }
+
+    #[tokio::test]
+    async fn image_tools_use_safe_metadata_defaults() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let input = temp.path().join("input.png");
+        write_png(&input);
+        for (tool, output, extra) in [
+            (
+                "compress_image",
+                temp.path().join("compressed.png"),
+                serde_json::json!({}),
+            ),
+            (
+                "convert_image",
+                temp.path().join("converted.webp"),
+                serde_json::json!({"target_format": "webp"}),
+            ),
+        ] {
+            let mut arguments = serde_json::json!({
+                "input_path": input,
+                "output_path": output,
+            });
+            arguments
+                .as_object_mut()
+                .expect("arguments are an object")
+                .extend(extra.as_object().expect("extra is an object").clone());
+            let result = RToolsServer
+                .handle_tool(tool, arguments)
+                .await
+                .expect("tool dispatch must complete");
+            assert!(!is_error(&result), "{result:?}");
+            assert!(output.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_ai_modes_and_empty_duplicates_propagate_errors() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let input = temp.path().join("input.png");
+        write_png(&input);
+
+        let organize_output = temp.path().join("organized");
+        let organize = RToolsServer
+            .handle_tool(
+                "organize_photos",
+                serde_json::json!({
+                    "input_dir": temp.path(),
+                    "output_dir": organize_output,
+                    "strategy": "subject",
+                }),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        assert!(is_error(&organize), "{organize:?}");
+        assert!(!organize_output.exists());
+
+        let rename = RToolsServer
+            .handle_tool(
+                "rename_photos",
+                serde_json::json!({
+                    "input_dir": temp.path(),
+                    "pattern": "{subject}_{index}",
+                    "dry_run": true,
+                }),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        assert!(is_error(&rename), "{rename:?}");
+        assert!(input.exists());
+
+        let empty = tempfile::tempdir().expect("empty temp dir");
+        let duplicates = RToolsServer
+            .handle_tool(
+                "find_duplicates",
+                serde_json::json!({"input_dir": empty.path()}),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        assert!(is_error(&duplicates), "{duplicates:?}");
+    }
 }

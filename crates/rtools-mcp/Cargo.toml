@@ -31,5 +31,9 @@ anyhow = { workspace = true }
 tracing-subscriber = { workspace = true }
 walkdir = { workspace = true }
 
+[dev-dependencies]
+image = { workspace = true }
+tempfile = "3.8"
+
 [lints]
 workspace = true
