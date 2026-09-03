@@ -24,3 +24,20 @@ fn rejects_decoded_pixel_overflow_without_multiplication_overflow() {
 
     assert!(limits.check_decoded_pixels(u32::MAX, u32::MAX).is_err());
 }
+
+#[test]
+fn unknown_actual_resource_limit_has_stable_resource_code() {
+    let error = RToolsError::ResourceLimitExceededUnknownActual {
+        resource: "image_decoder_allocation_bytes",
+        limit: 512,
+    };
+
+    assert_eq!(error.code().as_str(), "RESOURCE_LIMIT_EXCEEDED");
+    assert!(matches!(
+        error,
+        RToolsError::ResourceLimitExceededUnknownActual {
+            resource: "image_decoder_allocation_bytes",
+            limit: 512,
+        }
+    ));
+}

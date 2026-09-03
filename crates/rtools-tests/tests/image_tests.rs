@@ -176,12 +176,13 @@ fn rejects_decoder_allocation_over_limit_before_creating_output() {
         .process(FileInput::from_path(input), config)
         .unwrap_err();
 
+    assert_eq!(error.code().as_str(), "RESOURCE_LIMIT_EXCEEDED");
     assert!(
         matches!(
             error,
-            rtools_core::RToolsError::ResourceLimitExceeded {
-                resource: "decoded_bytes",
-                ..
+            rtools_core::RToolsError::ResourceLimitExceededUnknownActual {
+                resource: "image_decoder_allocation_bytes",
+                limit: 16,
             }
         ),
         "unexpected error: {error:?}"

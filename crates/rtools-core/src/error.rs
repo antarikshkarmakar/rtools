@@ -121,6 +121,9 @@ pub enum RToolsError {
         limit: u64,
     },
 
+    #[error("Resource limit exceeded for {resource}: actual usage unavailable (limit: {limit})")]
+    ResourceLimitExceededUnknownActual { resource: &'static str, limit: u64 },
+
     #[error("Configuration invalid: {0}")]
     ConfigurationInvalid(String),
 }
@@ -222,9 +225,10 @@ impl RToolsError {
             Self::Config(_) | Self::ConfigurationInvalid(_) => ErrorCode::ConfigurationInvalid,
             Self::InvalidInput(_) | Self::FileNotFound(_) => ErrorCode::InvalidInput,
             Self::UnsupportedFormat(_) => ErrorCode::UnsupportedFormat,
-            Self::FileTooLarge { .. } | Self::Timeout(_) | Self::ResourceLimitExceeded { .. } => {
-                ErrorCode::ResourceLimitExceeded
-            }
+            Self::FileTooLarge { .. }
+            | Self::Timeout(_)
+            | Self::ResourceLimitExceeded { .. }
+            | Self::ResourceLimitExceededUnknownActual { .. } => ErrorCode::ResourceLimitExceeded,
             Self::ModelNotLoaded(_) | Self::CapabilityUnavailable(_) => {
                 ErrorCode::CapabilityUnavailable
             }
