@@ -86,6 +86,25 @@ fn write_png_header(path: &std::path::Path, width: u32, height: u32) {
     std::fs::write(path, header).unwrap();
 }
 
+fn insert_png_text_chunk(path: &std::path::Path, text_len: usize) {
+    let png = std::fs::read(path).unwrap();
+    let ihdr_end = 8 + 4 + 4 + 13 + 4;
+    let mut chunk_data = b"Comment\0".to_vec();
+    chunk_data.extend(std::iter::repeat_n(b'x', text_len));
+
+    let mut chunk = Vec::with_capacity(chunk_data.len() + 12);
+    chunk.extend_from_slice(&u32::try_from(chunk_data.len()).unwrap().to_be_bytes());
+    chunk.extend_from_slice(b"tEXt");
+    chunk.extend_from_slice(&chunk_data);
+    chunk.extend_from_slice(&crc32(&chunk[4..]));
+
+    let mut with_text = Vec::with_capacity(png.len() + chunk.len());
+    with_text.extend_from_slice(&png[..ihdr_end]);
+    with_text.extend_from_slice(&chunk);
+    with_text.extend_from_slice(&png[ihdr_end..]);
+    std::fs::write(path, with_text).unwrap();
+}
+
 fn crc32(bytes: &[u8]) -> [u8; 4] {
     let mut crc = u32::MAX;
     for byte in bytes {
@@ -129,6 +148,77 @@ fn rejects_oversized_image_before_creating_output() {
                 resource: "decoded_pixels",
                 ..
             }
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(!output.exists());
+    assert!(!output.parent().unwrap().exists());
+}
+
+#[test]
+fn rejects_decoder_allocation_over_limit_before_creating_output() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "allocation-heavy.png", 1, 1);
+    let output = tmp.path().join("created-after-decode").join("output.png");
+    insert_png_text_chunk(&input, 1_024);
+
+    let config = CompressConfig {
+        format: Some(rtools_core::ImageFormat::Png),
+        output: Some(output.clone()),
+        limits: ResourceLimits {
+            max_decoded_pixels: 1,
+            ..ResourceLimits::default()
+        },
+        ..CompressConfig::default()
+    };
+
+    let error = CompressProcessor
+        .process(FileInput::from_path(input), config)
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            rtools_core::RToolsError::ResourceLimitExceeded {
+                resource: "decoded_bytes",
+                ..
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(!output.exists());
+    assert!(!output.parent().unwrap().exists());
+}
+
+#[test]
+fn rejects_encoded_input_over_byte_limit_before_creating_output() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "too-many-bytes.png", 2, 2);
+    let output = tmp.path().join("created-after-decode").join("output.png");
+    let input_len = std::fs::metadata(&input).unwrap().len();
+
+    let config = CompressConfig {
+        format: Some(rtools_core::ImageFormat::Png),
+        output: Some(output.clone()),
+        limits: ResourceLimits {
+            max_input_bytes: input_len - 1,
+            ..ResourceLimits::default()
+        },
+        ..CompressConfig::default()
+    };
+
+    let error = CompressProcessor
+        .process(FileInput::from_path(input), config)
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            rtools_core::RToolsError::ResourceLimitExceeded {
+                resource: "input_bytes",
+                actual,
+                limit,
+            } if actual == input_len && limit == input_len - 1
         ),
         "unexpected error: {error:?}"
     );
