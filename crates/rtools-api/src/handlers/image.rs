@@ -5,9 +5,53 @@ use axum::{
 };
 use rtools_core::Processor;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::AppState;
+
+const IMAGE_TEMP_PREFIX: &str = "rtools-api-image-";
+
+fn image_temp_dir() -> Result<tempfile::TempDir, (StatusCode, String)> {
+    tempfile::Builder::new()
+        .prefix(IMAGE_TEMP_PREFIX)
+        .tempdir()
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+fn sanitized_upload_name(raw_name: Option<&str>) -> String {
+    let basename = raw_name
+        .unwrap_or("upload")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("upload");
+    if basename.is_empty() || matches!(basename, "." | "..") {
+        "upload".to_string()
+    } else {
+        basename.to_string()
+    }
+}
+
+fn persist_output_path(
+    temp_dir: tempfile::TempDir,
+    output_path: Option<&PathBuf>,
+) -> Result<PathBuf, (StatusCode, String)> {
+    let output_path = output_path.ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Processor did not return a path-based artifact".to_string(),
+        )
+    })?;
+    if !output_path.starts_with(temp_dir.path()) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Processor artifact escaped its request directory".to_string(),
+        ));
+    }
+    let output_path = output_path.clone();
+    let _persisted_dir = temp_dir.keep();
+    Ok(output_path)
+}
 
 #[derive(Deserialize)]
 pub struct CompressRequest {
@@ -27,16 +71,14 @@ pub async fn compress(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<CompressResponse>, (StatusCode, String)> {
-    // Create temp directory OUTSIDE the loop so it persists
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir = image_temp_dir()?;
 
     if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let file_name = sanitized_upload_name(field.file_name());
         let data = field
             .bytes()
             .await
@@ -71,13 +113,11 @@ pub async fn compress(
         let processor = rtools_image::CompressProcessor;
         match processor.process(input, config) {
             Ok(output) => {
+                let output_path = persist_output_path(temp_dir, output.destination.as_path())?;
                 return Ok(Json(CompressResponse {
                     success: true,
                     message: format!("Compressed {file_name}"),
-                    output_path: output
-                        .destination
-                        .as_path()
-                        .map(|p| p.display().to_string()),
+                    output_path: Some(output_path.display().to_string()),
                     stats: output.stats,
                 }));
             }
@@ -101,15 +141,14 @@ pub async fn convert(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir = image_temp_dir()?;
 
     if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let file_name = sanitized_upload_name(field.file_name());
         let data = field
             .bytes()
             .await
@@ -134,13 +173,11 @@ pub async fn convert(
         let processor = rtools_image::ConvertProcessor;
         match processor.process(input, config) {
             Ok(output) => {
+                let output_path = persist_output_path(temp_dir, output.destination.as_path())?;
                 return Ok(Json(ConvertResponse {
                     success: true,
                     message: format!("Converted {file_name}"),
-                    output_path: output
-                        .destination
-                        .as_path()
-                        .map(|p| p.display().to_string()),
+                    output_path: Some(output_path.display().to_string()),
                 }));
             }
             Err(e) => {
@@ -156,15 +193,14 @@ pub async fn resize(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<ConvertResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir = image_temp_dir()?;
 
     if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let file_name = sanitized_upload_name(field.file_name());
         let data = field
             .bytes()
             .await
@@ -189,13 +225,11 @@ pub async fn resize(
         let processor = rtools_image::ResizeProcessor;
         match processor.process(input, config) {
             Ok(output) => {
+                let output_path = persist_output_path(temp_dir, output.destination.as_path())?;
                 return Ok(Json(ConvertResponse {
                     success: true,
                     message: format!("Resized {file_name}"),
-                    output_path: output
-                        .destination
-                        .as_path()
-                        .map(|p| p.display().to_string()),
+                    output_path: Some(output_path.display().to_string()),
                 }));
             }
             Err(e) => {
@@ -247,15 +281,14 @@ pub async fn metadata(
     State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<MetadataResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let temp_dir = image_temp_dir()?;
 
     if let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let file_name = sanitized_upload_name(field.file_name());
         let data = field
             .bytes()
             .await

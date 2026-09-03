@@ -100,8 +100,13 @@ mod tests {
         http::{Request, StatusCode},
     };
     use image::ImageFormat;
+    use std::collections::BTreeSet;
     use std::io::Cursor;
+    use std::path::PathBuf;
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
+
+    static IMAGE_ARTIFACT_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     fn png_bytes() -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
@@ -135,6 +140,7 @@ mod tests {
         Router::new()
             .route("/compress", post(handlers::image::compress))
             .route("/convert", post(handlers::image::convert))
+            .route("/resize", post(handlers::image::resize))
             .route("/rename", post(handlers::ai::rename))
             .route("/organize", post(handlers::ai::organize))
             .route("/duplicates", post(handlers::ai::duplicates))
@@ -143,11 +149,28 @@ mod tests {
             }))
     }
 
+    fn persistent_image_temp_dirs() -> BTreeSet<PathBuf> {
+        std::fs::read_dir(std::env::temp_dir())
+            .expect("system temp directory must be readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("rtools-api-image-"))
+            })
+            .collect()
+    }
+
     #[tokio::test]
-    async fn image_adapter_defaults_do_not_request_unavailable_metadata_modes() {
-        for path in ["/compress", "/convert"] {
+    async fn image_adapter_returns_live_sanitized_artifacts() {
+        let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
+        for path in ["/compress", "/convert", "/resize"] {
             let response = test_app()
-                .oneshot(multipart_request(path, Some(("input.png", png_bytes()))))
+                .oneshot(multipart_request(
+                    path,
+                    Some(("..\\private\\input.png", png_bytes())),
+                ))
                 .await
                 .expect("router call must complete");
             let status = response.status();
@@ -155,7 +178,47 @@ mod tests {
                 .await
                 .expect("response body must read");
             assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+            let document: serde_json::Value =
+                serde_json::from_slice(&body).expect("response must be JSON");
+            let output_path = document["output_path"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+                .expect("response must include an output path");
+            assert!(output_path.exists(), "{}", output_path.display());
+            assert!(
+                image::open(&output_path).is_ok(),
+                "{}",
+                output_path.display()
+            );
+            let artifact_dir = output_path.parent().expect("artifact parent");
+            assert!(
+                artifact_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("rtools-api-image-")),
+                "{}",
+                artifact_dir.display()
+            );
+            assert!(!output_path.display().to_string().contains("private"));
+            std::fs::remove_dir_all(artifact_dir).expect("test artifact cleanup");
         }
+    }
+
+    #[tokio::test]
+    async fn failed_image_processing_cleans_its_request_directory() {
+        let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
+        let before = persistent_image_temp_dirs();
+
+        let response = test_app()
+            .oneshot(multipart_request(
+                "/compress",
+                Some(("invalid.png", b"not an image".to_vec())),
+            ))
+            .await
+            .expect("router call must complete");
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(persistent_image_temp_dirs(), before);
     }
 
     #[tokio::test]

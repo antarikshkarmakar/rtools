@@ -7,6 +7,18 @@ use rtools_image::{
     FilterConfig, FilterProcessor, ResizeConfig, ResizeProcessor, WatermarkConfig,
     WatermarkProcessor,
 };
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct ExifJsonDocument {
+    results: Vec<ExifJsonResult>,
+}
+
+#[derive(Serialize)]
+struct ExifJsonResult {
+    path: String,
+    exif: rtools_core::types::ExifData,
+}
 
 #[allow(clippy::too_many_lines)] // Task 4 will split individual image command handlers.
 pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> anyhow::Result<()> {
@@ -316,32 +328,48 @@ pub async fn handle_image_command(cmd: ImageCommands, config: &AppConfig) -> any
             let processor = rtools_image::ExifProcessor;
             let config = rtools_image::exif::ExifConfig::default();
 
-            for input_path in input {
-                let file_input = FileInput::from_path(input_path.clone());
-                match processor.process(file_input, config.clone()) {
-                    Ok(exif) => match format {
-                        ExifOutputFormat::Json => {
-                            println!("{}", serde_json::to_string_pretty(&exif)?);
+            match format {
+                ExifOutputFormat::Json => {
+                    let mut results = Vec::with_capacity(input.len());
+                    for input_path in input {
+                        let file_input = FileInput::from_path(input_path.clone());
+                        let exif = processor.process(file_input, config.clone())?;
+                        results.push(ExifJsonResult {
+                            path: input_path.display().to_string(),
+                            exif,
+                        });
+                    }
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&ExifJsonDocument { results })?
+                    );
+                }
+                ExifOutputFormat::Human => {
+                    for input_path in input {
+                        let file_input = FileInput::from_path(input_path.clone());
+                        match processor.process(file_input, config.clone()) {
+                            Ok(exif) => {
+                                println!("✓ EXIF for: {}", input_path.display());
+                                if let Some(make) = &exif.camera_make {
+                                    println!(
+                                        "  Camera: {} {}",
+                                        make,
+                                        exif.camera_model.as_deref().unwrap_or("")
+                                    );
+                                }
+                                if let Some(date) = &exif.datetime_original {
+                                    println!("  Date: {date}");
+                                }
+                                if let Some(lat) = exif.gps_latitude {
+                                    println!(
+                                        "  GPS: {}, {}",
+                                        lat,
+                                        exif.gps_longitude.unwrap_or(0.0)
+                                    );
+                                }
+                            }
+                            Err(error) => return Err(error.into()),
                         }
-                        ExifOutputFormat::Human => {
-                            println!("✓ EXIF for: {}", input_path.display());
-                            if let Some(make) = &exif.camera_make {
-                                println!(
-                                    "  Camera: {} {}",
-                                    make,
-                                    exif.camera_model.as_deref().unwrap_or("")
-                                );
-                            }
-                            if let Some(date) = &exif.datetime_original {
-                                println!("  Date: {date}");
-                            }
-                            if let Some(lat) = exif.gps_latitude {
-                                println!("  GPS: {}, {}", lat, exif.gps_longitude.unwrap_or(0.0));
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        return Err(e.into());
                     }
                 }
             }

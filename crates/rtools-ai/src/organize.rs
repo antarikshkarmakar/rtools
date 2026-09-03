@@ -151,11 +151,51 @@ impl Processor for OrganizeProcessor {
 impl OrganizeProcessor {
     fn get_date_folder(path: &PathBuf) -> RToolsResult<PathBuf> {
         let metadata = std::fs::metadata(path)?;
-        let modified = metadata
-            .modified()
-            .unwrap_or_else(|_| std::time::SystemTime::now());
-        let datetime: chrono::DateTime<chrono::Local> = modified.into();
+        date_folder_from_modified(metadata.modified())
+    }
+}
 
-        Ok(PathBuf::from(datetime.format("%Y/%m").to_string()))
+fn date_folder_from_modified(
+    modified: std::io::Result<std::time::SystemTime>,
+) -> RToolsResult<PathBuf> {
+    let modified = modified?;
+    let datetime: chrono::DateTime<chrono::Local> = modified.into();
+
+    Ok(PathBuf::from(datetime.format("%Y/%m").to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::date_folder_from_modified;
+    use rtools_core::ErrorCode;
+    use std::io;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn modified_time_errors_are_propagated_without_today_fallback() {
+        let error = date_folder_from_modified(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "injected mtime failure",
+        )))
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+        assert!(matches!(
+            error,
+            rtools_core::RToolsError::Io(error)
+                if error.kind() == io::ErrorKind::PermissionDenied
+        ));
+    }
+
+    #[test]
+    fn valid_modified_time_maps_to_its_year_and_month() {
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let expected: chrono::DateTime<chrono::Local> = modified.into();
+
+        assert_eq!(
+            date_folder_from_modified(Ok(modified)).unwrap(),
+            PathBuf::from(expected.format("%Y/%m").to_string())
+        );
     }
 }

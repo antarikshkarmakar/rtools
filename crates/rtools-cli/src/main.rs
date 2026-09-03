@@ -1,6 +1,9 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
 use std::path::PathBuf;
 
+#[cfg(test)]
+use image as _;
+
 mod capabilities;
 mod commands;
 

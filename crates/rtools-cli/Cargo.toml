@@ -28,9 +28,11 @@ tokio = { workspace = true }
 toml = { workspace = true }
 walkdir = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+image = { workspace = true }
 
 [lints]
 workspace = true
