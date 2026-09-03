@@ -395,6 +395,40 @@ fn malformed_animated_webp_and_apng_return_decode_errors_without_flattening() {
 }
 
 #[test]
+fn oversized_webp_canvas_is_rejected_before_animation_frame_iteration() {
+    let tmp = TempDir::new().unwrap();
+    let mut bytes = base64::engine::general_purpose::STANDARD
+        .decode(include_str!("../fixtures/images/two-frame.webp.b64").trim())
+        .unwrap();
+    assert_eq!(&bytes[12..16], b"VP8X");
+    // VP8X stores canvas dimensions minus one as little-endian 24-bit values.
+    // A 64x64 canvas is safely tiny in absolute terms but deliberately exceeds
+    // the four-pixel test limit and therefore exposes limit-vs-frame ordering.
+    bytes[24..27].copy_from_slice(&[63, 0, 0]);
+    bytes[27..30].copy_from_slice(&[63, 0, 0]);
+    let input = tmp.path().join("oversized-animation.bin");
+    std::fs::write(&input, bytes).unwrap();
+    let limits = ResourceLimits {
+        max_decoded_pixels: 4,
+        ..ResourceLimits::default()
+    };
+
+    let error = rtools_image::format::decode_bounded(&input, &limits).unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            rtools_core::RToolsError::ResourceLimitExceeded {
+                resource: "decoded_pixels",
+                actual: 4_096,
+                limit: 4,
+            }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
 fn drop_all_validator_rejects_a_real_gps_exif_artifact() {
     let tmp = TempDir::new().unwrap();
     let gps = decode_fixture(

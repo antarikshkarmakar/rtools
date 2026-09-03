@@ -170,12 +170,6 @@ pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<Deco
     let format = reader
         .format()
         .ok_or_else(|| RToolsError::unsupported_format("Cannot determine image format"))?;
-    reject_animated_input(
-        &encoded,
-        format,
-        decoder_limits.clone(),
-        per_enforcement_point_cap,
-    )?;
     reader.limits(decoder_limits.clone());
     let decoder = reader
         .into_decoder()
@@ -183,6 +177,12 @@ pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<Deco
     let (width, height) = decoder.dimensions();
     limits.check_decoded_pixels(width, height)?;
     drop(decoder);
+    reject_animated_input(
+        &encoded,
+        format,
+        decoder_limits.clone(),
+        per_enforcement_point_cap,
+    )?;
 
     // Separately from decoder-internal checks, `ImageReader::decode` reserves
     // the output buffer bytes against the same finite per-point cap before
