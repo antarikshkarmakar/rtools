@@ -850,13 +850,36 @@ mod tests {
 
         const MARKER: &str = "CONFIG_TEST_DANGLING_DISCOVERY";
         if std::env::var_os(MARKER).is_some() {
-            assert!(AppConfig::load(None).is_err());
+            let expected_project = std::env::current_dir().unwrap().join("rtools.toml");
+            let mut locations = ConfigLocations::discover();
+            assert_eq!(
+                locations.project.as_deref(),
+                Some(expected_project.as_path())
+            );
+            locations.system = None;
+            locations.user = None;
+
+            let error = AppConfig::load_from_sources(None, &locations, EnvironmentSource::empty())
+                .unwrap_err();
+            let message = error.to_string();
+            assert_eq!(error.code(), ErrorCode::ConfigurationInvalid);
+            assert!(message.contains("project configuration file"));
+            assert!(message.contains("rtools.toml"));
+            assert!(!message.contains("ambient-user-secret-canary"));
+            assert!(!message.contains("missing-target-secret-canary"));
             return;
         }
 
         let sandbox = tempdir().unwrap();
+        let ambient_user = sandbox.path().join("ambient-user");
+        fs::create_dir_all(ambient_user.join("rtools")).unwrap();
+        fs::write(
+            ambient_user.join("rtools").join("config.toml"),
+            "[api]\napi_key = \"ambient-user-secret-canary\"\ninvalid = [\n",
+        )
+        .unwrap();
         symlink(
-            sandbox.path().join("missing-target.toml"),
+            sandbox.path().join("missing-target-secret-canary.toml"),
             sandbox.path().join("rtools.toml"),
         )
         .unwrap();
@@ -866,7 +889,9 @@ mod tests {
             .arg("config::tests::default_project_discovery_preserves_dangling_primary_symlink")
             .arg("--nocapture")
             .current_dir(sandbox.path())
-            .env(MARKER, "1");
+            .env(MARKER, "1")
+            .env("XDG_CONFIG_HOME", &ambient_user)
+            .env("APPDATA", &ambient_user);
         remove_rtools_environment(&mut command);
 
         assert_child_passed(command);
