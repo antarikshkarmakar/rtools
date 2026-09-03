@@ -2366,6 +2366,7 @@ dependencies = [
  "rtools-core",
  "rtools-image",
  "rtools-pdf",
+ "serde_json",
  "tempfile",
 ]
 

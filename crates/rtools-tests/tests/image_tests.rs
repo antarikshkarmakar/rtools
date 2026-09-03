@@ -1,8 +1,9 @@
-use rtools_core::{ErrorCode, FileInput, OutputPolicy, Processor, ResourceLimits};
+use rtools_core::{ErrorCode, FileInput, OutputPolicy, PendingOutput, Processor, ResourceLimits};
 use rtools_image::{
     CompressConfig, CompressProcessor, ConvertConfig, ConvertProcessor, CropConfig, CropProcessor,
     MetadataConfig, MetadataProcessor, ResizeConfig, ResizeProcessor,
 };
+use std::io::Write;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -118,6 +119,27 @@ fn crc32(bytes: &[u8]) -> [u8; 4] {
         }
     }
     (!crc).to_be_bytes()
+}
+
+struct FailAfter<W> {
+    inner: W,
+    remaining: usize,
+}
+
+impl<W: Write> Write for FailAfter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::other("injected partial-write failure"));
+        }
+        let allowed = bytes.len().min(self.remaining);
+        let written = self.inner.write(&bytes[..allowed])?;
+        self.remaining = self.remaining.saturating_sub(written);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 #[test]
@@ -526,29 +548,61 @@ fn image_unique_name_commits_a_decodable_unicode_output() {
 }
 
 #[test]
-fn failed_image_encode_leaves_no_final_or_temporary_artifacts() {
+fn partial_encoder_write_leaves_no_final_or_temporary_artifacts() {
     let tmp = TempDir::new().unwrap();
-    let input = create_test_image(tmp.path(), "unsupported-input.png", 16, 16);
-    let output = tmp.path().join("unsupported-output.heic");
+    let output = tmp.path().join("partial-output.png");
+    let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+    let temporary = pending.temporary_path().to_owned();
+    let file = std::fs::File::create(&temporary).unwrap();
+    let writer = FailAfter {
+        inner: file,
+        remaining: 24,
+    };
+    let pixels = image::RgbaImage::from_pixel(16, 16, image::Rgba([1, 2, 3, 255]));
 
-    let error = CompressProcessor
-        .process(
-            FileInput::from_path(input),
-            CompressConfig {
-                format: Some(rtools_core::ImageFormat::Heic),
-                output: Some(output.clone()),
-                output_policy: OutputPolicy::FailIfExists,
-                ..CompressConfig::default()
-            },
-        )
-        .unwrap_err();
+    let error = image::ImageEncoder::write_image(
+        image::codecs::png::PngEncoder::new(writer),
+        pixels.as_raw(),
+        pixels.width(),
+        pixels.height(),
+        image::ExtendedColorType::Rgba8,
+    )
+    .unwrap_err();
 
-    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    assert!(error.to_string().contains("injected partial-write failure"));
+    assert!(std::fs::metadata(&temporary).unwrap().len() > 0);
+    drop(pending);
     assert!(!output.exists());
+    assert!(!temporary.exists());
     let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .filter(|name| name.to_string_lossy().contains("rtools"))
         .collect();
     assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
+fn legacy_image_configs_default_missing_output_policy_to_fail_if_exists() {
+    macro_rules! assert_legacy_default {
+        ($config:expr, $type:ty) => {{
+            let mut legacy = serde_json::to_value($config).unwrap();
+            legacy.as_object_mut().unwrap().remove("output_policy");
+            let decoded: $type = serde_json::from_value(legacy).unwrap();
+            assert_eq!(decoded.output_policy, OutputPolicy::FailIfExists);
+        }};
+    }
+
+    assert_legacy_default!(CompressConfig::default(), CompressConfig);
+    assert_legacy_default!(ConvertConfig::default(), ConvertConfig);
+    assert_legacy_default!(ResizeConfig::default(), ResizeConfig);
+    assert_legacy_default!(CropConfig::default(), CropConfig);
+    assert_legacy_default!(
+        rtools_image::FilterConfig::default(),
+        rtools_image::FilterConfig
+    );
+    assert_legacy_default!(
+        rtools_image::WatermarkConfig::default(),
+        rtools_image::WatermarkConfig
+    );
 }

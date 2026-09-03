@@ -3,7 +3,7 @@ use crate::types::ProcessStats;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,14 +25,22 @@ pub enum OutputPolicy {
 }
 
 /// A sibling temporary artifact and its collision reservation.
+///
+/// Cooperating rTools writers hold an exclusive advisory lock on a `create_new`
+/// reservation. Publication itself does not depend on cooperation: create-only
+/// publication preserves any final-path entry installed by another writer.
+/// A same-user process that deliberately removes reservation pathnames while
+/// ignoring the advisory lock is outside the portable locking guarantee, but
+/// ownership changes are detected and foreign reservation entries are never
+/// intentionally removed.
 #[derive(Debug)]
 pub struct PendingOutput {
     final_path: PathBuf,
     temporary_path: PathBuf,
     reservation_path: PathBuf,
+    reservation_file: File,
     owner_token: String,
     policy: OutputPolicy,
-    committed: bool,
 }
 
 impl PendingOutput {
@@ -47,7 +55,8 @@ impl PendingOutput {
         validate_output_parent(requested)?;
 
         let owner_token = owner_token();
-        let (final_path, reservation_path) = reserve_destination(requested, policy, &owner_token)?;
+        let (final_path, reservation_path, reservation_file) =
+            reserve_destination(requested, policy, &owner_token)?;
         let temporary_path = sibling_temporary_path(&final_path, &owner_token)?;
         if let Err(error) = OpenOptions::new()
             .write(true)
@@ -55,7 +64,7 @@ impl PendingOutput {
             .create_new(true)
             .open(&temporary_path)
         {
-            let _ = remove_lock_if_owned(&reservation_path, &owner_token);
+            let _ = retire_reservation(&reservation_path, &owner_token);
             return Err(error.into());
         }
 
@@ -63,9 +72,9 @@ impl PendingOutput {
             final_path,
             temporary_path,
             reservation_path,
+            reservation_file,
             owner_token,
             policy,
-            committed: false,
         })
     }
 
@@ -80,9 +89,17 @@ impl PendingOutput {
     ///
     /// Returns the validator error, a collision or reservation-ownership
     /// error, or an I/O/rollback error when the durable commit fails.
-    pub fn commit<F>(mut self, validate: F) -> RToolsResult<PathBuf>
+    pub fn commit<F>(self, validate: F) -> RToolsResult<PathBuf>
     where
         F: FnOnce(&Path) -> RToolsResult<()>,
+    {
+        self.commit_internal(validate, || Ok(()))
+    }
+
+    fn commit_internal<F, H>(&self, validate: F, pre_publish: H) -> RToolsResult<PathBuf>
+    where
+        F: FnOnce(&Path) -> RToolsResult<()>,
+        H: FnOnce() -> RToolsResult<()>,
     {
         let mut artifact = OpenOptions::new()
             .read(true)
@@ -92,19 +109,35 @@ impl PendingOutput {
         artifact.flush()?;
         artifact.sync_all()?;
 
+        ensure_open_lock_owned(&self.reservation_file, &self.owner_token)?;
         ensure_lock_owned(&self.reservation_path, &self.owner_token)?;
         self.recheck_destination()?;
-        self.commit_rename()?;
-        self.committed = true;
-        remove_lock_if_owned(&self.reservation_path, &self.owner_token)?;
+        pre_publish()?;
+        ensure_open_lock_owned(&self.reservation_file, &self.owner_token)?;
+        ensure_lock_owned(&self.reservation_path, &self.owner_token)?;
+        self.publish_artifact()?;
+        retire_reservation(&self.reservation_path, &self.owner_token)?;
 
         Ok(self.final_path.clone())
+    }
+
+    #[cfg(test)]
+    fn commit_with_pre_publish_hook<F, H>(
+        self,
+        validate: F,
+        pre_publish: H,
+    ) -> RToolsResult<PathBuf>
+    where
+        F: FnOnce(&Path) -> RToolsResult<()>,
+        H: FnOnce() -> RToolsResult<()>,
+    {
+        self.commit_internal(validate, pre_publish)
     }
 
     fn recheck_destination(&self) -> RToolsResult<()> {
         match self.policy {
             OutputPolicy::FailIfExists | OutputPolicy::UniqueName => {
-                if self.final_path.try_exists()? {
+                if path_entry_exists(&self.final_path)? {
                     return Err(RToolsError::output_exists(
                         self.final_path.display().to_string(),
                     ));
@@ -115,62 +148,49 @@ impl PendingOutput {
         Ok(())
     }
 
+    fn publish_artifact(&self) -> RToolsResult<()> {
+        match self.policy {
+            OutputPolicy::FailIfExists | OutputPolicy::UniqueName => {
+                publish_no_replace(&self.temporary_path, &self.final_path)
+            }
+            OutputPolicy::Overwrite => self.commit_overwrite(),
+        }
+    }
+
     #[cfg(not(windows))]
-    fn commit_rename(&self) -> RToolsResult<()> {
+    fn commit_overwrite(&self) -> RToolsResult<()> {
         fs::rename(&self.temporary_path, &self.final_path)?;
         Ok(())
     }
 
     #[cfg(windows)]
-    fn commit_rename(&self) -> RToolsResult<()> {
-        if self.policy != OutputPolicy::Overwrite || !self.final_path.try_exists()? {
-            fs::rename(&self.temporary_path, &self.final_path)?;
-            return Ok(());
+    fn commit_overwrite(&self) -> RToolsResult<()> {
+        if !path_entry_exists(&self.final_path)? {
+            return publish_no_replace(&self.temporary_path, &self.final_path);
         }
 
         let backup = sibling_backup_path(&self.final_path, &self.owner_token)?;
-        if backup.try_exists()? {
+        if path_entry_exists(&backup)? {
             return Err(RToolsError::path_policy_violation(format!(
                 "output backup already exists: {}",
                 backup.display()
             )));
         }
 
-        fs::rename(&self.final_path, &backup)?;
-        if let Err(commit_error) = fs::rename(&self.temporary_path, &self.final_path) {
-            if let Err(restore_error) = fs::rename(&backup, &self.final_path) {
-                return Err(RToolsError::rollback_failed(format!(
-                    "output commit failed ({commit_error}); restoring {} failed: {restore_error}",
-                    self.final_path.display()
-                )));
-            }
-            return Err(commit_error.into());
-        }
-
-        if let Err(cleanup_error) = fs::remove_file(&backup) {
-            if let Err(remove_new_error) = fs::remove_file(&self.final_path) {
-                return Err(RToolsError::rollback_failed(format!(
-                    "backup cleanup failed ({cleanup_error}); removing new output failed: {remove_new_error}"
-                )));
-            }
-            if let Err(restore_error) = fs::rename(&backup, &self.final_path) {
-                return Err(RToolsError::rollback_failed(format!(
-                    "backup cleanup failed ({cleanup_error}); restoring old output failed: {restore_error}"
-                )));
-            }
-            return Err(cleanup_error.into());
-        }
-
-        Ok(())
+        replace_with_backup_using(
+            &self.temporary_path,
+            &self.final_path,
+            &backup,
+            |source, destination| fs::rename(source, destination),
+            |path| fs::remove_file(path),
+        )
     }
 }
 
 impl Drop for PendingOutput {
     fn drop(&mut self) {
-        if !self.committed {
-            let _ = fs::remove_file(&self.temporary_path);
-        }
-        let _ = remove_lock_if_owned(&self.reservation_path, &self.owner_token);
+        let _ = fs::remove_file(&self.temporary_path);
+        let _ = retire_reservation(&self.reservation_path, &self.owner_token);
     }
 }
 
@@ -204,7 +224,7 @@ fn reserve_destination(
     requested: &Path,
     policy: OutputPolicy,
     token: &str,
-) -> RToolsResult<(PathBuf, PathBuf)> {
+) -> RToolsResult<(PathBuf, PathBuf, File)> {
     match policy {
         OutputPolicy::UniqueName => {
             for suffix in 0..=MAX_UNIQUE_SUFFIX {
@@ -213,11 +233,11 @@ fn reserve_destination(
                 } else {
                     unique_candidate(requested, suffix)?
                 };
-                if candidate.try_exists()? {
+                if path_entry_exists(&candidate)? {
                     continue;
                 }
                 match create_reservation(&candidate, token) {
-                    Ok(reservation) => return Ok((candidate, reservation)),
+                    Ok((reservation, file)) => return Ok((candidate, reservation, file)),
                     Err(RToolsError::Io(error))
                         if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                     Err(error) => return Err(error),
@@ -229,18 +249,18 @@ fn reserve_destination(
             )))
         }
         OutputPolicy::FailIfExists => {
-            if requested.try_exists()? {
+            if path_entry_exists(requested)? {
                 return Err(RToolsError::output_exists(requested.display().to_string()));
             }
-            let reservation = create_reservation(requested, token)
+            let (reservation, file) = create_reservation(requested, token)
                 .map_err(|error| map_reservation_collision(error, requested))?;
-            Ok((requested.to_path_buf(), reservation))
+            Ok((requested.to_path_buf(), reservation, file))
         }
         OutputPolicy::Overwrite => {
             reject_directory_destination(requested)?;
-            let reservation = create_reservation(requested, token)
+            let (reservation, file) = create_reservation(requested, token)
                 .map_err(|error| map_reservation_collision(error, requested))?;
-            Ok((requested.to_path_buf(), reservation))
+            Ok((requested.to_path_buf(), reservation, file))
         }
     }
 }
@@ -254,12 +274,18 @@ fn map_reservation_collision(error: RToolsError, output: &Path) -> RToolsError {
     }
 }
 
-fn create_reservation(final_path: &Path, token: &str) -> RToolsResult<PathBuf> {
+fn create_reservation(final_path: &Path, token: &str) -> RToolsResult<(PathBuf, File)> {
     let reservation = sibling_path(final_path, ".rtools.lock")?;
     let mut file = OpenOptions::new()
         .write(true)
+        .read(true)
         .create_new(true)
         .open(&reservation)?;
+    if let Err(error) = file.lock() {
+        drop(file);
+        let _ = fs::remove_file(&reservation);
+        return Err(error.into());
+    }
     if let Err(error) = file
         .write_all(token.as_bytes())
         .and_then(|()| file.flush())
@@ -269,7 +295,7 @@ fn create_reservation(final_path: &Path, token: &str) -> RToolsResult<PathBuf> {
         let _ = fs::remove_file(&reservation);
         return Err(error.into());
     }
-    Ok(reservation)
+    Ok((reservation, file))
 }
 
 fn reject_directory_destination(path: &Path) -> RToolsResult<()> {
@@ -281,6 +307,14 @@ fn reject_directory_destination(path: &Path) -> RToolsResult<()> {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+
+fn path_entry_exists(path: &Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -343,10 +377,313 @@ fn ensure_lock_owned(path: &Path, token: &str) -> RToolsResult<()> {
     Ok(())
 }
 
-fn remove_lock_if_owned(path: &Path, token: &str) -> RToolsResult<()> {
-    ensure_lock_owned(path, token)?;
-    fs::remove_file(path)?;
+fn ensure_open_lock_owned(file: &File, token: &str) -> RToolsResult<()> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(0))?;
+    let limit = u64::try_from(token.len().saturating_add(1)).unwrap_or(u64::MAX);
+    let mut contents = Vec::with_capacity(token.len().saturating_add(1));
+    file.take(limit).read_to_end(&mut contents)?;
+    if contents != token.as_bytes() {
+        return Err(RToolsError::path_policy_violation(
+            "open output reservation ownership changed",
+        ));
+    }
     Ok(())
+}
+
+fn retire_reservation(path: &Path, token: &str) -> RToolsResult<()> {
+    retire_reservation_with_hook(path, token, |_| Ok(()))
+}
+
+fn retire_reservation_with_hook<F>(path: &Path, token: &str, after_claim: F) -> RToolsResult<()>
+where
+    F: FnOnce(&Path) -> RToolsResult<()>,
+{
+    let retirement = sibling_path(path, &format!(".rtools-{token}.retired"))?;
+    if path_entry_exists(&retirement)? {
+        return Err(RToolsError::path_policy_violation(format!(
+            "reservation retirement path already exists: {}",
+            retirement.display()
+        )));
+    }
+
+    fs::rename(path, &retirement).map_err(|error| {
+        RToolsError::path_policy_violation(format!(
+            "unable to atomically claim output reservation {}: {error}",
+            path.display()
+        ))
+    })?;
+    after_claim(&retirement)?;
+
+    if let Err(ownership_error) = ensure_lock_owned(&retirement, token) {
+        match publish_no_replace(&retirement, path) {
+            Ok(()) => {}
+            Err(RToolsError::OutputExists(_)) => {
+                return Err(RToolsError::path_policy_violation(format!(
+                    "claimed foreign reservation remains preserved at {} because {} is occupied",
+                    retirement.display(),
+                    path.display()
+                )));
+            }
+            Err(restore_error) => {
+                return Err(RToolsError::rollback_failed(format!(
+                    "foreign reservation at {} could not be restored to {}: {restore_error}",
+                    retirement.display(),
+                    path.display()
+                )));
+            }
+        }
+        return Err(ownership_error);
+    }
+
+    fs::remove_file(retirement)?;
+    Ok(())
+}
+
+fn publish_no_replace(source: &Path, destination: &Path) -> RToolsResult<()> {
+    if let Err(error) = fs::hard_link(source, destination) {
+        return if error.kind() == std::io::ErrorKind::AlreadyExists {
+            Err(RToolsError::output_exists(
+                destination.display().to_string(),
+            ))
+        } else {
+            Err(error.into())
+        };
+    }
+
+    if let Err(unlink_error) = fs::remove_file(source) {
+        if let Err(rollback_error) = fs::remove_file(destination) {
+            return Err(RToolsError::rollback_failed(format!(
+                "publishing {} succeeded but temporary cleanup failed ({unlink_error}); removing the published link failed: {rollback_error}",
+                destination.display()
+            )));
+        }
+        return Err(unlink_error.into());
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn replace_with_backup_using<R, D>(
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    mut rename: R,
+    mut remove: D,
+) -> RToolsResult<()>
+where
+    R: FnMut(&Path, &Path) -> std::io::Result<()>,
+    D: FnMut(&Path) -> std::io::Result<()>,
+{
+    rename(destination, backup)?;
+    if let Err(commit_error) = rename(temporary, destination) {
+        if let Err(restore_error) = rename(backup, destination) {
+            return Err(RToolsError::rollback_failed(format!(
+                "output commit failed ({commit_error}); restoring {} failed: {restore_error}",
+                destination.display()
+            )));
+        }
+        return Err(commit_error.into());
+    }
+
+    if let Err(cleanup_error) = remove(backup) {
+        if let Err(remove_new_error) = remove(destination) {
+            return Err(RToolsError::rollback_failed(format!(
+                "backup cleanup failed ({cleanup_error}); removing new output failed: {remove_new_error}"
+            )));
+        }
+        if let Err(restore_error) = rename(backup, destination) {
+            return Err(RToolsError::rollback_failed(format!(
+                "backup cleanup failed ({cleanup_error}); restoring old output failed: {restore_error}"
+            )));
+        }
+        return Err(cleanup_error.into());
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod atomic_output_tests {
+    use super::{OutputPolicy, PendingOutput, RToolsError};
+    use crate::ErrorCode;
+    use std::fs;
+
+    #[test]
+    fn no_replace_publication_preserves_existing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join("temporary.bin");
+        let output = directory.path().join("result.bin");
+        fs::write(&temporary, b"ours").unwrap();
+        fs::write(&output, b"external").unwrap();
+
+        let error = super::publish_no_replace(&temporary, &output).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert_eq!(fs::read(&output).unwrap(), b"external");
+        assert_eq!(fs::read(&temporary).unwrap(), b"ours");
+    }
+
+    #[test]
+    fn destination_created_after_recheck_is_preserved_by_publication_primitive() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("result.bin");
+        let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+        fs::write(pending.temporary_path(), b"ours").unwrap();
+
+        let error = pending
+            .commit_with_pre_publish_hook(
+                |_| Ok(()),
+                || {
+                    fs::write(&output, b"external").map_err(RToolsError::from)?;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert_eq!(fs::read(output).unwrap(), b"external");
+    }
+
+    #[test]
+    fn ownership_swap_after_final_verification_aborts_before_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("result.bin");
+        let reservation = directory.path().join(".result.bin.rtools.lock");
+        let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+        fs::write(pending.temporary_path(), b"ours").unwrap();
+
+        let error = pending
+            .commit_with_pre_publish_hook(
+                |_| Ok(()),
+                || {
+                    fs::remove_file(&reservation)?;
+                    fs::write(&reservation, b"foreign-owner")?;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+        assert!(!output.exists());
+        assert_eq!(fs::read(reservation).unwrap(), b"foreign-owner");
+    }
+
+    #[test]
+    fn retirement_claim_never_deletes_entry_swapped_after_atomic_move() {
+        let directory = tempfile::tempdir().unwrap();
+        let reservation = directory.path().join(".result.bin.rtools.lock");
+        let saved_owner = directory.path().join("saved-owner.lock");
+        fs::write(&reservation, b"owner-token").unwrap();
+
+        let error =
+            super::retire_reservation_with_hook(&reservation, "owner-token", |retirement| {
+                fs::rename(retirement, &saved_owner)?;
+                fs::write(retirement, b"foreign-owner")?;
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+        assert_eq!(fs::read(&reservation).unwrap(), b"foreign-owner");
+        assert_eq!(fs::read(saved_owner).unwrap(), b"owner-token");
+    }
+
+    #[test]
+    fn overwrite_backup_restores_old_output_when_final_rename_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join("temporary.bin");
+        let output = directory.path().join("result.bin");
+        let backup = directory.path().join("backup.bin");
+        fs::write(&temporary, b"new").unwrap();
+        fs::write(&output, b"old").unwrap();
+        let mut rename_calls = 0;
+
+        let error = super::replace_with_backup_using(
+            &temporary,
+            &output,
+            &backup,
+            |source, destination| {
+                rename_calls += 1;
+                if rename_calls == 2 {
+                    Err(std::io::Error::other("injected final rename failure"))
+                } else {
+                    fs::rename(source, destination)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+        assert_eq!(fs::read(&output).unwrap(), b"old");
+        assert_eq!(fs::read(&temporary).unwrap(), b"new");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn overwrite_backup_cleanup_failure_rolls_back_new_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join("temporary.bin");
+        let output = directory.path().join("result.bin");
+        let backup = directory.path().join("backup.bin");
+        fs::write(&temporary, b"new").unwrap();
+        fs::write(&output, b"old").unwrap();
+        let mut remove_calls = 0;
+
+        let error = super::replace_with_backup_using(
+            &temporary,
+            &output,
+            &backup,
+            |source, destination| fs::rename(source, destination),
+            |path| {
+                remove_calls += 1;
+                if remove_calls == 1 {
+                    Err(std::io::Error::other("injected backup cleanup failure"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+        assert_eq!(fs::read(&output).unwrap(), b"old");
+        assert!(!temporary.exists());
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn overwrite_backup_reports_rollback_failure_and_preserves_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let temporary = directory.path().join("temporary.bin");
+        let output = directory.path().join("result.bin");
+        let backup = directory.path().join("backup.bin");
+        fs::write(&temporary, b"new").unwrap();
+        fs::write(&output, b"old").unwrap();
+        let mut rename_calls = 0;
+
+        let error = super::replace_with_backup_using(
+            &temporary,
+            &output,
+            &backup,
+            |source, destination| {
+                rename_calls += 1;
+                if rename_calls >= 2 {
+                    Err(std::io::Error::other("injected rename failure"))
+                } else {
+                    fs::rename(source, destination)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::RollbackFailed);
+        assert!(!output.exists());
+        assert_eq!(fs::read(&backup).unwrap(), b"old");
+        assert_eq!(fs::read(&temporary).unwrap(), b"new");
+    }
 }
 
 /// Resolve an explicit output path: if it points to an existing directory

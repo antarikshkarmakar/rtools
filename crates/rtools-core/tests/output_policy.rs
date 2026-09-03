@@ -48,6 +48,22 @@ fn fail_if_exists_never_changes_existing_file() {
     assert_no_rtools_artifacts(directory.path());
 }
 
+#[cfg(unix)]
+#[test]
+fn fail_if_exists_treats_dangling_symlink_as_an_existing_entry() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("result.bin");
+    let target = Path::new("missing-target.bin");
+    symlink(target, &output).unwrap();
+
+    let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(fs::read_link(&output).unwrap(), target);
+}
+
 #[test]
 fn dropping_pending_output_removes_sibling_temporary_and_owned_lock() {
     let directory = tempfile::tempdir().unwrap();
@@ -169,6 +185,23 @@ fn unique_name_skips_existing_and_reserved_candidates() {
     assert_eq!(fs::read(first_path).unwrap(), b"first");
     assert_eq!(fs::read(second_path).unwrap(), b"second");
     assert_no_rtools_artifacts(directory.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn unique_name_preserves_dangling_symlink_and_commits_to_suffix() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("result.bin");
+    let target = Path::new("missing-target.bin");
+    symlink(target, &output).unwrap();
+
+    let committed = write_and_commit(&output, OutputPolicy::UniqueName, b"ours");
+
+    assert_eq!(committed, directory.path().join("result_1.bin"));
+    assert_eq!(fs::read_link(&output).unwrap(), target);
+    assert_eq!(fs::read(committed).unwrap(), b"ours");
 }
 
 #[test]
