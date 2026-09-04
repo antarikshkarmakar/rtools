@@ -145,6 +145,9 @@ artifact.
   adapters use that safe default. Rust callers may deliberately select
   `OutputPolicy::UniqueName` or `OutputPolicy::Overwrite`; overwrite is never
   inferred from the presence of an output path.
+- PDF output parents must already exist. The CLI requires an existing explicit
+  directory for `pdf split`; Rust callers using `PdfSplitConfig::default()`
+  must create its `output/` directory from a trusted path before processing.
 - Writing image operations use the verified drop-all metadata policy. Metadata
   preservation and GPS-only removal are unavailable and fail before output
   reservation. EXIF inspection is read-only.

@@ -32,6 +32,7 @@ fn mixed_range_extracts_in_range_pages_and_valid_selection_still_works() {
     let input = temp.path().join("two-pages.pdf");
     write_pdf(&input, 2);
     let output = temp.path().join("out");
+    std::fs::create_dir(&output).unwrap();
 
     let outputs = PdfSplitProcessor
         .process(

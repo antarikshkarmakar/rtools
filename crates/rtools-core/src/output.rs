@@ -46,6 +46,11 @@ pub struct PendingOutput {
 impl PendingOutput {
     /// Reserve an output path and an empty sibling temporary file.
     ///
+    /// Every parent-directory ancestor must already exist. This constructor
+    /// deliberately does not create directories from an untrusted output path,
+    /// because portable path-based creation can traverse a concurrently linked
+    /// ancestor before policy validation.
+    ///
     /// # Errors
     ///
     /// Returns a path-policy error for an invalid parent, an output-exists

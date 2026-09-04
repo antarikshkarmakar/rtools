@@ -319,7 +319,7 @@ rtools pdf split [OPTIONS]
 |--------|-------|-------------|
 | `--input` | `-i` | Input PDF file |
 | `--pages` | `-p` | Page ranges |
-| `--output` | `-o` | Output directory |
+| `--output` | `-o` | Existing output directory |
 
 **Examples:**
 ```bash

@@ -22,7 +22,7 @@ fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
 pub struct PdfMergeConfig {
     /// List of PDF files to merge (in order)
     pub inputs: Vec<PathBuf>,
-    /// Output path
+    /// Output path; its parent directory must already exist
     pub output: PathBuf,
     /// Add page numbers
     pub add_page_numbers: bool,
@@ -156,10 +156,6 @@ impl Processor for PdfMergeProcessor {
         document
             .trailer
             .set("Root", Object::Reference(final_catalog_id));
-
-        if let Some(parent) = config.output.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
 
         let output = crate::output::save_pdf(&mut document, &config.output, "merged PDF")?;
 

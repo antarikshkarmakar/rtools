@@ -28,7 +28,7 @@ pub enum PdfCompressionLevel {
 pub struct PdfCompressConfig {
     /// Compression level
     pub level: PdfCompressionLevel,
-    /// Output path (None = auto-generate)
+    /// Output path (None = auto-generate); an explicit parent must already exist
     pub output: Option<PathBuf>,
     /// Remove metadata
     pub remove_metadata: bool,
@@ -75,10 +75,6 @@ impl Processor for PdfCompressProcessor {
             out.set_file_name(format!("{stem}_compressed.pdf"));
             out
         });
-
-        if let Some(parent) = output.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
 
         // Load PDF
         let mut doc = lopdf::Document::load(path).map_err(|e| {

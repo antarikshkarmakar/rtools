@@ -24,7 +24,7 @@ pub enum PageRange {
 pub struct PdfSplitConfig {
     /// Page range to extract
     pub range: PageRange,
-    /// Output directory
+    /// Output directory, which must already exist
     pub output_dir: PathBuf,
     /// Output filename pattern (e.g., "page_{n}.pdf")
     pub filename_pattern: String,
@@ -82,7 +82,6 @@ impl Processor for PdfSplitProcessor {
                 "The requested page selection contains no pages in this PDF",
             ));
         }
-        std::fs::create_dir_all(&config.output_dir)?;
         let planned_outputs: Vec<_> = pages_to_extract
             .iter()
             .map(|&page_num| {

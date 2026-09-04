@@ -38,6 +38,11 @@ rendering, ONNX inference, or fabricated batch execution.
 - Output reservation and a sibling temporary artifact precede validated atomic
   publication. Reserved Windows device names, ambiguous Windows drive/root
   relative paths, and symlinks in any output-parent ancestor are rejected.
+- PDF output parents must already exist. PDF processors never call path-based
+  recursive directory creation on a requested output, because that operation
+  can traverse an unvalidated linked ancestor before output policy runs. This
+  includes the default `PdfSplitConfig` output directory, `output/`, which a
+  caller must create from a trusted path before processing.
 - Writing image operations re-encode with a verified drop-all metadata policy.
   Preserve and GPS-only policies are unavailable and fail before any output is
   reserved. EXIF human and JSON operations are read-only.

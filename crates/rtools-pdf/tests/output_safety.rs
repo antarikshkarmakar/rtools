@@ -8,6 +8,117 @@ use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+#[test]
+fn merge_rejects_symlinked_missing_parent_without_creating_outside() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir().unwrap();
+    let first = temp.path().join("first.pdf");
+    let second = temp.path().join("second.pdf");
+    write_pdf(&first, 1);
+    write_pdf(&second, 1);
+    let first_bytes = fs::read(&first).unwrap();
+    let second_bytes = fs::read(&second).unwrap();
+    let selected = temp.path().join("selected");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, selected.join("link")).unwrap();
+    let outside_child = outside.join("new-child");
+    let output = selected.join("link/new-child/result.pdf");
+
+    let error = PdfMergeProcessor
+        .process(
+            vec![
+                FileInput::from_path(first.clone()),
+                FileInput::from_path(second.clone()),
+            ],
+            PdfMergeConfig {
+                output,
+                ..PdfMergeConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    assert!(!outside_child.exists());
+    assert!(!outside_child.join("result.pdf").exists());
+    assert_eq!(fs::read(first).unwrap(), first_bytes);
+    assert_eq!(fs::read(second).unwrap(), second_bytes);
+    assert_no_rtools_artifacts(&outside);
+}
+
+#[cfg(unix)]
+#[test]
+fn compress_rejects_symlinked_missing_parent_without_creating_outside() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir().unwrap();
+    let input = temp.path().join("input.pdf");
+    write_pdf(&input, 1);
+    let input_bytes = fs::read(&input).unwrap();
+    let selected = temp.path().join("selected");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, selected.join("link")).unwrap();
+    let outside_child = outside.join("new-child");
+    let output = selected.join("link/new-child/result.pdf");
+
+    let error = PdfCompressProcessor
+        .process(
+            FileInput::from_path(input.clone()),
+            PdfCompressConfig {
+                output: Some(output),
+                ..PdfCompressConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    assert!(!outside_child.exists());
+    assert!(!outside_child.join("result.pdf").exists());
+    assert_eq!(fs::read(input).unwrap(), input_bytes);
+    assert_no_rtools_artifacts(&outside);
+}
+
+#[cfg(unix)]
+#[test]
+fn split_rejects_symlinked_missing_parent_without_creating_outside() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir().unwrap();
+    let input = temp.path().join("input.pdf");
+    write_pdf(&input, 2);
+    let input_bytes = fs::read(&input).unwrap();
+    let selected = temp.path().join("selected");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, selected.join("link")).unwrap();
+    let outside_child = outside.join("new-child");
+    let output_dir = selected.join("link/new-child");
+
+    let error = PdfSplitProcessor
+        .process(
+            FileInput::from_path(input.clone()),
+            PdfSplitConfig {
+                range: PageRange::All,
+                output_dir,
+                ..PdfSplitConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    assert!(!outside_child.exists());
+    assert!(!outside_child.join("page_1.pdf").exists());
+    assert!(!outside_child.join("page_2.pdf").exists());
+    assert_eq!(fs::read(input).unwrap(), input_bytes);
+    assert_no_rtools_artifacts(&outside);
+}
+
 #[test]
 fn merge_default_collision_preserves_existing_output() {
     let temp = tempdir().unwrap();
