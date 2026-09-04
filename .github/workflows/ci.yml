@@ -24,6 +24,14 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --all-targets --locked
+      - name: Verify capability documentation (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/verify-capabilities.sh
+      - name: Verify capability documentation (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-capabilities.ps1
 
   policy:
     runs-on: ubuntu-latest

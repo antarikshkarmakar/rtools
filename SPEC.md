@@ -5,13 +5,85 @@
 A high-performance, local-first image and PDF processing toolkit written in Rust, accessible via:
 - **MCP (Model Context Protocol)** - For AI assistant integration
 - **CLI** - For direct command-line usage
-- **REST/gRPC API** - For service integration
+- **REST API** - For service integration
 
 **Core Philosophy**: Privacy-first, local processing, zero server uploads, WebAssembly-compatible.
 
 ---
 
-## Feature Categories
+## Milestone 1 runtime contract
+
+The runtime capability registry is authoritative for what this build can do.
+`rtools --output-format json doctor` emits that registry in deterministic
+operation-ID order. The checked-in projection and its CI verifier live in
+[docs/operations/capabilities.md](docs/operations/capabilities.md).
+
+| State | Milestone 1 surface |
+|---|---|
+| Available | Image compress, convert, crop, resize, filter, image watermark, EXIF human/JSON inspection; configuration commands; completions; doctor |
+| Experimental | PDF merge/compress/split; report-only duplicate detection; date organization; deterministic rename |
+| Unavailable | OCR, alt text, AI classification/naming, PDF rendering/text/OCR, text watermarking, metadata preservation or GPS-only removal, destructive duplicate modes, batch recipes |
+
+Unavailable operations return a structured `CAPABILITY_UNAVAILABLE` error and
+a nonzero process status. Provider discovery never enables an operation without
+a verified adapter; Milestone 1 therefore does not claim Tesseract OCR, PDFium
+rendering, ONNX inference, or fabricated batch execution.
+
+### Output and metadata safety
+
+- Every writing image configuration defaults to `OutputPolicy::FailIfExists`.
+  The CLI, REST, and MCP adapters retain that default. `UniqueName` and
+  `Overwrite` are explicit Rust API selections; merely supplying an output path
+  never grants overwrite permission.
+- Output reservation and a sibling temporary artifact precede validated atomic
+  publication. Reserved Windows device names and a symlink used as the output
+  parent are rejected portably.
+- Writing image operations re-encode with a verified drop-all metadata policy.
+  Preserve and GPS-only policies are unavailable and fail before any output is
+  reserved. EXIF human and JSON operations are read-only.
+
+### Limits, reports, dry-run, and configuration
+
+`ResourceLimits` carries ceilings for input bytes, decoded pixels, PDF pages,
+batch items, and duration. Milestone 1 enforces the byte and pixel ceilings on
+bounded image decoding. The page/item/duration fields are stable typed policy
+inputs, not evidence that unavailable batch or provider-backed operations are
+implemented.
+
+`--output-format json` produces exactly one report on stdout for success,
+partial failure, or failure, including a stable error code. Global `--dry-run`
+is truthful only for experimental date organization and deterministic rename:
+it returns exact source/destination plans and writes nothing. Other dry runs
+fail with `CAPABILITY_UNAVAILABLE`.
+
+Configuration precedence is deterministic: defaults, system file, user file,
+project file, explicit `--config`, then `RTOOLS_` environment values. A missing
+explicit file is an error; conflicting parent/child environment keys and
+invalid values are rejected without echoing secret values.
+
+### Stable CLI exit codes
+
+| Exit | Meaning |
+|---:|---|
+| `0` | Success |
+| `2` | Invalid input or unsupported format |
+| `3` | Capability, configuration, or authentication unavailable |
+| `4` | Resource limit exceeded |
+| `5` | Output collision or path-policy violation |
+| `6` | Processing or report emission failed |
+| `7` | Truthful partial failure |
+| `8` | Cancellation or rollback failure |
+
+The machine-readable mappings are detailed in
+[docs/operations/exit-codes.md](docs/operations/exit-codes.md).
+
+---
+
+## Product roadmap (not runtime availability)
+
+The categories below describe product direction. They are not an implementation
+claim; the Milestone 1 runtime registry above decides whether an operation is
+available, experimental, or unavailable.
 
 ### 1. Optimize (Compression & Conversion)
 | Tool | Description |
@@ -112,7 +184,7 @@ rtools/
 │   ├── rtools-pdf/            # PDF processing operations
 │   ├── rtools-ai/             # AI/ML integrations (local models)
 │   ├── rtools-cli/            # CLI interface (clap)
-│   ├── rtools-api/            # REST/gRPC API server (axum/tonic)
+│   ├── rtools-api/            # REST API server (axum)
 │   ├── rtools-mcp/            # MCP server implementation
 │   └── rtools-wasm/           # WASM bindings for browser
 ├── specs/                     # Feature specifications
@@ -167,59 +239,60 @@ pub trait AIProcessor: Processor {
 # Global options
 rtools [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 
-# Image commands
-rtools image compress --input dir/ --output dir/ --quality 85
-rtools image convert --to webp --input *.jpg --output out/
-rtools image resize --width 1920 --height 1080 --maintain-aspect
-rtools image crop --ratio 16:9 --gravity center
-rtools image watermark --text "© 2024" --position bottom-right --opacity 0.5
-rtools image filter --preset kodak-portra-400
+# Machine-readable runtime truth
+rtools --output-format json doctor
 
-# AI commands
-rtools ai organize --input photos/ --output organized/
-rtools ai rename --pattern "{date}_{subject}_{index}"
-rtools ai alt-text --input image.jpg --lang en
-rtools ai ocr --input scanned.pdf --output text.txt
+# Available image commands
+rtools image compress --input photo.jpg --output compressed.jpg --quality 85
+rtools image convert --format webp --input photo.jpg --output converted.webp
+rtools image resize --input photo.jpg --output resized.jpg --width 1920 --maintain-aspect
+rtools image crop --input photo.jpg --output cropped.jpg --ratio 16:9 --gravity center
+rtools image watermark --input photo.jpg --image mark.png --output marked.jpg --position bottom-right --opacity 0.5
+rtools image filter --input photo.jpg --output filtered.jpg --preset kodak-portra-400
 
-# PDF commands
+# Experimental deterministic operations; --dry-run writes nothing
+rtools --dry-run ai organize --strategy date --input photos/ --output organized/
+rtools --dry-run ai rename --input photos/ --pattern "{date}_{name}_{index}"
+
+# Experimental PDF operations
 rtools pdf merge --input file1.pdf file2.pdf --output merged.pdf
 rtools pdf compress --level heavy --input large.pdf --output small.pdf
 rtools pdf split --pages 1-5,10-15 --input doc.pdf --output split/
-rtools pdf ocr --input scanned.pdf --output searchable.pdf
-rtools pdf redact --patterns "SSN:\d{3}-\d{2}-\d{4}" --input doc.pdf
 
-# Batch operations
-rtools batch --config batch.toml --parallel 4
+# Registered but unavailable; each returns exit 3 without placeholder success
+rtools image ocr --input scan.png --output text.txt
+rtools ai alt-text --input image.jpg --language en
+rtools pdf to-image --input doc.pdf --output pages/
+rtools batch --config batch.toml --jobs 4
 ```
 
 ### REST API (rtools-api)
 
 ```
-POST   /api/v1/image/compress
-POST   /api/v1/image/convert
-POST   /api/v1/image/resize
-POST   /api/v1/image/crop
-POST   /api/v1/image/watermark
-POST   /api/v1/image/filter
+POST   /api/v1/image/compress    # available
+POST   /api/v1/image/convert     # available
+POST   /api/v1/image/resize      # available
+POST   /api/v1/image/crop        # REST adapter unavailable; core/CLI available
+POST   /api/v1/image/watermark   # REST adapter unavailable; core image watermark available
+POST   /api/v1/image/filter      # REST adapter unavailable; core/CLI available
 
-POST   /api/v1/ai/organize
-POST   /api/v1/ai/rename
-POST   /api/v1/ai/alt-text
-POST   /api/v1/ai/ocr
+POST   /api/v1/ai/organize       # date mode experimental; AI modes unavailable
+POST   /api/v1/ai/rename         # deterministic experimental; AI naming unavailable
+POST   /api/v1/ai/alt-text       # unavailable
 
-POST   /api/v1/pdf/merge
-POST   /api/v1/pdf/compress
-POST   /api/v1/pdf/split
-POST   /api/v1/pdf/ocr
-POST   /api/v1/pdf/redact
-POST   /api/v1/pdf/encrypt
+POST   /api/v1/pdf/merge         # experimental
+POST   /api/v1/pdf/compress      # experimental
+POST   /api/v1/pdf/split         # REST adapter unavailable; core/CLI experimental
+POST   /api/v1/pdf/ocr           # unavailable
 
-POST   /api/v1/batch/process
-GET    /api/v1/batch/status/:id
-GET    /api/v1/health
+GET    /health
 ```
 
 ### MCP Interface (rtools-mcp)
+
+The schema fragment below is illustrative. Tool presence is not a capability
+guarantee: each call is gated by the same operation states, and unavailable
+modes return structured errors.
 
 ```json
 {
@@ -260,7 +333,10 @@ GET    /api/v1/health
 
 ---
 
-## Technology Stack
+## Technology direction
+
+This section is roadmap context. The workspace `Cargo.toml` files, not this
+list, are the dependency truth for the current build.
 
 ### Core Dependencies
 
@@ -309,20 +385,27 @@ webp_lossless = false
 avif_enabled = true
 max_dimension = 8192
 
+[limits]
+max_input_bytes = 104857600
+max_decoded_pixels = 100000000
+max_pdf_pages = 2000
+max_batch_items = 10000
+max_duration_ms = 300000
+
 [pdf]
 pdfium_path = "/usr/lib/libpdfium.so"
 ocr_language = "eng"
 ocr_dpi = 300
 
 [ai]
-model_dir = "~/.rtools/models"
-device = "cpu"  # cpu, cuda, metal
+model_dir = "/absolute/path/to/models"
+device = "Cpu"
 batch_size = 8
 
 [api]
 host = "127.0.0.1"
 port = 8080
-max_upload_size = "100MB"
+max_upload_size = 104857600
 cors_origins = ["*"]
 
 [mcp]

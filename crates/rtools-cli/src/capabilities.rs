@@ -294,6 +294,7 @@ pub fn required_operation_ids(command: &Commands) -> RToolsResult<Vec<&'static s
 #[cfg(test)]
 mod tests {
     use super::{cli_capability_registry, required_operation_ids};
+    use crate::exit;
     use crate::{
         Commands, DuplicateMode, ExifOutputFormat, ImageCommands, OrganizeMode,
         WatermarkPositionArg,
@@ -351,6 +352,28 @@ mod tests {
                 ("pdf.to_image", CapabilityState::Unavailable),
             ]
         );
+    }
+
+    #[test]
+    fn every_registered_unavailable_capability_maps_to_a_nonzero_exit_status() {
+        let registry = cli_capability_registry().unwrap();
+
+        for capability in registry
+            .list()
+            .into_iter()
+            .filter(|capability| capability.state == CapabilityState::Unavailable)
+        {
+            let error = registry
+                .require_available(&capability.operation_id)
+                .unwrap_err();
+            assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+            assert_ne!(
+                exit::numeric_exit_code(error.code()),
+                0,
+                "{} returned a success process status",
+                capability.operation_id
+            );
+        }
     }
 
     #[test]

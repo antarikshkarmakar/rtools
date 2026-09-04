@@ -104,6 +104,77 @@ fn non_directory_parent_is_rejected() {
     assert_eq!(fs::read(parent).unwrap(), b"file");
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinked_output_parent_cannot_escape_the_selected_directory() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let selected = directory.path().join("selected");
+    let outside = directory.path().join("outside");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir(&outside).unwrap();
+    let escaped_parent = selected.join("escape");
+    symlink(&outside, &escaped_parent).unwrap();
+    let output = escaped_parent.join("result.bin");
+
+    let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    assert!(!outside.join("result.bin").exists());
+    assert_no_rtools_artifacts(&outside);
+}
+
+#[test]
+fn reserved_windows_device_names_are_rejected_portably() {
+    let directory = tempfile::tempdir().unwrap();
+
+    for name in [
+        "CON",
+        "con.txt",
+        "PrN.jpeg",
+        "AUX",
+        "NUL.log",
+        "COM1.png",
+        "LPT9",
+        "COM¹.txt",
+        "LPT²",
+        "com³.log",
+    ] {
+        let output = directory.path().join(name);
+        let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
+
+        assert_eq!(
+            error.code(),
+            ErrorCode::PathPolicyViolation,
+            "{name}: {error}"
+        );
+        assert!(!output.exists(), "reserved output was created for {name}");
+        assert_no_rtools_artifacts(directory.path());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn read_only_output_directory_fails_without_leaving_artifacts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let output_directory = directory.path().join("read-only");
+    fs::create_dir(&output_directory).unwrap();
+    fs::set_permissions(&output_directory, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = PendingOutput::new(
+        output_directory.join("result.bin"),
+        OutputPolicy::FailIfExists,
+    );
+
+    fs::set_permissions(&output_directory, fs::Permissions::from_mode(0o755)).unwrap();
+    let error = result.unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    assert!(fs::read_dir(&output_directory).unwrap().next().is_none());
+}
+
 #[test]
 fn unicode_filename_commits_exact_bytes() {
     let directory = tempfile::tempdir().unwrap();

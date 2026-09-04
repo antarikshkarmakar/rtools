@@ -395,6 +395,54 @@ fn malformed_animated_webp_and_apng_return_decode_errors_without_flattening() {
 }
 
 #[test]
+fn truncated_image_input_fails_before_creating_output_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "truncated.png", 8, 8);
+    let mut bytes = std::fs::read(&input).unwrap();
+    bytes.truncate(bytes.len() / 2);
+    std::fs::write(&input, bytes).unwrap();
+    let output = tmp.path().join("truncated-output").join("result.png");
+
+    let error = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Png),
+                output: Some(output.clone()),
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    assert!(!output.exists());
+    assert!(!output.parent().unwrap().exists());
+}
+
+#[test]
+fn malformed_image_input_fails_before_creating_output_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("malformed.bin");
+    std::fs::write(&input, b"this is not an image").unwrap();
+    let output = tmp.path().join("malformed-output").join("result.png");
+
+    let error = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Png),
+                output: Some(output.clone()),
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::UnsupportedFormat);
+    assert!(!output.exists());
+    assert!(!output.parent().unwrap().exists());
+}
+
+#[test]
 fn oversized_webp_canvas_is_rejected_before_animation_frame_iteration() {
     let tmp = TempDir::new().unwrap();
     let mut bytes = base64::engine::general_purpose::STANDARD
@@ -1260,6 +1308,31 @@ fn watermark_rejects_nonfinite_and_out_of_range_numbers_before_input_access() {
             "opacity={opacity}, scale={scale}"
         );
     }
+}
+
+#[test]
+fn missing_image_watermark_fails_before_output_creation() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "base.png", 4, 4);
+    let output = tmp.path().join("watermarked-output").join("result.png");
+
+    let error = WatermarkProcessor
+        .process(
+            FileInput::from_path(input),
+            WatermarkConfig {
+                watermark: WatermarkType::Image {
+                    image_path: tmp.path().join("missing-watermark.png"),
+                    scale: 1.0,
+                },
+                output: Some(output.clone()),
+                ..WatermarkConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(!output.exists());
+    assert!(!output.parent().unwrap().exists());
 }
 
 #[test]

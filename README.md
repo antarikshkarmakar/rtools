@@ -1,54 +1,29 @@
 # rtools
 
-A high-performance, privacy-first image and PDF processing toolkit written in Rust.
+A local-first image and PDF processing toolkit written in Rust.
 
 **Access via CLI, REST API, or MCP (Model Context Protocol)**
 
-[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.95-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-## Features
+## Milestone 1 capability status
 
-### Optimize
-| Tool | Description |
-|------|-------------|
-| Compress | Reduce file size without visible quality loss |
-| WebP Converter | Convert JPG/PNG to WebP for faster web delivery |
-| HEIC Converter | Convert iPhone HEIC photos to JPG or PNG |
-| Batch Resize | Resize multiple images by pixel dimensions or percentage |
-| Crop & Ratio | Crop to standard aspect ratios or custom dimensions |
-| PDF to Image | Extract pages from PDF as high-quality images |
+The runtime registry, exposed by `rtools --output-format json doctor`, is the
+source of truth. The complete, verifier-controlled table is in
+[Operation capabilities](docs/operations/capabilities.md).
 
-### AI-Powered
-| Tool | Description |
-|------|-------------|
-| AI Organize | Drop 100+ photos — AI sorts them into named folders |
-| AI Rename | Generate descriptive, SEO-friendly filenames automatically |
-| AI Alt Text | Generate accessibility alt text for any image |
-| AI Photo Sort | Sort photos by subject, scene, or custom criteria |
-| Transcribe | Extract text from images (OCR) |
+| State | Operations |
+|---|---|
+| Available | Image compress, convert, resize, crop, filter, image watermark, EXIF human/JSON inspection; config init/show/validate; shell completions; doctor |
+| Experimental | PDF merge/compress/split; report-only duplicate detection; date organization; deterministic rename |
+| Unavailable | OCR, alt text, AI classification/naming, PDF rendering/text/OCR, text watermarks, selective metadata preservation/GPS removal, destructive duplicate actions, batch recipes |
 
-### Creative
-| Tool | Description |
-|------|-------------|
-| Film Filters | Apply 14 analog film presets (Kodak, Fuji, Polaroid, etc.) |
-| Watermark | Add text or image watermarks with custom positioning |
-
-### Organize
-| Tool | Description |
-|------|-------------|
-| EXIF Viewer | Inspect full metadata — GPS, camera, exposure, timestamps |
-| EXIF Remover | Strip GPS and privacy data before sharing |
-| Find Duplicates | Detect duplicate images by visual similarity |
-| Batch Rename | Rename files in bulk with custom patterns and sequences |
-
-### PDF Processing
-| Tool | Description |
-|------|-------------|
-| Merge PDFs | Combine multiple files into one document |
-| Compress PDF | Reduce file sizes by up to 70% |
-| Split PDF | Separate into individual pages or extract ranges |
-| PDF OCR | Extract text from scanned PDFs |
+Available means supported for the current release. Experimental operations run
+but carry the limitation reported by doctor. Unavailable operations fail with
+`CAPABILITY_UNAVAILABLE`; rTools does not return placeholder success. Finding
+Tesseract, PDFium, or ONNX Runtime is diagnostic information only because no
+verified adapter is registered yet.
 
 ## Architecture
 
@@ -68,10 +43,10 @@ graph TB
         AI[rtools-ai<br/>AI/ML Processing]
     end
 
-    subgraph "External Services"
-        OLLAMA[Ollama<br/>Local LLM]
-        TESSERACT[Tesseract<br/>OCR Engine]
-        PDFIUM[PDFium<br/>PDF Rendering]
+    subgraph "Unavailable Provider Adapters"
+        ONNX[ONNX Runtime<br/>captioning]
+        TESSERACT[Tesseract<br/>OCR]
+        PDFIUM[PDFium<br/>PDF rendering]
     end
 
     CLI --> CORE
@@ -88,11 +63,9 @@ graph TB
     IMG --> WEBP[webp]
 
     PDF --> LOPDF[lopdf]
-    PDF --> PDFIUM
-
-    AI --> CLIP[CLIP]
-    AI --> BLIP[BLIP]
-    AI --> OLLAMA
+    PDF -. unavailable .-> PDFIUM
+    AI -. unavailable .-> ONNX
+    AI -. unavailable .-> TESSERACT
 
     style CORE fill:#e1f5fe
     style IMG fill:#f3e5f5
@@ -111,13 +84,14 @@ sequenceDiagram
     participant F as FileSystem
 
     U->>I: Request (file + options)
-    I->>C: Validate & Route
+    I->>C: Validate capability, config, and limits
     C->>P: Execute Operation
     P->>F: Read Input File
     F-->>P: File Data
     P->>P: Process Image/PDF
-    P->>F: Write Output File
-    F-->>P: Write Confirmation
+    P->>F: Reserve sibling output and encode privately
+    P->>P: Reopen and validate artifact
+    P->>F: Atomically publish under collision policy
     P-->>C: Result + Stats
     C-->>I: Response
     I-->>U: Output File + Metrics
@@ -139,29 +113,53 @@ cargo build --release
 cargo install --path crates/rtools-cli
 ```
 
-### Using Cargo
-
-```bash
-cargo install rtools
-```
-
 ## Usage
 
 ### CLI
 
 ```bash
-# Compress images
-rtools image compress --input photos/ --quality 85
+# Inspect the runtime truth for this build
+rtools --output-format json doctor
+
+# Compress one image; an existing destination is never overwritten by default
+rtools image compress --input photo.jpg --output photo-small.jpg --quality 85
 
 # Convert to WebP
 rtools image convert --input *.jpg --format webp
 
-# AI organize photos
-rtools ai organize --input ~/Photos --output ~/Organized
+# Experimental: deterministic date organization with a truthful no-write plan
+rtools --dry-run ai organize --strategy date --input ~/Photos --output ~/Organized
 
-# Merge PDFs
+# Experimental: PDF structure preservation is only partially verified
 rtools pdf merge --input file1.pdf file2.pdf --output merged.pdf
 ```
+
+OCR, alt text, PDF rendering, AI-derived naming/classification, text
+watermarks, destructive duplicate modes, and `rtools batch` are unavailable.
+Invoking a registered unavailable path exits nonzero rather than fabricating an
+artifact.
+
+## Safety and reporting contracts
+
+- Output collision policy defaults to `FailIfExists`. The CLI, REST, and MCP
+  adapters use that safe default. Rust callers may deliberately select
+  `OutputPolicy::UniqueName` or `OutputPolicy::Overwrite`; overwrite is never
+  inferred from the presence of an output path.
+- Writing image operations use the verified drop-all metadata policy. Metadata
+  preservation and GPS-only removal are unavailable and fail before output
+  reservation. EXIF inspection is read-only.
+- `ResourceLimits` defines byte, decoded-pixel, PDF-page, batch-item, and
+  duration ceilings. Milestone 1 enforces input-byte and decoded-pixel limits
+  on image decode; the other typed ceilings must not be read as claims that an
+  unavailable batch or provider-backed operation exists.
+- `--output-format json` emits exactly one report on stdout for success,
+  partial failure, or failure. `--dry-run` is supported only for experimental
+  date organization and deterministic rename; unsupported dry runs fail
+  nonzero and create nothing.
+- Stable process exits are `0` success, `2` invalid input/format, `3`
+  unavailable/config/auth, `4` resource limit, `5` collision/path policy, `6`
+  processing/report failure, `7` partial failure, and `8` cancellation/rollback
+  failure. See [Stable CLI exit codes](docs/operations/exit-codes.md).
 
 ### REST API
 
@@ -207,40 +205,40 @@ const compressed = await rtools.compress_image(imageData, 'photo.jpg', 85);
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/image/compress` | Compress image |
-| POST | `/api/v1/image/convert` | Convert format |
-| POST | `/api/v1/image/resize` | Resize image |
-| POST | `/api/v1/image/crop` | Crop image |
-| POST | `/api/v1/image/watermark` | Add watermark |
-| POST | `/api/v1/image/filter` | Apply film filter |
-| POST | `/api/v1/image/metadata` | Get EXIF metadata |
-| POST | `/api/v1/pdf/merge` | Merge PDFs |
-| POST | `/api/v1/pdf/compress` | Compress PDF |
-| POST | `/api/v1/pdf/split` | Split PDF |
-| POST | `/api/v1/pdf/ocr` | OCR PDF |
-| POST | `/api/v1/ai/organize` | AI organize photos |
-| POST | `/api/v1/ai/rename` | AI rename photos |
-| POST | `/api/v1/ai/alt-text` | Generate alt text |
-| POST | `/api/v1/ai/duplicates` | Find duplicates |
-| GET | `/health` | Health check |
+| Method | Endpoint | State |
+|---|---|---|
+| POST | `/api/v1/image/compress` | Available; drop-all metadata |
+| POST | `/api/v1/image/convert` | Available; drop-all metadata |
+| POST | `/api/v1/image/resize` | Available |
+| POST | `/api/v1/image/crop` | REST adapter unavailable; core/CLI operation available |
+| POST | `/api/v1/image/watermark` | REST adapter unavailable; core image watermark available |
+| POST | `/api/v1/image/filter` | REST adapter unavailable; core/CLI operation available |
+| POST | `/api/v1/image/metadata` | Available, read-only |
+| POST | `/api/v1/pdf/merge` | Experimental |
+| POST | `/api/v1/pdf/compress` | Experimental |
+| POST | `/api/v1/pdf/split` | REST adapter unavailable; core/CLI operation experimental |
+| POST | `/api/v1/pdf/ocr` | Unavailable |
+| POST | `/api/v1/ai/organize` | Date mode experimental; AI modes unavailable |
+| POST | `/api/v1/ai/rename` | Deterministic mode experimental; AI naming unavailable |
+| POST | `/api/v1/ai/alt-text` | Unavailable |
+| POST | `/api/v1/ai/duplicates` | Report mode experimental; mutations unavailable |
+| GET | `/health` | Available |
 
 ## MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `compress_image` | Compress an image with quality preservation |
-| `convert_image` | Convert image to WebP, PNG, JPG, or AVIF |
-| `resize_image` | Resize image by dimensions |
-| `organize_photos` | AI-organize photos into folders |
-| `rename_photos` | AI-rename photos with descriptive names |
-| `generate_alt_text` | Generate accessibility alt text |
-| `find_duplicates` | Find duplicate images by visual similarity |
-| `compress_pdf` | Compress PDF file size |
-| `merge_pdfs` | Merge multiple PDF files |
-| `extract_text` | OCR text extraction |
-| `get_metadata` | Get image EXIF metadata |
+| Tool | State |
+|---|---|
+| `compress_image` | Available; drop-all metadata |
+| `convert_image` | Available; drop-all metadata |
+| `resize_image` | Available |
+| `organize_photos` | Date mode experimental; AI modes unavailable |
+| `rename_photos` | Deterministic mode experimental; AI naming unavailable |
+| `generate_alt_text` | Unavailable |
+| `find_duplicates` | Report mode experimental; mutations unavailable |
+| `compress_pdf` | Experimental |
+| `merge_pdfs` | Experimental |
+| `extract_text` | Unavailable |
+| `get_metadata` | Available, read-only |
 
 ## Configuration
 
@@ -258,35 +256,38 @@ webp_lossless = false
 avif_enabled = true
 max_dimension = 8192
 
+[limits]
+max_input_bytes = 104857600
+max_decoded_pixels = 100000000
+max_pdf_pages = 2000
+max_batch_items = 10000
+max_duration_ms = 300000
+
 [pdf]
 ocr_language = "eng"
 ocr_dpi = 300
 
 [ai]
-model_dir = "~/.rtools/models"
-device = "cpu"
+model_dir = "/absolute/path/to/models"
+device = "Cpu"
 batch_size = 8
 
 [api]
 host = "127.0.0.1"
 port = 8080
-max_upload_size = "100MB"
+max_upload_size = 104857600
 ```
 
 ## Development
 
 ```bash
-# Run tests
-cargo test
-
-# Run benchmarks
-cargo bench
-
-# Check clippy
-cargo clippy --workspace
-
-# Format code
-cargo fmt --all
+# Release checks
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo check -p rtools-wasm --target wasm32-unknown-unknown --locked
+cargo deny check
+bash scripts/verify-capabilities.sh
 ```
 
 ## Project Structure

@@ -195,9 +195,15 @@ impl Drop for PendingOutput {
 }
 
 fn validate_output_parent(output: &Path) -> RToolsResult<()> {
-    if output.file_name().is_none() {
+    let file_name = output.file_name().ok_or_else(|| {
+        RToolsError::path_policy_violation(format!("output must name a file: {}", output.display()))
+    })?;
+    if file_name
+        .to_str()
+        .is_some_and(is_reserved_windows_device_name)
+    {
         return Err(RToolsError::path_policy_violation(format!(
-            "output must name a file: {}",
+            "output uses a reserved Windows device name: {}",
             output.display()
         )));
     }
@@ -205,12 +211,18 @@ fn validate_output_parent(output: &Path) -> RToolsResult<()> {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let metadata = fs::metadata(parent).map_err(|error| {
+    let metadata = fs::symlink_metadata(parent).map_err(|error| {
         RToolsError::path_policy_violation(format!(
             "output parent is unavailable ({}): {error}",
             parent.display()
         ))
     })?;
+    if metadata.file_type().is_symlink() {
+        return Err(RToolsError::path_policy_violation(format!(
+            "output parent must not be a symlink: {}",
+            parent.display()
+        )));
+    }
     if !metadata.is_dir() {
         return Err(RToolsError::path_policy_violation(format!(
             "output parent is not a directory: {}",
@@ -218,6 +230,29 @@ fn validate_output_parent(output: &Path) -> RToolsResult<()> {
         )));
     }
     Ok(())
+}
+
+fn is_reserved_windows_device_name(file_name: &str) -> bool {
+    let stem = file_name
+        .split('.')
+        .next()
+        .unwrap_or(file_name)
+        .trim_end_matches(' ');
+    if ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    {
+        return true;
+    }
+
+    ["COM", "LPT"].iter().any(|prefix| {
+        stem.get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+            && matches!(
+                &stem[prefix.len()..],
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+    })
 }
 
 fn reserve_destination(
