@@ -70,6 +70,23 @@ fn config_validate_missing_file_returns_configuration_exit_code() {
 }
 
 #[test]
+fn config_init_preserves_existing_bytes_and_returns_output_exists() {
+    let temp = tempfile::tempdir().unwrap();
+    let output_path = temp.path().join("existing.toml");
+    let original = b"preserve these exact existing bytes\n\xff";
+    std::fs::write(&output_path, original).unwrap();
+
+    let output = command(temp.path())
+        .args(["config", "init", "--output"])
+        .arg(&output_path)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 5);
+    assert_eq!(std::fs::read(&output_path).unwrap(), original);
+}
+
+#[test]
 fn malformed_crop_region_is_rejected_as_invalid_input() {
     let temp = tempfile::tempdir().unwrap();
     let output = command(temp.path())
@@ -85,6 +102,48 @@ fn malformed_crop_region_is_rejected_as_invalid_input() {
         .unwrap();
 
     assert_exit(&output, 2);
+}
+
+#[test]
+fn json_typed_parse_failure_is_one_invalid_input_report() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = command(temp.path())
+        .args([
+            "--output-format",
+            "json",
+            "image",
+            "crop",
+            "--input",
+            "photo.png",
+            "--region",
+            "x,2,3,4",
+        ])
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+    let report = stdout_json(&output);
+    assert_eq!(report["operation_id"], "cli.parse");
+    assert_eq!(report["status"], "failure");
+    assert_eq!(report["result"], Value::Null);
+    assert_eq!(report["failures"][0]["code"], "INVALID_INPUT");
+    assert!(output.stderr.is_empty(), "JSON diagnostics must stay clean");
+}
+
+#[test]
+fn completions_with_missing_explicit_config_emit_no_shell_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing.toml");
+    let output = command(temp.path())
+        .arg("--config")
+        .arg(&missing)
+        .args(["completions", "bash"])
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 3);
+    assert!(output.stdout.is_empty(), "shell source must not be emitted");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("CONFIGURATION_INVALID"));
 }
 
 #[test]
@@ -232,7 +291,33 @@ fn doctor_json_is_one_report_and_matches_the_sorted_shared_registry() {
 
     assert!(report["result"]["configured_limits"].is_object());
     assert!(report["result"]["writable_directories"].is_array());
+    let providers = report["result"]["provider_diagnostics"]
+        .as_array()
+        .expect("doctor result must include structured provider diagnostics");
+    let provider_ids: Vec<&str> = providers
+        .iter()
+        .map(|provider| provider["provider_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(provider_ids, ["onnx-runtime", "pdfium", "tesseract"]);
+    for provider in providers {
+        assert_eq!(provider["state"], "unavailable");
+        assert_eq!(provider["adapter_registered"], false);
+        assert!(provider["operations"].is_array());
+        assert!(provider["configuration"].is_object());
+    }
     assert!(output.stderr.is_empty(), "JSON diagnostics must stay clean");
+}
+
+#[test]
+fn doctor_human_output_includes_provider_diagnostics() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = command(temp.path()).arg("doctor").output().unwrap();
+
+    assert_exit(&output, 0);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Provider diagnostics:"));
+    assert!(stdout.contains("tesseract"));
+    assert!(stdout.contains("adapter registered: false"));
 }
 
 #[test]

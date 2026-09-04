@@ -1,4 +1,4 @@
-use crate::commands::CommandResult;
+use crate::commands::{CommandResult, ItemFailure};
 use crate::{AspectRatioArg, CropRegionArg, ExifOutputFormat, ImageCommands, ImageFormatArg};
 use rtools_core::{AppConfig, FileInput, Processor, RToolsError, RToolsResult};
 use rtools_image::{
@@ -43,11 +43,12 @@ pub fn handle_image_command(
                 strip_gps,
                 limits: config.limits.clone(),
             };
-            let outputs = process_each(&processor, input, processor_config)?;
-            CommandResult::from_file_outputs(
+            let outcomes = process_each(&processor, input, processor_config);
+            CommandResult::from_file_output_outcomes(
                 "image.compress",
-                format!("Compressed {} image(s)", outputs.len()),
-                outputs,
+                format!("Compressed {} image(s)", outcomes.outputs.len()),
+                outcomes.outputs,
+                outcomes.failures,
             )
         }
         ImageCommands::Convert {
@@ -67,11 +68,12 @@ pub fn handle_image_command(
                 strip_gps: false,
                 limits: config.limits.clone(),
             };
-            let outputs = process_each(&processor, input, processor_config)?;
-            CommandResult::from_file_outputs(
+            let outcomes = process_each(&processor, input, processor_config);
+            CommandResult::from_file_output_outcomes(
                 "image.convert",
-                format!("Converted {} image(s)", outputs.len()),
-                outputs,
+                format!("Converted {} image(s)", outcomes.outputs.len()),
+                outcomes.outputs,
+                outcomes.failures,
             )
         }
         ImageCommands::Resize {
@@ -92,11 +94,12 @@ pub fn handle_image_command(
                 quality: 85,
                 limits: config.limits.clone(),
             };
-            let outputs = process_each(&processor, input, processor_config)?;
-            CommandResult::from_file_outputs(
+            let outcomes = process_each(&processor, input, processor_config);
+            CommandResult::from_file_output_outcomes(
                 "image.resize",
-                format!("Resized {} image(s)", outputs.len()),
-                outputs,
+                format!("Resized {} image(s)", outcomes.outputs.len()),
+                outcomes.outputs,
+                outcomes.failures,
             )
         }
         ImageCommands::Crop {
@@ -116,11 +119,12 @@ pub fn handle_image_command(
                 quality: 85,
                 limits: config.limits.clone(),
             };
-            let outputs = process_each(&processor, input, processor_config)?;
-            CommandResult::from_file_outputs(
+            let outcomes = process_each(&processor, input, processor_config);
+            CommandResult::from_file_output_outcomes(
                 "image.crop",
-                format!("Cropped {} image(s)", outputs.len()),
-                outputs,
+                format!("Cropped {} image(s)", outcomes.outputs.len()),
+                outcomes.outputs,
+                outcomes.failures,
             )
         }
         ImageCommands::Watermark {
@@ -162,11 +166,12 @@ pub fn handle_image_command(
                 quality: 85,
                 limits: config.limits.clone(),
             };
-            let outputs = process_each(&processor, input, processor_config)?;
-            CommandResult::from_file_outputs(
+            let outcomes = process_each(&processor, input, processor_config);
+            CommandResult::from_file_output_outcomes(
                 "image.watermark.image",
-                format!("Watermarked {} image(s)", outputs.len()),
-                outputs,
+                format!("Watermarked {} image(s)", outcomes.outputs.len()),
+                outcomes.outputs,
+                outcomes.failures,
             )
         }
         ImageCommands::Filter {
@@ -184,32 +189,44 @@ pub fn handle_image_command(
                 quality: 85,
                 limits: config.limits.clone(),
             };
-            let outputs = process_each(&processor, input, processor_config)?;
-            CommandResult::from_file_outputs(
+            let outcomes = process_each(&processor, input, processor_config);
+            CommandResult::from_file_output_outcomes(
                 "image.filter",
-                format!("Filtered {} image(s)", outputs.len()),
-                outputs,
+                format!("Filtered {} image(s)", outcomes.outputs.len()),
+                outcomes.outputs,
+                outcomes.failures,
             )
         }
         ImageCommands::Exif { input, format } => {
             let processor = rtools_image::ExifProcessor;
             let processor_config = rtools_image::exif::ExifConfig::default();
-            let results = input
-                .into_iter()
-                .map(|path| {
-                    processor
-                        .process(FileInput::from_path(path.clone()), processor_config.clone())
-                        .map(|exif| ExifJsonResult {
-                            path: path.display().to_string(),
-                            exif,
-                        })
-                })
-                .collect::<RToolsResult<Vec<_>>>()?;
+            let mut results = Vec::new();
+            let mut failures = Vec::new();
+            for path in input {
+                match processor
+                    .process(FileInput::from_path(path.clone()), processor_config.clone())
+                {
+                    Ok(exif) => results.push(ExifJsonResult {
+                        path: path.display().to_string(),
+                        exif,
+                    }),
+                    Err(error) => {
+                        failures.push(ItemFailure::from_error(&error, path.display().to_string()));
+                    }
+                }
+            }
             let operation_id = match format {
                 ExifOutputFormat::Human => "image.exif.human",
                 ExifOutputFormat::Json => "image.exif.json",
             };
-            CommandResult::from_serializable(operation_id, ExifJsonDocument { results }, Vec::new())
+            let has_successes = !results.is_empty();
+            CommandResult::from_serializable_with_outcomes(
+                operation_id,
+                ExifJsonDocument { results },
+                Vec::new(),
+                failures,
+                has_successes,
+            )
         }
         ImageCommands::Ocr { .. } => Err(RToolsError::capability_unavailable(
             "image.ocr",
@@ -253,25 +270,35 @@ fn crop_region(
     }
 }
 
+struct FileOutputOutcomes {
+    outputs: Vec<rtools_core::FileOutput>,
+    failures: Vec<ItemFailure>,
+}
+
 fn process_each<P>(
     processor: &P,
     inputs: Vec<std::path::PathBuf>,
     config: P::Config,
-) -> RToolsResult<Vec<rtools_core::FileOutput>>
+) -> FileOutputOutcomes
 where
     P: Processor,
     P::Input: From<FileInput>,
     P::Output: Into<rtools_core::FileOutput>,
     P::Config: Clone,
 {
-    inputs
-        .into_iter()
-        .map(|path| {
-            processor
-                .process(FileInput::from_path(path).into(), config.clone())
-                .map(Into::into)
-        })
-        .collect()
+    let mut outcomes = FileOutputOutcomes {
+        outputs: Vec::new(),
+        failures: Vec::new(),
+    };
+    for path in inputs {
+        match processor.process(FileInput::from_path(path.clone()).into(), config.clone()) {
+            Ok(output) => outcomes.outputs.push(output.into()),
+            Err(error) => outcomes
+                .failures
+                .push(ItemFailure::from_error(&error, path.display().to_string())),
+        }
+    }
+    outcomes
 }
 
 #[cfg(test)]
@@ -300,9 +327,9 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn available_image_processor_error_is_propagated() {
-        let error = handle_image_command(
+    #[test]
+    fn available_image_processor_error_is_retained_with_its_item_path() {
+        let result = handle_image_command(
             ImageCommands::Resize {
                 input: vec!["missing.png".into()],
                 width: Some(10),
@@ -312,8 +339,13 @@ mod tests {
             },
             &AppConfig::default(),
         )
-        .unwrap_err();
+        .expect("item failures must be returned as a command result");
 
-        assert!(matches!(error, RToolsError::Io(_) | RToolsError::Image(_)));
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].item.as_deref(), Some("missing.png"));
+        assert!(matches!(
+            result.failures[0].code,
+            ErrorCode::ProcessingFailed | ErrorCode::InvalidInput
+        ));
     }
 }

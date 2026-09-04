@@ -2,7 +2,7 @@ use crate::{
     AiCommands, Commands, ConfigCommands, DuplicateMode, ExifOutputFormat, ImageCommands,
     OrganizeMode, PdfCommands,
 };
-use rtools_core::{Capability, CapabilityRegistry, RToolsError, RToolsResult};
+use rtools_core::{Capability, CapabilityRegistry, ProviderDiagnostic, RToolsError, RToolsResult};
 
 pub fn cli_capability_registry() -> RToolsResult<CapabilityRegistry> {
     let mut registry = CapabilityRegistry::default();
@@ -65,102 +65,151 @@ fn register_experimental(registry: &mut CapabilityRegistry) -> RToolsResult<()> 
     Ok(())
 }
 
+// This table is intentionally kept together as the audited, single source of
+// unavailable-operation capability metadata.
+#[allow(clippy::too_many_lines)]
 fn register_unavailable(registry: &mut CapabilityRegistry) -> RToolsResult<()> {
-    for (operation_id, reason, remediation) in [
+    for (operation_id, reason, remediation, provider_id) in [
         (
             "ai.alt_text",
             "No image captioning provider is configured",
             "Configure a supported image captioning provider",
+            Some("onnx-runtime"),
         ),
         (
             "ai.ocr",
             "No image OCR provider is configured",
             "Configure a supported image OCR provider",
+            Some("tesseract"),
         ),
         (
             "ai.duplicates.delete",
             "Deleting duplicate files is not implemented safely",
             "Use report-only duplicate detection",
+            None,
         ),
         (
             "ai.duplicates.move",
             "Moving duplicate files is not implemented safely",
             "Use report-only duplicate detection",
+            None,
         ),
         (
             "ai.duplicates.symlink",
             "Replacing duplicate files with symlinks is not implemented safely",
             "Use report-only duplicate detection",
+            None,
         ),
         (
             "ai.organize.camera",
             "Camera-based classification is not implemented",
             "Use date organization",
+            None,
         ),
         (
             "ai.organize.custom",
             "Custom classification is not implemented",
             "Use date organization",
+            None,
         ),
         (
             "ai.organize.location",
             "Location classification is not implemented",
             "Use date organization",
+            None,
         ),
         (
             "ai.organize.subject",
             "Subject classification is not implemented",
             "Use date organization",
+            None,
         ),
         (
             "ai.rename.ai",
             "AI-generated filename descriptions are not implemented",
             "Disable AI descriptions and use deterministic filename tokens",
+            None,
         ),
         (
             "batch.run",
             "Batch recipe execution is not implemented",
             "Run operations individually until typed batch execution is available",
+            None,
         ),
         (
             "image.metadata.preserve",
             "Image metadata preservation is not implemented",
             "Disable metadata preservation until verified metadata export is available",
+            None,
         ),
         (
             "image.metadata.strip_gps",
             "Selective GPS metadata removal is not implemented",
             "Use the default drop-all metadata policy until selective removal is available",
+            None,
         ),
         (
             "image.ocr",
             "No image OCR provider is configured",
             "Configure a supported image OCR provider",
+            Some("tesseract"),
         ),
         (
             "image.watermark.text",
             "Text rendering is not implemented for image watermarks",
             "Use an image watermark or configure a supported text rendering provider",
+            None,
         ),
         (
             "pdf.ocr",
             "No searchable PDF OCR provider is configured",
             "Configure a supported searchable PDF OCR provider",
+            Some("tesseract"),
         ),
         (
             "pdf.text",
             "PDF text extraction is not implemented in the CLI",
             "Use a verified PDF text extraction provider once one is registered",
+            None,
         ),
         (
             "pdf.to_image",
             "No PDF rendering provider is configured",
             "Configure a supported PDF rendering provider",
+            Some("pdfium"),
         ),
     ] {
-        registry.register(Capability::unavailable(operation_id, reason, remediation))?;
+        let capability = Capability::unavailable(operation_id, reason, remediation);
+        let capability = match provider_id {
+            Some(provider_id) => {
+                capability.with_provider_diagnostic(unavailable_provider(provider_id))
+            }
+            None => capability,
+        };
+        registry.register(capability)?;
     }
     Ok(())
+}
+
+fn unavailable_provider(provider_id: &str) -> ProviderDiagnostic {
+    match provider_id {
+        "onnx-runtime" => ProviderDiagnostic::unavailable(
+            provider_id,
+            "No ONNX Runtime adapter is registered",
+            "Register a verified ONNX Runtime adapter before enabling dependent operations",
+        ),
+        "pdfium" => ProviderDiagnostic::unavailable(
+            provider_id,
+            "No PDFium adapter is registered",
+            "Register a verified PDFium adapter before enabling PDF rendering",
+        ),
+        "tesseract" => ProviderDiagnostic::unavailable(
+            provider_id,
+            "No Tesseract adapter is registered",
+            "Register a verified Tesseract adapter before enabling OCR",
+        ),
+        _ => unreachable!("all registered provider identifiers have diagnostics"),
+    }
 }
 
 pub fn required_operation_ids(command: &Commands) -> RToolsResult<Vec<&'static str>> {

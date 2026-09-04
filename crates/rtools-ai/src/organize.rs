@@ -2,7 +2,7 @@ use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// AI organize configuration
@@ -68,14 +68,10 @@ impl Processor for OrganizeProcessor {
             ));
         }
 
-        if !config.dry_run {
-            std::fs::create_dir_all(&config.output_dir)?;
-        }
-
-        let mut outputs = Vec::new();
         let mut planned_destinations = HashSet::new();
+        let mut plans = Vec::with_capacity(inputs.len());
 
-        for input in inputs {
+        for input in &inputs {
             let path = input
                 .source
                 .as_path()
@@ -84,42 +80,30 @@ impl Processor for OrganizeProcessor {
             let target_folder = Self::get_date_folder(path)?;
 
             let target_dir = config.output_dir.join(&target_folder);
-            if !config.dry_run {
-                std::fs::create_dir_all(&target_dir)?;
-            }
 
             let orig_file_name = path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let stem = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let ext = path
-                .extension()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-
-            // Collision-safe filename resolution
-            let mut target_path = target_dir.join(&orig_file_name);
-            let mut counter = 1;
-            while target_path.exists() || planned_destinations.contains(&target_path) {
-                let unique_name = if ext.is_empty() {
-                    format!("{stem}_{counter}")
-                } else {
-                    format!("{stem}_{counter}.{ext}")
-                };
-                target_path = target_dir.join(unique_name);
-                counter += 1;
+            let target_path = target_dir.join(&orig_file_name);
+            if destination_exists(&target_path)? || planned_destinations.contains(&target_path) {
+                return Err(RToolsError::output_exists(
+                    target_path.display().to_string(),
+                ));
             }
             planned_destinations.insert(target_path.clone());
+            plans.push((path.clone(), target_path));
+        }
 
+        let mut outputs = Vec::with_capacity(plans.len());
+        for (path, target_path) in plans {
             if !config.dry_run {
-                std::fs::copy(path, &target_path)?;
+                let target_dir = target_path.parent().ok_or_else(|| {
+                    RToolsError::path_policy_violation("Organize destination has no parent")
+                })?;
+                std::fs::create_dir_all(target_dir)?;
+                std::fs::copy(&path, &target_path)?;
             }
 
             outputs.push(FileOutput {
@@ -153,6 +137,14 @@ impl Processor for OrganizeProcessor {
 
     fn name(&self) -> &'static str {
         "OrganizeProcessor"
+    }
+}
+
+fn destination_exists(path: &Path) -> RToolsResult<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 

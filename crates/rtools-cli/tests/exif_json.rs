@@ -56,7 +56,7 @@ fn multiple_exif_inputs_emit_one_machine_parseable_json_document() {
 }
 
 #[test]
-fn exif_json_failure_emits_no_partial_document() {
+fn mixed_exif_inputs_emit_successes_and_item_failure() {
     let temp = tempdir().expect("temp dir");
     let valid = temp.path().join("valid.png");
     let missing = temp.path().join("missing.png");
@@ -76,9 +76,12 @@ fn exif_json_failure_emits_no_partial_document() {
         .output()
         .expect("CLI must run");
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(7));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["status"], "failure");
-    assert_eq!(report["result"], Value::Null);
+    assert_eq!(report["status"], "partial_failure");
+    let results = report["result"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["path"], valid.display().to_string());
     assert_eq!(report["failures"].as_array().unwrap().len(), 1);
+    assert_eq!(report["failures"][0]["item"], missing.display().to_string());
 }

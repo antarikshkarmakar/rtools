@@ -1,4 +1,4 @@
-use crate::{error::RToolsResult, ResourceLimits};
+use crate::{error::RToolsResult, OutputPolicy, PendingOutput, ResourceLimits};
 use figment::{
     providers::{Env, Format, Serialized, Toml},
     value::{Dict, Map, Value},
@@ -528,14 +528,17 @@ impl AppConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when the parent directory cannot be created or the
-    /// configuration cannot be serialized or written.
+    /// Returns an error when the parent directory cannot be created, the
+    /// destination already exists, or the configuration cannot be serialized
+    /// or atomically written.
     pub fn save(&self, path: &PathBuf) -> RToolsResult<()> {
+        let toml = toml::to_string_pretty(self)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let toml = toml::to_string_pretty(self)?;
-        std::fs::write(path, toml)?;
+        let pending = PendingOutput::new(path, OutputPolicy::FailIfExists)?;
+        std::fs::write(pending.temporary_path(), toml)?;
+        pending.commit(|_| Ok(()))?;
         Ok(())
     }
 }

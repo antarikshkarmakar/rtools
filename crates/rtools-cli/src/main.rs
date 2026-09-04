@@ -1,9 +1,12 @@
 use anyhow as _;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-use report::{CliReport, OutputFormat};
-use rtools_core::{Capability, CapabilityRegistry, RToolsError, RToolsResult};
+use report::{CliReport, OutputFormat, ReportStatus};
+use rtools_core::{
+    Capability, CapabilityRegistry, CapabilityState, ProviderDiagnostic, RToolsError, RToolsResult,
+};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tracing as _;
@@ -538,8 +541,93 @@ enum ConfigCommands {
 #[derive(Serialize)]
 struct DoctorResult {
     capabilities: Vec<Capability>,
+    provider_diagnostics: Vec<DoctorProviderDiagnostic>,
     configured_limits: rtools_core::ResourceLimits,
     writable_directories: Vec<WritableDirectoryCheck>,
+}
+
+#[derive(Serialize)]
+struct DoctorProviderDiagnostic {
+    provider_id: String,
+    state: CapabilityState,
+    reason: Option<String>,
+    remediation: Option<String>,
+    adapter_registered: bool,
+    configuration: ProviderConfiguration,
+    operations: Vec<ProviderOperation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executable: Option<ExecutableDiagnostic>,
+}
+
+#[derive(Serialize)]
+struct ProviderOperation {
+    operation_id: String,
+    capability_state: CapabilityState,
+}
+
+#[derive(Serialize)]
+struct ProviderConfiguration {
+    state: ProviderConfigurationState,
+    reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProviderConfigurationState {
+    Configured,
+    NotConfigured,
+    NotApplicable,
+}
+
+#[derive(Serialize)]
+struct ExecutableDiagnostic {
+    executable: String,
+    status: ExecutableProbeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExecutableProbeStatus {
+    Available,
+    Missing,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutableProbe {
+    status: ExecutableProbeStatus,
+    version: Option<String>,
+    reason: Option<String>,
+}
+
+impl ExecutableProbe {
+    fn available(version: impl Into<String>) -> Self {
+        Self {
+            status: ExecutableProbeStatus::Available,
+            version: Some(version.into()),
+            reason: None,
+        }
+    }
+
+    fn missing(reason: impl Into<String>) -> Self {
+        Self {
+            status: ExecutableProbeStatus::Missing,
+            version: None,
+            reason: Some(reason.into()),
+        }
+    }
+
+    fn failed(reason: impl Into<String>) -> Self {
+        Self {
+            status: ExecutableProbeStatus::Failed,
+            version: None,
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -553,24 +641,77 @@ struct WritableDirectoryCheck {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => return render_parse_error(&error),
+    };
+    let output_format = cli.output_format;
+    let operation_id = operation_id_hint(&cli.command);
     if let Commands::Completions { shell } = &cli.command {
         if !cli.dry_run && cli.output_format == OutputFormat::Human {
+            if let Err(error) = rtools_core::AppConfig::load(cli.config.as_ref()) {
+                let exit_code = exit::for_error(&error);
+                let report = CliReport::failure(operation_id, &error);
+                return render_and_exit(&report, output_format, exit_code);
+            }
             report::render_completions(*shell, &mut Cli::command());
             return ExitCode::SUCCESS;
         }
     }
 
-    let output_format = cli.output_format;
-    let operation_id = operation_id_hint(&cli.command);
     match run(cli).await {
-        Ok(report) => render_and_exit(&report, output_format, ExitCode::SUCCESS),
+        Ok(report) => render_and_exit(&report, output_format, report_exit_code(&report)),
         Err(error) => {
             let exit_code = exit::for_error(&error);
             let report = CliReport::failure(operation_id, &error);
             render_and_exit(&report, output_format, exit_code)
         }
     }
+}
+
+fn report_exit_code(report: &CliReport<Value>) -> ExitCode {
+    match report.status {
+        ReportStatus::Success => ExitCode::SUCCESS,
+        ReportStatus::PartialFailure => ExitCode::from(7),
+        ReportStatus::Failure => report.failures.first().map_or_else(
+            || ExitCode::from(6),
+            |failure| exit::for_error_code(failure.code),
+        ),
+    }
+}
+
+fn render_parse_error(error: &clap::Error) -> ExitCode {
+    if requested_json_output()
+        && !matches!(
+            error.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        let parse_error = RToolsError::invalid_input(error.to_string());
+        let report = CliReport::failure("cli.parse", &parse_error);
+        return render_and_exit(&report, OutputFormat::Json, ExitCode::from(2));
+    }
+
+    let exit_code = if error.exit_code() == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    };
+    let _ = error.print();
+    exit_code
+}
+
+fn requested_json_output() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--output-format" {
+            return arguments.next().is_some_and(|format| format == "json");
+        }
+        if argument == "--output-format=json" {
+            return true;
+        }
+    }
+    false
 }
 
 fn render_and_exit(
@@ -614,11 +755,7 @@ async fn run(cli: Cli) -> RToolsResult<CliReport<Value>> {
             ));
         }
     };
-    Ok(CliReport::success(
-        result.operation_id,
-        result.result,
-        result.warnings,
-    ))
+    Ok(CliReport::from_command_result(result))
 }
 
 fn initialize_human_diagnostics(verbose: bool) -> RToolsResult<()> {
@@ -660,9 +797,21 @@ fn doctor_result(
     registry: &CapabilityRegistry,
     config: &rtools_core::AppConfig,
 ) -> RToolsResult<commands::CommandResult> {
+    doctor_result_with_probe(registry, config, probe_executable)
+}
+
+fn doctor_result_with_probe<F>(
+    registry: &CapabilityRegistry,
+    config: &rtools_core::AppConfig,
+    probe: F,
+) -> RToolsResult<commands::CommandResult>
+where
+    F: Fn(&str) -> ExecutableProbe,
+{
     let current_dir = std::env::current_dir()?;
     let result = DoctorResult {
         capabilities: registry.list().into_iter().cloned().collect(),
+        provider_diagnostics: provider_diagnostics(registry, config, probe),
         configured_limits: config.limits.clone(),
         writable_directories: vec![
             check_writable_directory("working_directory", &current_dir),
@@ -675,6 +824,136 @@ fn doctor_result(
         serde_json::to_value(result)?,
         Vec::new(),
     ))
+}
+
+fn provider_diagnostics<F>(
+    registry: &CapabilityRegistry,
+    config: &rtools_core::AppConfig,
+    probe: F,
+) -> Vec<DoctorProviderDiagnostic>
+where
+    F: Fn(&str) -> ExecutableProbe,
+{
+    let mut diagnostics: BTreeMap<String, (ProviderDiagnostic, Vec<ProviderOperation>)> =
+        BTreeMap::new();
+    for capability in registry.list() {
+        for provider in &capability.provider_diagnostics {
+            let entry = diagnostics
+                .entry(provider.provider_id.clone())
+                .or_insert_with(|| (provider.clone(), Vec::new()));
+            entry.1.push(ProviderOperation {
+                operation_id: capability.operation_id.clone(),
+                capability_state: capability.state,
+            });
+        }
+    }
+
+    diagnostics
+        .into_iter()
+        .map(
+            |(provider_id, (provider, operations))| DoctorProviderDiagnostic {
+                configuration: provider_configuration(&provider_id, config),
+                executable: (provider_id == "tesseract")
+                    .then(|| executable_diagnostic("tesseract", probe("tesseract"))),
+                provider_id,
+                state: provider.state,
+                reason: provider.reason,
+                remediation: provider.remediation,
+                adapter_registered: false,
+                operations,
+            },
+        )
+        .collect()
+}
+
+fn provider_configuration(
+    provider_id: &str,
+    config: &rtools_core::AppConfig,
+) -> ProviderConfiguration {
+    match provider_id {
+        "onnx-runtime" => configured_provider(
+            config.ai.ort_path.is_some(),
+            "An ONNX Runtime path is configured",
+            "No ONNX Runtime path is configured",
+        ),
+        "pdfium" => configured_provider(
+            config.pdf.pdfium_path.is_some(),
+            "A PDFium path is configured",
+            "No PDFium path is configured",
+        ),
+        "tesseract" => ProviderConfiguration {
+            state: ProviderConfigurationState::NotApplicable,
+            reason: "Tesseract is discovered by an executable probe, not configuration".to_string(),
+        },
+        _ => ProviderConfiguration {
+            state: ProviderConfigurationState::NotApplicable,
+            reason: "This provider has no configuration field".to_string(),
+        },
+    }
+}
+
+fn configured_provider(
+    configured: bool,
+    configured_reason: &str,
+    missing_reason: &str,
+) -> ProviderConfiguration {
+    ProviderConfiguration {
+        state: if configured {
+            ProviderConfigurationState::Configured
+        } else {
+            ProviderConfigurationState::NotConfigured
+        },
+        reason: if configured {
+            configured_reason.to_string()
+        } else {
+            missing_reason.to_string()
+        },
+    }
+}
+
+fn executable_diagnostic(executable: &str, probe: ExecutableProbe) -> ExecutableDiagnostic {
+    ExecutableDiagnostic {
+        executable: executable.to_string(),
+        status: probe.status,
+        version: probe.version,
+        reason: probe.reason,
+    }
+}
+
+fn probe_executable(executable: &str) -> ExecutableProbe {
+    let output = std::process::Command::new(executable)
+        .arg("--version")
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let version = [output.stdout, output.stderr]
+                .into_iter()
+                .filter_map(|stream| String::from_utf8(stream).ok())
+                .flat_map(|stream| {
+                    stream
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .next();
+            version.map_or_else(
+                || ExecutableProbe::failed("Version probe returned no version text"),
+                |version| ExecutableProbe::available(version.chars().take(200).collect::<String>()),
+            )
+        }
+        Ok(output) => ExecutableProbe::failed(format!(
+            "Version probe exited with status {}",
+            output.status.code().unwrap_or(-1)
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ExecutableProbe::missing("Executable was not found on PATH")
+        }
+        Err(error) => {
+            ExecutableProbe::failed(format!("Version probe could not start: {:?}", error.kind()))
+        }
+    }
 }
 
 fn check_writable_directory(label: &'static str, path: &Path) -> WritableDirectoryCheck {
@@ -804,5 +1083,61 @@ fn operation_id_hint(command: &Commands) -> &'static str {
             ConfigCommands::Validate { .. } => "config.validate",
         },
         Commands::Doctor => "doctor.report",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{capabilities, doctor_result_with_probe, ExecutableProbe};
+    use rtools_core::AppConfig;
+    use std::path::PathBuf;
+
+    #[test]
+    fn doctor_reports_a_found_executable_without_enabling_its_operations() {
+        let registry = capabilities::cli_capability_registry().unwrap();
+        let mut config = AppConfig::default();
+        config.ai.ort_path = Some(PathBuf::from("/configured/onnx-runtime"));
+        config.pdf.pdfium_path = Some(PathBuf::from("/configured/pdfium"));
+
+        let report = doctor_result_with_probe(&registry, &config, |executable| {
+            if executable == "tesseract" {
+                ExecutableProbe::available("tesseract 5.4.0")
+            } else {
+                ExecutableProbe::missing("not installed")
+            }
+        })
+        .unwrap();
+
+        let providers = report.result["provider_diagnostics"].as_array().unwrap();
+        let tesseract = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "tesseract")
+            .unwrap();
+        assert_eq!(tesseract["state"], "unavailable");
+        assert_eq!(tesseract["adapter_registered"], false);
+        assert_eq!(tesseract["executable"]["status"], "available");
+        assert_eq!(tesseract["executable"]["version"], "tesseract 5.4.0");
+        assert_eq!(
+            tesseract["operations"],
+            serde_json::json!([
+                { "operation_id": "ai.ocr", "capability_state": "unavailable" },
+                { "operation_id": "image.ocr", "capability_state": "unavailable" },
+                { "operation_id": "pdf.ocr", "capability_state": "unavailable" },
+            ])
+        );
+
+        let onnx = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "onnx-runtime")
+            .unwrap();
+        assert_eq!(onnx["configuration"]["state"], "configured");
+        assert_eq!(onnx["adapter_registered"], false);
+        assert!(
+            !report
+                .result
+                .to_string()
+                .contains("/configured/onnx-runtime"),
+            "provider diagnostics must not expose configured paths or secrets"
+        );
     }
 }

@@ -16,7 +16,11 @@ pub const fn numeric_exit_code(code: ErrorCode) -> u8 {
 }
 
 pub fn for_error(error: &RToolsError) -> ExitCode {
-    ExitCode::from(numeric_exit_code(error.code()))
+    for_error_code(error.code())
+}
+
+pub fn for_error_code(code: ErrorCode) -> ExitCode {
+    ExitCode::from(numeric_exit_code(code))
 }
 
 #[cfg(test)]

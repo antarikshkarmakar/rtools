@@ -2,7 +2,7 @@ use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// AI rename configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,8 +45,17 @@ impl Processor for RenameProcessor {
         inputs: Vec<FileInput>,
         config: RenameConfig,
     ) -> RToolsResult<Vec<FileOutput>> {
-        let mut outputs = Vec::new();
+        let input_paths =
+            inputs
+                .iter()
+                .map(|input| {
+                    input.source.as_path().cloned().ok_or_else(|| {
+                        RToolsError::invalid_input("Rename requires file path inputs")
+                    })
+                })
+                .collect::<RToolsResult<HashSet<_>>>()?;
         let mut planned_destinations = HashSet::new();
+        let mut plans = Vec::with_capacity(inputs.len());
 
         for (idx, input) in inputs.iter().enumerate() {
             let path = input
@@ -65,39 +74,22 @@ impl Processor for RenameProcessor {
                 .output_dir
                 .as_deref()
                 .unwrap_or_else(|| path.parent().unwrap_or_else(|| std::path::Path::new(".")));
-            let mut new_path = output_dir.join(&new_name);
+            let new_path = output_dir.join(&new_name);
 
-            // Collision detection: append numeric suffix if file exists
-            if (new_path.exists() && new_path != *path) || planned_destinations.contains(&new_path)
+            if planned_destinations.contains(&new_path)
+                || (new_path != *path
+                    && (destination_exists(&new_path)? || input_paths.contains(&new_path)))
             {
-                let stem = new_path.file_stem().unwrap_or_default().to_string_lossy();
-                let ext = new_path.extension().unwrap_or_default().to_string_lossy();
-                let mut resolved = None;
-                for i in 1..1000 {
-                    let candidate_name = if ext.is_empty() {
-                        format!("{stem}_{i}")
-                    } else {
-                        format!("{stem}_{i}.{ext}")
-                    };
-                    let candidate = output_dir.join(candidate_name);
-                    if (!candidate.exists() || candidate == *path)
-                        && !planned_destinations.contains(&candidate)
-                    {
-                        resolved = Some(candidate);
-                        break;
-                    }
-                }
-                new_path = resolved.ok_or_else(|| {
-                    RToolsError::output_exists(format!(
-                        "No collision-free rename destination is available for {}",
-                        path.display()
-                    ))
-                })?;
+                return Err(RToolsError::output_exists(new_path.display().to_string()));
             }
             planned_destinations.insert(new_path.clone());
+            plans.push((path.clone(), new_path));
+        }
 
-            if !config.dry_run && new_path != *path {
-                std::fs::rename(path, &new_path)?;
+        let mut outputs = Vec::with_capacity(plans.len());
+        for (path, new_path) in plans {
+            if !config.dry_run && new_path != path {
+                std::fs::rename(&path, &new_path)?;
             }
 
             outputs.push(FileOutput {
@@ -131,6 +123,14 @@ impl Processor for RenameProcessor {
 
     fn name(&self) -> &'static str {
         "RenameProcessor"
+    }
+}
+
+fn destination_exists(path: &Path) -> RToolsResult<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 

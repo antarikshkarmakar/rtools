@@ -1,4 +1,4 @@
-use crate::commands::CommandResult;
+use crate::commands::{CommandResult, ItemFailure};
 use crate::{AiCommands, DuplicateMode, OrganizeMode};
 use rtools_core::{AppConfig, FileInput, FileOutput, Processor, RToolsError, RToolsResult};
 use serde::Serialize;
@@ -91,11 +91,26 @@ pub fn handle_ai_command(
                 max_length: 125,
                 output_format: rtools_ai::alt_text::AltTextOutputFormat::Text,
             };
-            let results = input
-                .into_iter()
-                .map(|path| processor.process(FileInput::from_path(path), processor_config.clone()))
-                .collect::<RToolsResult<Vec<_>>>()?;
-            CommandResult::from_serializable("ai.alt_text", results, Vec::new())
+            let mut results = Vec::new();
+            let mut failures = Vec::new();
+            for path in input {
+                match processor
+                    .process(FileInput::from_path(path.clone()), processor_config.clone())
+                {
+                    Ok(result) => results.push(result),
+                    Err(error) => {
+                        failures.push(ItemFailure::from_error(&error, path.display().to_string()));
+                    }
+                }
+            }
+            let has_successes = !results.is_empty();
+            CommandResult::from_serializable_with_outcomes(
+                "ai.alt_text",
+                results,
+                Vec::new(),
+                failures,
+                has_successes,
+            )
         }
         AiCommands::Duplicates {
             input,
@@ -209,11 +224,11 @@ fn collect_image_paths(directory: &PathBuf) -> Vec<PathBuf> {
 mod tests {
     use super::handle_ai_command;
     use crate::{AiCommands, DuplicateMode};
-    use rtools_core::{AppConfig, ErrorCode, RToolsError};
+    use rtools_core::{AppConfig, ErrorCode};
 
-    #[tokio::test]
-    async fn alt_text_processor_error_is_propagated() {
-        let error = handle_ai_command(
+    #[test]
+    fn alt_text_processor_error_is_retained_with_its_item_path() {
+        let result = handle_ai_command(
             AiCommands::AltText {
                 input: vec!["private.jpg".into()],
                 language: "en".to_string(),
@@ -222,14 +237,30 @@ mod tests {
             &AppConfig::default(),
             false,
         )
-        .unwrap_err();
+        .expect("item failures must be returned as a command result");
 
-        assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
-        assert!(matches!(
-            error,
-            RToolsError::CapabilityUnavailable { operation_id, .. }
-                if operation_id == "ai.alt_text"
-        ));
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].code, ErrorCode::CapabilityUnavailable);
+        assert_eq!(result.failures[0].item.as_deref(), Some("private.jpg"));
+    }
+
+    #[test]
+    fn alt_text_aggregates_each_item_failure() {
+        let result = handle_ai_command(
+            AiCommands::AltText {
+                input: vec!["private-one.jpg".into(), "private-two.jpg".into()],
+                language: "en".to_string(),
+                output: None,
+            },
+            &AppConfig::default(),
+            false,
+        )
+        .expect("item failures must be returned as a command result");
+
+        assert_eq!(result.failures.len(), 2);
+        assert_eq!(result.failures[0].item.as_deref(), Some("private-one.jpg"));
+        assert_eq!(result.failures[1].item.as_deref(), Some("private-two.jpg"));
+        assert_eq!(result.result, serde_json::json!([]));
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 use rtools_ai::organize::{OrganizeConfig, OrganizeStrategy};
 use rtools_ai::rename::RenameConfig;
 use rtools_ai::{OrganizeProcessor, RenameProcessor};
-use rtools_core::{FileInput, OutputDestination, Processor};
+use rtools_core::{ErrorCode, FileInput, OutputDestination, Processor};
 
 fn destination(output: &rtools_core::FileOutput) -> &std::path::Path {
     match &output.destination {
@@ -38,7 +38,7 @@ fn date_organize_dry_run_creates_no_output_directories() {
 }
 
 #[test]
-fn date_organize_dry_run_resolves_existing_destination_collision() {
+fn date_organize_dry_run_preserves_existing_collision_bytes_and_returns_output_exists() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("photo.jpg");
     std::fs::write(&source, b"source").unwrap();
@@ -60,7 +60,7 @@ fn date_organize_dry_run_resolves_existing_destination_collision() {
     std::fs::create_dir_all(occupied.parent().unwrap()).unwrap();
     std::fs::write(&occupied, b"occupied").unwrap();
 
-    let planned = OrganizeProcessor
+    let error = OrganizeProcessor
         .process(
             vec![FileInput::from_path(source)],
             OrganizeConfig {
@@ -71,22 +71,28 @@ fn date_organize_dry_run_resolves_existing_destination_collision() {
                 dry_run: true,
             },
         )
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(destination(&planned[0]).file_name().unwrap(), "photo_1.jpg");
-    assert_eq!(std::fs::read(occupied).unwrap(), b"occupied");
-    assert!(!destination(&planned[0]).exists());
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"occupied");
+    assert_eq!(
+        std::fs::read_dir(occupied.parent().unwrap())
+            .unwrap()
+            .count(),
+        1,
+        "collision detection must not create a suffix artifact"
+    );
 }
 
 #[test]
-fn rename_dry_run_reserves_each_planned_destination() {
+fn rename_dry_run_preserves_sources_and_returns_output_exists_for_in_run_collision() {
     let temp = tempfile::tempdir().unwrap();
     let first = temp.path().join("first.jpg");
     let second = temp.path().join("second.jpg");
     std::fs::write(&first, b"first").unwrap();
     std::fs::write(&second, b"second").unwrap();
 
-    let outputs = RenameProcessor
+    let error = RenameProcessor
         .process(
             vec![
                 FileInput::from_path(first.clone()),
@@ -100,12 +106,66 @@ fn rename_dry_run_reserves_each_planned_destination() {
                 dry_run: true,
             },
         )
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(destination(&outputs[0]), temp.path().join("same.jpg"));
-    assert_eq!(destination(&outputs[1]), temp.path().join("same_1.jpg"));
+    assert_eq!(error.code(), ErrorCode::OutputExists);
     assert_eq!(std::fs::read(first).unwrap(), b"first");
     assert_eq!(std::fs::read(second).unwrap(), b"second");
     assert!(!temp.path().join("same.jpg").exists());
-    assert!(!temp.path().join("same_1.jpg").exists());
+}
+
+#[test]
+fn rename_collision_fails_before_mutating_any_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first.jpg");
+    let second = temp.path().join("second.jpg");
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(first.clone()),
+                FileInput::from_path(second.clone()),
+            ],
+            RenameConfig {
+                pattern: "same".to_string(),
+                output_dir: None,
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(first).unwrap(), b"first");
+    assert_eq!(std::fs::read(second).unwrap(), b"second");
+    assert!(!temp.path().join("same.jpg").exists());
+}
+
+#[test]
+fn rename_duplicate_input_fails_without_creating_an_artifact() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("photo.jpg");
+    std::fs::write(&source, b"source").unwrap();
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(source.clone()),
+                FileInput::from_path(source.clone()),
+            ],
+            RenameConfig {
+                pattern: "{name}".to_string(),
+                output_dir: None,
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: true,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(source).unwrap(), b"source");
 }
