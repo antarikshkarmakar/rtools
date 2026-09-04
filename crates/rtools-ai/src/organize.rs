@@ -1,6 +1,7 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -67,9 +68,12 @@ impl Processor for OrganizeProcessor {
             ));
         }
 
-        std::fs::create_dir_all(&config.output_dir)?;
+        if !config.dry_run {
+            std::fs::create_dir_all(&config.output_dir)?;
+        }
 
         let mut outputs = Vec::new();
+        let mut planned_destinations = HashSet::new();
 
         for input in inputs {
             let path = input
@@ -80,7 +84,9 @@ impl Processor for OrganizeProcessor {
             let target_folder = Self::get_date_folder(path)?;
 
             let target_dir = config.output_dir.join(&target_folder);
-            std::fs::create_dir_all(&target_dir)?;
+            if !config.dry_run {
+                std::fs::create_dir_all(&target_dir)?;
+            }
 
             let orig_file_name = path
                 .file_name()
@@ -101,7 +107,7 @@ impl Processor for OrganizeProcessor {
             // Collision-safe filename resolution
             let mut target_path = target_dir.join(&orig_file_name);
             let mut counter = 1;
-            while target_path.exists() && !config.dry_run {
+            while target_path.exists() || planned_destinations.contains(&target_path) {
                 let unique_name = if ext.is_empty() {
                     format!("{stem}_{counter}")
                 } else {
@@ -110,6 +116,7 @@ impl Processor for OrganizeProcessor {
                 target_path = target_dir.join(unique_name);
                 counter += 1;
             }
+            planned_destinations.insert(target_path.clone());
 
             if !config.dry_run {
                 std::fs::copy(path, &target_path)?;

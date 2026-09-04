@@ -1,18 +1,17 @@
-use rtools_core::AppConfig;
+use crate::commands::CommandResult;
+use rtools_core::{AppConfig, RToolsError, RToolsResult};
 use std::path::PathBuf;
 
-pub async fn handle_batch_command(
+pub fn handle_batch_command(
     _config_path: PathBuf,
     _jobs: Option<usize>,
     _app_config: &AppConfig,
-) -> anyhow::Result<()> {
-    std::future::ready(()).await;
-    Err(rtools_core::RToolsError::capability_unavailable(
+) -> RToolsResult<CommandResult> {
+    Err(RToolsError::capability_unavailable(
         "batch.run",
         "Batch recipe execution is not implemented",
         "Run operations individually until typed batch execution is available",
-    )
-    .into())
+    ))
 }
 
 #[cfg(test)]
@@ -30,10 +29,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = handle_batch_command(config_path, None, &AppConfig::default())
-            .await
-            .unwrap_err();
-        let error = error.downcast_ref::<RToolsError>().unwrap();
+        let error = handle_batch_command(config_path, None, &AppConfig::default()).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
         assert!(matches!(

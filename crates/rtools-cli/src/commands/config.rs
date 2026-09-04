@@ -1,34 +1,58 @@
+use crate::commands::CommandResult;
 use crate::ConfigCommands;
-use rtools_core::AppConfig;
+use rtools_core::{AppConfig, RToolsResult};
+use serde::Serialize;
+use serde_json::json;
 
-pub fn handle_config_command(cmd: ConfigCommands, effective: &AppConfig) -> anyhow::Result<()> {
-    match cmd {
+pub fn handle_config_command(
+    command: ConfigCommands,
+    effective: &AppConfig,
+) -> RToolsResult<CommandResult> {
+    match command {
         ConfigCommands::Show => {
-            println!("{}", serialize_effective_config(effective)?);
-            Ok(())
+            let config = effective_config_value(effective)?;
+            let human_text = toml::to_string_pretty(&config)?;
+            CommandResult::from_serializable(
+                "config.show",
+                ConfigShowResult { human_text, config },
+                Vec::new(),
+            )
         }
-
         ConfigCommands::Init { output } => {
-            let config = AppConfig::default();
-            config.save(&output)?;
-            println!("✓ Configuration file created: {}", output.display());
-            Ok(())
+            AppConfig::default().save(&output)?;
+            Ok(CommandResult::new(
+                "config.init",
+                json!({
+                    "message": "Configuration file created",
+                    "path": output,
+                }),
+                Vec::new(),
+            ))
         }
-
-        ConfigCommands::Validate {
-            config: config_path,
-        } => {
-            AppConfig::load(Some(&config_path))?;
-            println!("✓ Configuration file is valid: {}", config_path.display());
-            Ok(())
+        ConfigCommands::Validate { config } => {
+            AppConfig::load(Some(&config))?;
+            Ok(CommandResult::new(
+                "config.validate",
+                json!({
+                    "message": "Configuration file is valid",
+                    "path": config,
+                }),
+                Vec::new(),
+            ))
         }
     }
 }
 
-fn serialize_effective_config(config: &AppConfig) -> anyhow::Result<String> {
+#[derive(Serialize)]
+struct ConfigShowResult {
+    human_text: String,
+    config: toml::Value,
+}
+
+fn effective_config_value(config: &AppConfig) -> RToolsResult<toml::Value> {
     let mut value = toml::Value::try_from(config)?;
     redact_secrets(&mut value);
-    Ok(toml::to_string_pretty(&value)?)
+    Ok(value)
 }
 
 fn redact_secrets(value: &mut toml::Value) {
@@ -85,7 +109,7 @@ fn is_secret_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_secrets, serialize_effective_config};
+    use super::{effective_config_value, redact_secrets};
     use rtools_core::AppConfig;
 
     #[test]
@@ -93,7 +117,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.api.api_key = Some("do-not-leak".to_string());
 
-        let serialized = serialize_effective_config(&config).unwrap();
+        let value = effective_config_value(&config).unwrap();
+        let serialized = toml::to_string_pretty(&value).unwrap();
 
         assert!(serialized.contains("<redacted>"));
         assert!(!serialized.contains("do-not-leak"));

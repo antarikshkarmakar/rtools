@@ -1,11 +1,20 @@
+use anyhow as _;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-use std::path::PathBuf;
+use report::{CliReport, OutputFormat};
+use rtools_core::{Capability, CapabilityRegistry, RToolsError, RToolsResult};
+use serde::Serialize;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use tracing as _;
 
 #[cfg(test)]
 use image as _;
 
 mod capabilities;
 mod commands;
+mod exit;
+mod report;
 
 #[derive(Parser)]
 #[command(
@@ -13,260 +22,143 @@ mod commands;
     about = "A high-performance image and PDF processing toolkit",
     version,
     long_about = "rtools is a privacy-first, local processing toolkit for images and PDFs.\n\nIt provides CLI, API, and MCP interfaces for powerful file processing operations.",
-    next_line_help = true
-)]
-#[command(
-    propagate_version = true,
-    after_long_help = "Examples:\n  Compress an image:          rtools image compress -i photo.jpg -q 80\n  Convert to WebP:            rtools image convert -i photo.png -f webp\n  Resize to 1920px wide:      rtools image resize -i photo.jpg -w 1920\n  Crop to 16:9:               rtools image crop -i photo.jpg -a 16:9\n  Add an image watermark:     rtools image watermark -i photo.jpg --image logo.png\n  Apply a film filter:        rtools image filter -i photo.jpg -p portra\n  Read EXIF metadata:         rtools image exif -i photo.jpg\n  Merge PDFs:                 rtools pdf merge -i a.pdf b.pdf -o merged.pdf\n  Split a PDF:                rtools pdf split -i doc.pdf -o out/ -p 1-5,10\n  Find duplicate photos:      rtools ai duplicates -i photos/ -a report\n\nTip: run `rtools <command> --help` for full details on any command."
+    next_line_help = true,
+    propagate_version = true
 )]
 struct Cli {
-    /// Configuration file path
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     config: Option<PathBuf>,
-
-    /// Verbose output
     #[arg(short, long)]
     verbose: bool,
-
-    /// Dry run mode (preview changes without applying)
     #[arg(short, long)]
     dry_run: bool,
-
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    output_format: OutputFormat,
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Image processing operations
     #[command(alias("img"))]
     Image {
         #[command(subcommand)]
         command: ImageCommands,
     },
-
-    /// PDF processing operations
     Pdf {
         #[command(subcommand)]
         command: PdfCommands,
     },
-
-    /// AI-powered operations
     Ai {
         #[command(subcommand)]
         command: AiCommands,
     },
-
-    /// Batch processing (unavailable until typed recipe execution is implemented)
     #[command(
         after_long_help = "Unavailable: run operations individually until typed batch execution is available."
     )]
     Batch {
-        /// Batch configuration file
         #[arg(short, long, value_hint = ValueHint::FilePath)]
         config: PathBuf,
-
-        /// Number of parallel jobs
         #[arg(short, long)]
         jobs: Option<usize>,
     },
-
-    /// Generate shell completions
     Completions {
-        /// Shell to generate for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-
-    /// Show configuration information
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    /// Diagnose capabilities, configured limits, and writable directories
+    Doctor,
 }
 
 #[derive(Subcommand)]
 enum ImageCommands {
-    /// Compress images
-    #[command(
-        after_long_help = "Examples:\n  rtools image compress -i photo.jpg -q 70\n  rtools image compress -i a.jpg b.jpg -f webp -o out/"
-    )]
     Compress {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Output path (file or directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
-
-        /// Quality (1-100)
         #[arg(short, long, default_value = "85")]
         quality: u8,
-
-        /// Output format (jpg, jpeg, png, webp, avif, tiff, bmp, gif)
-        #[arg(short, long)]
-        format: Option<String>,
-
-        /// Preserve metadata (unavailable; use drop-all until verified export exists)
+        #[arg(short, long, value_enum)]
+        format: Option<ImageFormatArg>,
         #[arg(long)]
         preserve_metadata: bool,
-
-        /// Strip only GPS metadata (unavailable; use drop-all until selective removal exists)
         #[arg(long)]
         strip_gps: bool,
     },
-
-    /// Convert image format
-    #[command(after_long_help = "Example:\n  rtools image convert -i photo.png -f webp -q 80")]
     Convert {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Target format (jpg, jpeg, png, webp, avif, tiff, bmp, gif)
-        #[arg(short, long)]
-        format: String,
-
-        /// Output directory
+        #[arg(short, long, value_enum)]
+        format: ImageFormatArg,
         #[arg(short, long)]
         output: Option<PathBuf>,
-
-        /// Quality for lossy formats
         #[arg(short, long, default_value = "85")]
         quality: u8,
     },
-
-    /// Resize images
-    #[command(
-        after_long_help = "Examples:\n  rtools image resize -i photo.jpg -w 1920\n  rtools image resize -i photo.jpg -w 800 -h 600 --no-maintain-aspect"
-    )]
     Resize {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Target width
         #[arg(short, long)]
         width: Option<u32>,
-
-        /// Target height
         #[arg(long)]
         height: Option<u32>,
-
-        /// Maintain aspect ratio
         #[arg(long, default_value = "true")]
         maintain_aspect: bool,
-
-        /// Output directory
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// Crop images
-    #[command(
-        after_long_help = "Examples:\n  rtools image crop -i photo.jpg -a 16:9\n  rtools image crop -i photo.jpg -r 100,100,800,600"
-    )]
     Crop {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Crop region (x,y,width,height)
-        #[arg(short, long)]
-        region: Option<String>,
-
-        /// Aspect ratio (16:9, 4:3, 1:1, etc.)
-        #[arg(short = 'a', long)]
-        ratio: Option<String>,
-
-        /// Gravity point
-        #[arg(short, long, default_value = "center")]
-        gravity: String,
-
-        /// Output directory
+        #[arg(short, long, conflicts_with = "ratio")]
+        region: Option<CropRegionArg>,
+        #[arg(short = 'a', long, conflicts_with = "region")]
+        ratio: Option<AspectRatioArg>,
+        #[arg(short, long, value_enum, default_value_t = GravityArg::Center)]
+        gravity: GravityArg,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// Add a watermark (image available; text unavailable)
-    #[command(
-        after_long_help = "Example:\n  rtools image watermark -i photo.jpg --image logo.png -p top-left\n\nText watermarks are unavailable; use --image until text rendering is configured."
-    )]
     Watermark {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Watermark text (unavailable; use --image until text rendering is configured)
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "image")]
         text: Option<String>,
-
-        /// Watermark image
-        #[arg(long)]
+        #[arg(long, conflicts_with = "text")]
         image: Option<PathBuf>,
-
-        /// Position (top-left, top-right, bottom-left, bottom-right, center)
-        #[arg(short, long, default_value = "bottom-right")]
-        position: String,
-
-        /// Opacity (0.0-1.0)
+        #[arg(short, long, value_enum, default_value_t = WatermarkPositionArg::BottomRight)]
+        position: WatermarkPositionArg,
         #[arg(long, default_value = "0.5")]
         opacity: f64,
-
-        /// Output directory
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// Apply film filter
-    #[command(
-        after_long_help = "Presets: portra, gold, fuji, velvia, polaroid, trix, cinestill\n\nExample:\n  rtools image filter -i photo.jpg -p portra --strength 0.8"
-    )]
     Filter {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Filter preset (portra, gold, fuji, velvia, polaroid, trix, cinestill)
-        #[arg(short, long)]
-        preset: String,
-
-        /// Filter strength (0.0-1.0)
+        #[arg(short, long, value_enum)]
+        preset: FilmFilterArg,
         #[arg(long, default_value = "1.0")]
         strength: f64,
-
-        /// Output directory
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// View EXIF metadata
-    #[command(
-        after_long_help = "Examples:\n  rtools image exif -i photo.jpg\n  rtools image exif -i photo.jpg -f json"
-    )]
     Exif {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Output format
         #[arg(short, long, value_enum, default_value_t = ExifOutputFormat::Human)]
         format: ExifOutputFormat,
     },
-
-    /// Extract text from images (unavailable until an OCR provider is configured)
-    #[command(after_long_help = "Unavailable: configure a supported OCR provider.")]
     Ocr {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Language
         #[arg(short, long, default_value = "eng")]
         language: String,
-
-        /// Output file
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -274,84 +166,41 @@ enum ImageCommands {
 
 #[derive(Subcommand)]
 enum PdfCommands {
-    /// Merge PDF files
-    #[command(after_long_help = "Example:\n  rtools pdf merge -i a.pdf b.pdf c.pdf -o merged.pdf")]
     Merge {
-        /// Input PDF files
         #[arg(short, long, num_args = 2..)]
         input: Vec<PathBuf>,
-
-        /// Output file
         #[arg(short, long)]
         output: PathBuf,
     },
-
-    /// Compress PDF
-    #[command(
-        after_long_help = "Levels: light, medium (default), heavy\n\nExample:\n  rtools pdf compress -i doc.pdf -l heavy -o small.pdf"
-    )]
     Compress {
-        /// Input PDF file
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Output file
         #[arg(short, long)]
         output: Option<PathBuf>,
-
-        /// Compression level (light, medium, heavy)
-        #[arg(short, long, default_value = "medium")]
-        level: String,
+        #[arg(short, long, value_enum, default_value_t = PdfCompressionArg::Medium)]
+        level: PdfCompressionArg,
     },
-
-    /// Split PDF into pages
-    #[command(
-        after_long_help = "Page range syntax: comma-separated pages and ranges, e.g. \"1-5,10,15-20\"\n\nExamples:\n  rtools pdf split -i doc.pdf -o pages/\n  rtools pdf split -i doc.pdf -o pages/ --pages 1-5,10"
-    )]
     Split {
-        /// Input PDF file
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Page range (e.g., "1-5,10,15-20")
         #[arg(short, long)]
-        pages: Option<String>,
-
-        /// Output directory
+        pages: Option<PageSelection>,
         #[arg(short, long)]
         output: PathBuf,
     },
-
-    /// Extract text from PDF (unavailable in this release)
-    #[command(
-        after_long_help = "Unavailable: use a verified PDF text provider once one is registered."
-    )]
     Text {
-        /// Input PDF file
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Output file
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// Convert PDF to images (unavailable until a rendering provider is configured)
-    #[command(after_long_help = "Unavailable: configure a supported PDF rendering provider.")]
     ToImage {
-        /// Input PDF file
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Output directory
         #[arg(short, long)]
         output: PathBuf,
-
-        /// Image format (png, jpg, webp)
-        #[arg(short, long, default_value = "png")]
-        format: String,
-
-        /// DPI
+        #[arg(short, long, value_enum, default_value_t = PdfImageFormatArg::Png)]
+        format: PdfImageFormatArg,
         #[arg(long, default_value = "300")]
         dpi: u32,
     },
@@ -359,75 +208,295 @@ enum PdfCommands {
 
 #[derive(Subcommand)]
 enum AiCommands {
-    /// Organize photos (date available experimentally; classifier modes unavailable)
-    #[command(
-        after_long_help = "Date organization is experimental. Subject, location, camera, and custom classification are unavailable."
-    )]
     Organize {
-        /// Input directory
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Output directory
         #[arg(short, long)]
         output: PathBuf,
-
-        /// Organization strategy
         #[arg(short, long, value_enum, default_value_t = OrganizeMode::Date)]
         strategy: OrganizeMode,
     },
-
-    /// Rename photos using deterministic filename tokens
-    #[command(
-        after_long_help = "Deterministic tokens date, time, datetime, index, name, and ext are supported. AI subject descriptions are unavailable."
-    )]
     Rename {
-        /// Input directory
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Filename pattern
         #[arg(short, long, default_value = "{date}_{name}_{index}")]
         pattern: String,
-
-        /// Dry run mode
         #[arg(long)]
         dry_run: bool,
     },
-
-    /// Generate alt text (unavailable until a captioning provider is configured)
-    #[command(after_long_help = "Unavailable: configure a supported captioning provider.")]
     AltText {
-        /// Input file(s)
         #[arg(short, long, num_args = 1..)]
         input: Vec<PathBuf>,
-
-        /// Language
         #[arg(short, long, default_value = "en")]
         language: String,
-
-        /// Output file
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-
-    /// Find duplicate images
-    #[command(
-        after_long_help = "Report is experimental. Move, delete, and symlink actions are unavailable.\n\nExample:\n  rtools ai duplicates -i photos/ -t 0.95 -a report"
-    )]
     Duplicates {
-        /// Input directory
         #[arg(short, long)]
         input: PathBuf,
-
-        /// Similarity threshold (0.0-1.0)
         #[arg(short, long, default_value = "0.9")]
         threshold: f64,
-
-        /// Action to take
         #[arg(short, long, value_enum, default_value_t = DuplicateMode::Report)]
         action: DuplicateMode,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ImageFormatArg {
+    #[value(name = "jpg", alias = "jpeg")]
+    Jpeg,
+    Png,
+    Webp,
+    Avif,
+    #[value(alias = "tif")]
+    Tiff,
+    Bmp,
+    Gif,
+}
+
+impl ImageFormatArg {
+    const fn into_core(self) -> rtools_core::ImageFormat {
+        match self {
+            Self::Jpeg => rtools_core::ImageFormat::Jpeg,
+            Self::Png => rtools_core::ImageFormat::Png,
+            Self::Webp => rtools_core::ImageFormat::Webp,
+            Self::Avif => rtools_core::ImageFormat::Avif,
+            Self::Tiff => rtools_core::ImageFormat::Tiff,
+            Self::Bmp => rtools_core::ImageFormat::Bmp,
+            Self::Gif => rtools_core::ImageFormat::Gif,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CropRegionArg {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl std::str::FromStr for CropRegionArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let values = value
+            .split(',')
+            .map(str::trim)
+            .map(|part| {
+                part.parse::<u32>()
+                    .map_err(|_| "crop region must contain four unsigned integers".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let [x, y, width, height] = values.as_slice() else {
+            return Err("crop region must be x,y,width,height".to_string());
+        };
+        if *width == 0 || *height == 0 {
+            return Err("crop width and height must be positive".to_string());
+        }
+        Ok(Self {
+            x: *x,
+            y: *y,
+            width: *width,
+            height: *height,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AspectRatioArg(f64, f64);
+
+impl std::str::FromStr for AspectRatioArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let Some((width, height)) = value.split_once(':') else {
+            return Err("aspect ratio must be width:height".to_string());
+        };
+        if height.contains(':') {
+            return Err("aspect ratio must contain exactly one colon".to_string());
+        }
+        let width = width
+            .parse::<f64>()
+            .map_err(|_| "aspect ratio width must be numeric".to_string())?;
+        let height = height
+            .parse::<f64>()
+            .map_err(|_| "aspect ratio height must be numeric".to_string())?;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return Err("aspect ratio values must be positive and finite".to_string());
+        }
+        Ok(Self(width, height))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum GravityArg {
+    #[value(alias = "n")]
+    North,
+    #[value(alias = "s")]
+    South,
+    #[value(alias = "e")]
+    East,
+    #[value(alias = "w")]
+    West,
+    #[value(alias = "ne", alias = "northeast")]
+    NorthEast,
+    #[value(alias = "nw", alias = "northwest")]
+    NorthWest,
+    #[value(alias = "se", alias = "southeast")]
+    SouthEast,
+    #[value(alias = "sw", alias = "southwest")]
+    SouthWest,
+    Center,
+}
+
+impl GravityArg {
+    const fn into_image(self) -> rtools_image::crop::Gravity {
+        match self {
+            Self::North => rtools_image::crop::Gravity::North,
+            Self::South => rtools_image::crop::Gravity::South,
+            Self::East => rtools_image::crop::Gravity::East,
+            Self::West => rtools_image::crop::Gravity::West,
+            Self::NorthEast => rtools_image::crop::Gravity::NorthEast,
+            Self::NorthWest => rtools_image::crop::Gravity::NorthWest,
+            Self::SouthEast => rtools_image::crop::Gravity::SouthEast,
+            Self::SouthWest => rtools_image::crop::Gravity::SouthWest,
+            Self::Center => rtools_image::crop::Gravity::Center,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum WatermarkPositionArg {
+    #[value(alias = "topleft")]
+    TopLeft,
+    #[value(alias = "topright")]
+    TopRight,
+    #[value(alias = "bottomleft")]
+    BottomLeft,
+    #[value(alias = "bottomright")]
+    BottomRight,
+    Center,
+}
+
+impl WatermarkPositionArg {
+    const fn into_image(self) -> rtools_image::watermark::WatermarkPosition {
+        match self {
+            Self::TopLeft => rtools_image::watermark::WatermarkPosition::TopLeft,
+            Self::TopRight => rtools_image::watermark::WatermarkPosition::TopRight,
+            Self::BottomLeft => rtools_image::watermark::WatermarkPosition::BottomLeft,
+            Self::BottomRight => rtools_image::watermark::WatermarkPosition::BottomRight,
+            Self::Center => rtools_image::watermark::WatermarkPosition::Center,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FilmFilterArg {
+    #[value(name = "portra", alias = "kodak-portra-400")]
+    Portra,
+    #[value(name = "gold", alias = "kodak-gold-200")]
+    Gold,
+    #[value(name = "fuji", alias = "fuji-pro-400h")]
+    Fuji,
+    #[value(name = "velvia", alias = "fuji-velvia-50")]
+    Velvia,
+    #[value(name = "polaroid", alias = "polaroid-sx70")]
+    Polaroid,
+    #[value(name = "trix", alias = "trix-400")]
+    Trix,
+    #[value(name = "cinestill", alias = "cinestill-800t")]
+    Cinestill,
+}
+
+impl FilmFilterArg {
+    const fn into_image(self) -> rtools_image::filter::FilmFilter {
+        match self {
+            Self::Portra => rtools_image::filter::FilmFilter::KodakPortra400,
+            Self::Gold => rtools_image::filter::FilmFilter::KodakGold200,
+            Self::Fuji => rtools_image::filter::FilmFilter::FujiPro400H,
+            Self::Velvia => rtools_image::filter::FilmFilter::FujiVelvia50,
+            Self::Polaroid => rtools_image::filter::FilmFilter::PolaroidSX70,
+            Self::Trix => rtools_image::filter::FilmFilter::TriX400,
+            Self::Cinestill => rtools_image::filter::FilmFilter::Cinestill800T,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PdfCompressionArg {
+    Light,
+    Medium,
+    Heavy,
+}
+
+impl PdfCompressionArg {
+    const fn into_pdf(self) -> rtools_pdf::compress::PdfCompressionLevel {
+        match self {
+            Self::Light => rtools_pdf::compress::PdfCompressionLevel::Light,
+            Self::Medium => rtools_pdf::compress::PdfCompressionLevel::Medium,
+            Self::Heavy => rtools_pdf::compress::PdfCompressionLevel::Heavy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PdfImageFormatArg {
+    Png,
+    #[value(name = "jpg", alias = "jpeg")]
+    Jpeg,
+    Webp,
+}
+
+#[derive(Debug, Clone)]
+struct PageSelection(rtools_pdf::split::PageRange);
+
+impl std::str::FromStr for PageSelection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut ranges = Vec::new();
+        for part in value.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err("page selection contains an empty item".to_string());
+            }
+            if let Some((start, end)) = part.split_once('-') {
+                if end.contains('-') {
+                    return Err("page range must contain exactly one hyphen".to_string());
+                }
+                let start = parse_positive_page(start)?;
+                let end = parse_positive_page(end)?;
+                if start > end {
+                    return Err("page range start must not exceed its end".to_string());
+                }
+                ranges.push(rtools_pdf::split::PageRange::Range { start, end });
+            } else {
+                ranges.push(rtools_pdf::split::PageRange::Single(parse_positive_page(
+                    part,
+                )?));
+            }
+        }
+        let range = if ranges.len() == 1 {
+            ranges.remove(0)
+        } else {
+            rtools_pdf::split::PageRange::Multiple(ranges)
+        };
+        Ok(Self(range))
+    }
+}
+
+fn parse_positive_page(value: &str) -> Result<u32, String> {
+    let page = value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "page numbers must be unsigned integers".to_string())?;
+    if page == 0 {
+        Err("page numbers are one-indexed and must be positive".to_string())
+    } else {
+        Ok(page)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -455,60 +524,285 @@ enum ExifOutputFormat {
 
 #[derive(Subcommand)]
 enum ConfigCommands {
-    /// Show current configuration
     Show,
-
-    /// Generate default configuration file
     Init {
-        /// Output path
         #[arg(short, long, default_value = "rtools.toml")]
         output: PathBuf,
     },
-
-    /// Validate configuration file
     Validate {
-        /// Configuration file to validate
         #[arg(short, long)]
         config: PathBuf,
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+#[derive(Serialize)]
+struct DoctorResult {
+    capabilities: Vec<Capability>,
+    configured_limits: rtools_core::ResourceLimits,
+    writable_directories: Vec<WritableDirectoryCheck>,
+}
 
-    let capability_registry = capabilities::cli_capability_registry()?;
-    for operation_id in capabilities::required_operation_ids(&cli.command)? {
-        capability_registry.require_available(operation_id)?;
+#[derive(Serialize)]
+struct WritableDirectoryCheck {
+    label: &'static str,
+    path: PathBuf,
+    writable: bool,
+    reason: String,
+    remediation: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    if let Commands::Completions { shell } = &cli.command {
+        if !cli.dry_run && cli.output_format == OutputFormat::Human {
+            report::render_completions(*shell, &mut Cli::command());
+            return ExitCode::SUCCESS;
+        }
     }
 
-    // Initialize tracing
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    let output_format = cli.output_format;
+    let operation_id = operation_id_hint(&cli.command);
+    match run(cli).await {
+        Ok(report) => render_and_exit(&report, output_format, ExitCode::SUCCESS),
+        Err(error) => {
+            let exit_code = exit::for_error(&error);
+            let report = CliReport::failure(operation_id, &error);
+            render_and_exit(&report, output_format, exit_code)
+        }
+    }
+}
 
-    // Load configuration
+fn render_and_exit(
+    report: &CliReport<Value>,
+    output_format: OutputFormat,
+    exit_code: ExitCode,
+) -> ExitCode {
+    if let Err(error) = report::render(report, output_format) {
+        report::render_write_error(&error);
+        ExitCode::from(6)
+    } else {
+        exit_code
+    }
+}
+
+async fn run(cli: Cli) -> RToolsResult<CliReport<Value>> {
+    std::future::ready(()).await;
+    if cli.output_format == OutputFormat::Human {
+        initialize_human_diagnostics(cli.verbose)?;
+    }
+    let registry = capabilities::cli_capability_registry()?;
+    validate_global_dry_run(&cli)?;
+    for operation_id in capabilities::required_operation_ids(&cli.command)? {
+        registry.require_available(operation_id)?;
+    }
     let config = rtools_core::AppConfig::load(cli.config.as_ref())?;
 
-    match cli.command {
-        Commands::Image { command } => {
-            commands::image::handle_image_command(command, &config).await
-        }
-        Commands::Pdf { command } => commands::pdf::handle_pdf_command(command, &config).await,
-        Commands::Ai { command } => commands::ai::handle_ai_command(command, &config).await,
+    let result = match cli.command {
+        Commands::Image { command } => commands::image::handle_image_command(command, &config)?,
+        Commands::Pdf { command } => commands::pdf::handle_pdf_command(command, &config)?,
+        Commands::Ai { command } => commands::ai::handle_ai_command(command, &config, cli.dry_run)?,
         Commands::Batch {
             config: batch_config,
             jobs,
-        } => commands::batch::handle_batch_command(batch_config, jobs, &config).await,
-        Commands::Completions { shell } => {
-            let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "rtools", &mut std::io::stdout());
-            Ok(())
+        } => commands::batch::handle_batch_command(batch_config, jobs, &config)?,
+        Commands::Config { command } => commands::config::handle_config_command(command, &config)?,
+        Commands::Doctor => doctor_result(&registry, &config)?,
+        Commands::Completions { .. } => {
+            return Err(RToolsError::invalid_input(
+                "Completions support only human output without dry-run",
+            ));
         }
-        Commands::Config { command } => commands::config::handle_config_command(command, &config),
+    };
+    Ok(CliReport::success(
+        result.operation_id,
+        result.result,
+        result.warnings,
+    ))
+}
+
+fn initialize_human_diagnostics(verbose: bool) -> RToolsResult<()> {
+    let default_level = if verbose { "debug" } else { "info" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .map_err(|error| {
+            RToolsError::configuration_invalid(format!("failed to initialize diagnostics: {error}"))
+        })
+}
+
+fn validate_global_dry_run(cli: &Cli) -> RToolsResult<()> {
+    if !cli.dry_run {
+        return Ok(());
+    }
+    if matches!(
+        &cli.command,
+        Commands::Ai {
+            command: AiCommands::Organize {
+                strategy: OrganizeMode::Date,
+                ..
+            } | AiCommands::Rename { .. }
+        }
+    ) {
+        return Ok(());
+    }
+    Err(RToolsError::capability_unavailable(
+        "cli.dry_run",
+        "This operation does not produce a complete dry-run manifest",
+        "Run without --dry-run or use deterministic AI rename/date organization",
+    ))
+}
+
+fn doctor_result(
+    registry: &CapabilityRegistry,
+    config: &rtools_core::AppConfig,
+) -> RToolsResult<commands::CommandResult> {
+    let current_dir = std::env::current_dir()?;
+    let result = DoctorResult {
+        capabilities: registry.list().into_iter().cloned().collect(),
+        configured_limits: config.limits.clone(),
+        writable_directories: vec![
+            check_writable_directory("working_directory", &current_dir),
+            check_writable_directory("temporary_directory", &config.general.temp_dir),
+            check_writable_directory("model_directory", &config.ai.model_dir),
+        ],
+    };
+    Ok(commands::CommandResult::new(
+        "doctor.report",
+        serde_json::to_value(result)?,
+        Vec::new(),
+    ))
+}
+
+fn check_writable_directory(label: &'static str, path: &Path) -> WritableDirectoryCheck {
+    if path.exists() && !path.is_dir() {
+        return WritableDirectoryCheck {
+            label,
+            path: path.to_path_buf(),
+            writable: false,
+            reason: "Configured path exists but is not a directory".to_string(),
+            remediation: Some("Configure a directory path".to_string()),
+        };
+    }
+    let mut existing = path;
+    while !existing.exists() {
+        let Some(parent) = existing.parent() else {
+            return WritableDirectoryCheck {
+                label,
+                path: path.to_path_buf(),
+                writable: false,
+                reason: "No existing ancestor can be checked".to_string(),
+                remediation: Some("Create a writable parent directory".to_string()),
+            };
+        };
+        existing = parent;
+    }
+    let writable = probe_writable(existing);
+    WritableDirectoryCheck {
+        label,
+        path: path.to_path_buf(),
+        writable,
+        reason: if path.exists() {
+            if writable {
+                "Directory accepted a create-and-remove probe".to_string()
+            } else {
+                "Directory rejected a create-and-remove probe".to_string()
+            }
+        } else if writable {
+            format!(
+                "Directory does not exist; writable ancestor {} can create it",
+                existing.display()
+            )
+        } else {
+            format!(
+                "Directory does not exist and ancestor {} is not writable",
+                existing.display()
+            )
+        },
+        remediation: (!writable)
+            .then(|| "Grant write access or configure another directory".to_string()),
+    }
+}
+
+fn probe_writable(directory: &Path) -> bool {
+    use std::fs::OpenOptions;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    for attempt in 0..4_u8 {
+        let probe = directory.join(format!(
+            ".rtools-doctor-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                return std::fs::remove_file(probe).is_ok();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+fn operation_id_hint(command: &Commands) -> &'static str {
+    match command {
+        Commands::Image { command } => match command {
+            ImageCommands::Compress { .. } => "image.compress",
+            ImageCommands::Convert { .. } => "image.convert",
+            ImageCommands::Resize { .. } => "image.resize",
+            ImageCommands::Crop { .. } => "image.crop",
+            ImageCommands::Watermark { text: Some(_), .. } => "image.watermark.text",
+            ImageCommands::Watermark { .. } => "image.watermark.image",
+            ImageCommands::Filter { .. } => "image.filter",
+            ImageCommands::Exif {
+                format: ExifOutputFormat::Human,
+                ..
+            } => "image.exif.human",
+            ImageCommands::Exif {
+                format: ExifOutputFormat::Json,
+                ..
+            } => "image.exif.json",
+            ImageCommands::Ocr { .. } => "image.ocr",
+        },
+        Commands::Pdf { command } => match command {
+            PdfCommands::Merge { .. } => "pdf.merge",
+            PdfCommands::Compress { .. } => "pdf.compress",
+            PdfCommands::Split { .. } => "pdf.split",
+            PdfCommands::Text { .. } => "pdf.text",
+            PdfCommands::ToImage { .. } => "pdf.to_image",
+        },
+        Commands::Ai { command } => match command {
+            AiCommands::Organize { strategy, .. } => match strategy {
+                OrganizeMode::Date => "ai.organize.date",
+                OrganizeMode::Subject => "ai.organize.subject",
+                OrganizeMode::Location => "ai.organize.location",
+                OrganizeMode::Camera => "ai.organize.camera",
+                OrganizeMode::Custom => "ai.organize.custom",
+            },
+            AiCommands::Rename { pattern, .. } if pattern.contains("{subject}") => "ai.rename.ai",
+            AiCommands::Rename { .. } => "ai.rename.deterministic",
+            AiCommands::AltText { .. } => "ai.alt_text",
+            AiCommands::Duplicates { action, .. } => match action {
+                DuplicateMode::Report => "ai.duplicates.report",
+                DuplicateMode::Move => "ai.duplicates.move",
+                DuplicateMode::Delete => "ai.duplicates.delete",
+                DuplicateMode::Symlink => "ai.duplicates.symlink",
+            },
+        },
+        Commands::Batch { .. } => "batch.run",
+        Commands::Completions { .. } => "completions.generate",
+        Commands::Config { command } => match command {
+            ConfigCommands::Show => "config.show",
+            ConfigCommands::Init { .. } => "config.init",
+            ConfigCommands::Validate { .. } => "config.validate",
+        },
+        Commands::Doctor => "doctor.report",
     }
 }

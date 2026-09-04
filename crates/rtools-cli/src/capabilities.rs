@@ -18,6 +18,7 @@ fn register_available(registry: &mut CapabilityRegistry) -> RToolsResult<()> {
         "config.init",
         "config.show",
         "config.validate",
+        "doctor.report",
         "image.compress",
         "image.convert",
         "image.crop",
@@ -236,6 +237,7 @@ pub fn required_operation_ids(command: &Commands) -> RToolsResult<Vec<&'static s
             ConfigCommands::Init { .. } => vec!["config.init"],
             ConfigCommands::Validate { .. } => vec!["config.validate"],
         },
+        Commands::Doctor => vec!["doctor.report"],
     };
     Ok(operation_ids)
 }
@@ -243,7 +245,10 @@ pub fn required_operation_ids(command: &Commands) -> RToolsResult<Vec<&'static s
 #[cfg(test)]
 mod tests {
     use super::{cli_capability_registry, required_operation_ids};
-    use crate::{Commands, DuplicateMode, ExifOutputFormat, ImageCommands, OrganizeMode};
+    use crate::{
+        Commands, DuplicateMode, ExifOutputFormat, ImageCommands, OrganizeMode,
+        WatermarkPositionArg,
+    };
     use rtools_core::{CapabilityState, ErrorCode};
 
     #[test]
@@ -276,6 +281,7 @@ mod tests {
                 ("config.init", CapabilityState::Available),
                 ("config.show", CapabilityState::Available),
                 ("config.validate", CapabilityState::Available),
+                ("doctor.report", CapabilityState::Available),
                 ("image.compress", CapabilityState::Available),
                 ("image.convert", CapabilityState::Available),
                 ("image.crop", CapabilityState::Available),
@@ -338,7 +344,7 @@ mod tests {
                 input: vec!["input.png".into()],
                 text: Some("copyright".to_string()),
                 image: None,
-                position: "bottom-right".to_string(),
+                position: WatermarkPositionArg::BottomRight,
                 opacity: 0.5,
                 output: None,
             },
@@ -348,7 +354,7 @@ mod tests {
                 input: vec!["input.png".into()],
                 text: None,
                 image: Some("logo.png".into()),
-                position: "bottom-right".to_string(),
+                position: WatermarkPositionArg::BottomRight,
                 opacity: 0.5,
                 output: None,
             },
@@ -488,10 +494,14 @@ mod tests {
     }
 
     #[test]
-    fn cli_help_does_not_recommend_a_nonexistent_doctor_command() {
+    fn doctor_command_is_registered_and_advertised_in_help() {
         use clap::CommandFactory as _;
 
         let help = crate::Cli::command().render_long_help().to_string();
-        assert!(!help.contains("rtools doctor"));
+        assert_eq!(
+            required_operation_ids(&Commands::Doctor).unwrap(),
+            ["doctor.report"]
+        );
+        assert!(help.contains("doctor"));
     }
 }

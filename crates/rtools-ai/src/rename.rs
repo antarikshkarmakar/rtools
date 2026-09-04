@@ -1,6 +1,7 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// AI rename configuration
@@ -45,6 +46,7 @@ impl Processor for RenameProcessor {
         config: RenameConfig,
     ) -> RToolsResult<Vec<FileOutput>> {
         let mut outputs = Vec::new();
+        let mut planned_destinations = HashSet::new();
 
         for (idx, input) in inputs.iter().enumerate() {
             let path = input
@@ -66,17 +68,33 @@ impl Processor for RenameProcessor {
             let mut new_path = output_dir.join(&new_name);
 
             // Collision detection: append numeric suffix if file exists
-            if new_path.exists() && new_path != *path {
+            if (new_path.exists() && new_path != *path) || planned_destinations.contains(&new_path)
+            {
                 let stem = new_path.file_stem().unwrap_or_default().to_string_lossy();
                 let ext = new_path.extension().unwrap_or_default().to_string_lossy();
+                let mut resolved = None;
                 for i in 1..1000 {
-                    let candidate = output_dir.join(format!("{stem}_{i}.{ext}"));
-                    if !candidate.exists() || candidate == *path {
-                        new_path = candidate;
+                    let candidate_name = if ext.is_empty() {
+                        format!("{stem}_{i}")
+                    } else {
+                        format!("{stem}_{i}.{ext}")
+                    };
+                    let candidate = output_dir.join(candidate_name);
+                    if (!candidate.exists() || candidate == *path)
+                        && !planned_destinations.contains(&candidate)
+                    {
+                        resolved = Some(candidate);
                         break;
                     }
                 }
+                new_path = resolved.ok_or_else(|| {
+                    RToolsError::output_exists(format!(
+                        "No collision-free rename destination is available for {}",
+                        path.display()
+                    ))
+                })?;
             }
+            planned_destinations.insert(new_path.clone());
 
             if !config.dry_run && new_path != *path {
                 std::fs::rename(path, &new_path)?;

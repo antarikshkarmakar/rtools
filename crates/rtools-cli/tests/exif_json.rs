@@ -21,6 +21,7 @@ fn multiple_exif_inputs_emit_one_machine_parseable_json_document() {
         .expect("second PNG");
 
     let output = Command::new(env!("CARGO_BIN_EXE_rtools"))
+        .args(["--output-format", "json"])
         .arg("image")
         .arg("exif")
         .arg("--input")
@@ -42,7 +43,9 @@ fn multiple_exif_inputs_emit_one_machine_parseable_json_document() {
             String::from_utf8_lossy(&output.stdout)
         )
     });
-    let results = document
+    assert_eq!(document["operation_id"], "image.exif.json");
+    assert_eq!(document["status"], "success");
+    let results = document["result"]
         .get("results")
         .and_then(Value::as_array)
         .expect("JSON contract must contain a results array");
@@ -62,6 +65,7 @@ fn exif_json_failure_emits_no_partial_document() {
         .expect("valid PNG");
 
     let output = Command::new(env!("CARGO_BIN_EXE_rtools"))
+        .args(["--output-format", "json"])
         .arg("image")
         .arg("exif")
         .arg("--input")
@@ -73,9 +77,8 @@ fn exif_json_failure_emits_no_partial_document() {
         .expect("CLI must run");
 
     assert!(!output.status.success());
-    assert!(
-        output.stdout.is_empty(),
-        "stdout must contain no partial JSON: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "failure");
+    assert_eq!(report["result"], Value::Null);
+    assert_eq!(report["failures"].as_array().unwrap().len(), 1);
 }
