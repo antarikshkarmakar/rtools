@@ -422,6 +422,188 @@ fn rename_non_dry_preserves_regular_file_identity_and_modified_time() {
 
 #[cfg(unix)]
 #[test]
+fn organize_rejects_ambiguous_case_only_output_directories_before_copying() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source").join("photo.jpg");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"source").unwrap();
+    let exact_output_dir = temp.path().join("out");
+    let alias_output_dir = temp.path().join("Out");
+    std::fs::create_dir_all(&exact_output_dir).unwrap();
+
+    let planned = OrganizeProcessor
+        .process(
+            vec![FileInput::from_path(source.clone())],
+            OrganizeConfig {
+                output_dir: exact_output_dir.clone(),
+                strategy: OrganizeStrategy::ByDate,
+                by_date: true,
+                by_subject: false,
+                dry_run: true,
+            },
+        )
+        .unwrap();
+    let alias_destination = alias_output_dir.join(
+        destination(&planned[0])
+            .strip_prefix(&exact_output_dir)
+            .unwrap(),
+    );
+    std::fs::create_dir_all(alias_destination.parent().unwrap()).unwrap();
+    std::fs::write(&alias_destination, b"occupied").unwrap();
+
+    let error = OrganizeProcessor
+        .process(
+            vec![FileInput::from_path(source.clone())],
+            OrganizeConfig {
+                output_dir: exact_output_dir.clone(),
+                strategy: OrganizeStrategy::ByDate,
+                by_date: true,
+                by_subject: false,
+                dry_run: false,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    assert_eq!(std::fs::read(&alias_destination).unwrap(), b"occupied");
+    assert_eq!(std::fs::read_dir(exact_output_dir).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn rename_rejects_ambiguous_case_only_output_directories_before_moving() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source").join("photo.jpg");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"source").unwrap();
+    let exact_output_dir = temp.path().join("out");
+    let alias_output_dir = temp.path().join("Out");
+    std::fs::create_dir_all(&exact_output_dir).unwrap();
+    std::fs::create_dir_all(&alias_output_dir).unwrap();
+    let alias_destination = alias_output_dir.join("same.jpg");
+    std::fs::write(&alias_destination, b"occupied").unwrap();
+
+    let error = RenameProcessor
+        .process(
+            vec![FileInput::from_path(source.clone())],
+            RenameConfig {
+                pattern: "same".to_string(),
+                output_dir: Some(exact_output_dir.clone()),
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    assert_eq!(std::fs::read(&alias_destination).unwrap(), b"occupied");
+    assert_eq!(std::fs::read_dir(exact_output_dir).unwrap().count(), 0);
+}
+
+#[test]
+fn rename_rejects_relative_and_absolute_spellings_of_one_destination_before_moving() {
+    let temp = tempfile::tempdir_in(".").unwrap();
+    let relative_dir = std::path::PathBuf::from(temp.path().file_name().unwrap());
+    let absolute_dir = std::env::current_dir().unwrap().join(&relative_dir);
+    let relative_source = relative_dir.join("first.jpg");
+    let absolute_source = absolute_dir.join("second.jpg");
+    std::fs::write(&relative_source, b"first").unwrap();
+    std::fs::write(&absolute_source, b"second").unwrap();
+    let destination = relative_dir.join("same.jpg");
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(relative_source.clone()),
+                FileInput::from_path(absolute_source.clone()),
+            ],
+            RenameConfig {
+                pattern: "same".to_string(),
+                output_dir: None,
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(relative_source).unwrap(), b"first");
+    assert_eq!(std::fs::read(absolute_source).unwrap(), b"second");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rename_dry_run_rejects_sigma_and_final_sigma_destination_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first").join("Σ.jpg");
+    let second = temp.path().join("second").join("ς.jpg");
+    std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+    let output_dir = temp.path().join("out");
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(first.clone()),
+                FileInput::from_path(second.clone()),
+            ],
+            RenameConfig {
+                pattern: "{name}".to_string(),
+                output_dir: Some(output_dir.clone()),
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: true,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(first).unwrap(), b"first");
+    assert_eq!(std::fs::read(second).unwrap(), b"second");
+    assert!(!output_dir.exists());
+}
+
+#[test]
+fn rename_dry_run_rejects_expanding_unicode_destination_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first").join("ß.jpg");
+    let second = temp.path().join("second").join("ss.jpg");
+    std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+    let output_dir = temp.path().join("out");
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(first.clone()),
+                FileInput::from_path(second.clone()),
+            ],
+            RenameConfig {
+                pattern: "{name}".to_string(),
+                output_dir: Some(output_dir.clone()),
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: true,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(first).unwrap(), b"first");
+    assert_eq!(std::fs::read(second).unwrap(), b"second");
+    assert!(!output_dir.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn rename_rejects_non_unicode_destination_names_without_lossy_normalization() {
     use std::os::unix::ffi::OsStringExt;
 

@@ -283,3 +283,92 @@ This is an incomplete refactor state, not a reviewed or accepted design. Continu
   normalization and Unicode lowercase comparison, not platform-specific Unicode
   normalization (for example, filesystem-specific composed/decomposed equivalence),
   so such platform rules remain a conservative future audit area.
+
+## Fix round 3/5: portable identity anchoring and Unicode aliases
+
+### RED-GREEN record
+
+1. **Exact intermediate directory aliases.** Added real-filesystem organize and
+   rename regressions with both `out/` and `Out/` present. Each test puts the
+   occupied final artifact below `Out/` while requesting `out/`. RED: both
+   processors returned successful outputs below the exact `out/` spelling and would
+   have mutated. GREEN: both return `OUTPUT_EXISTS` before mutation; source and
+   occupied bytes are unchanged and `out/` remains empty.
+2. **Anchored destination keys and root clamping.** Added two injected-base unit
+   regressions: a relative `out/../same.jpg` key equals its absolute spelling, and
+   `/../../same.jpg` equals `/same.jpg`. Also added a non-dry rename regression that
+   passes one source through a relative spelling and another through its absolute
+   spelling while both plan `same.jpg`. RED: the helper tests were compile-RED until
+   the injected normalization seam existed; the processor reached the second
+   no-replace publication after moving the first source, proving its planner had
+   treated the two spellings as distinct. GREEN: both unit tests and the processor
+   test return the same portable identity before any source moves.
+3. **Unicode caseless aliases.** Added dry-run rename regressions for `Σ.jpg` versus
+   `ς.jpg`, and for the expanding mapping `ß.jpg` versus `ss.jpg`. RED: each pair
+   produced two successful plans. GREEN: each returns `OUTPUT_EXISTS`, preserves both
+   source byte strings, and creates no output directory.
+
+### Design decisions
+
+- Every existing normal path component is now scanned for all Unicode-normalizable
+  sibling names even if its exact spelling exists. A differing case-equivalent
+  sibling is treated as an ambiguous portable identity and rejected before planning
+  can follow the exact directory.
+- `PortableDestinationKey` anchors relative paths to `current_dir` before lexical
+  normalization. Its private injected-base helper makes the pure key tests isolated
+  from process-wide current-directory mutation. Parent traversal pops a normal
+  component and otherwise clamps at a root rather than retaining leading `..`.
+- Components use Rust's deterministic Unicode `to_uppercase` transform as the
+  conservative caseless key. It covers sigma/final-sigma and expanding `ß`/`SS`
+  mappings required here without adding a dependency. Non-Unicode components remain
+  fail-closed and are never converted with a lossy string representation.
+- The approved copy publication and hard-link no-replace rename paths were not
+  changed. They remain the final filesystem-enforced defenses after portable
+  preflight.
+
+### Changed files in this fix round
+
+- `crates/rtools-ai/src/destination.rs`
+- `crates/rtools-ai/tests/dry_run.rs`
+
+### Verification (fresh after final formatting and Clippy correction)
+
+- RED commands:
+  - `cargo test -p rtools-ai --test dry_run ambiguous_case_only_output_directories --locked`
+    — 0 passed, 2 failed before the directory scan correction.
+  - `cargo test -p rtools-ai --test dry_run sigma_and_final --locked` and
+    `cargo test -p rtools-ai --test dry_run unicode_destination_aliases --locked`
+    — each failed before the Unicode key correction.
+- Focused GREEN:
+  - `cargo test -p rtools-ai --lib destination::tests --locked` — 2 passed, 0
+    failed.
+  - `cargo test -p rtools-ai --test dry_run --locked` — 18 passed, 0 failed.
+  - `cargo test -p rtools-cli --test cli_contract --locked` — 15 passed, 0 failed.
+  - `cargo test -p rtools-cli --locked` — 43 passed, 0 failed (22 unit, 15
+    contract, 2 EXIF JSON, 4 image-warning).
+- Original reproductions, with `test $? -ne 0` after each expected failure:
+  - `cargo run -q -p rtools-cli -- pdf text --input missing.pdf` — nonzero and
+    `CAPABILITY_UNAVAILABLE`.
+  - `cargo run -q -p rtools-cli -- config validate --config /definitely/missing.toml`
+    — nonzero and `CONFIGURATION_INVALID`.
+  - `cargo run -q -p rtools-cli -- --output-format json doctor | jq -e '.status'`
+    — emitted one JSON report and jq succeeded.
+- `cargo test --workspace --all-targets --locked` — 202 passed, 0 failed.
+- `cargo fmt --all -- --check` — passed after formatting the two new vector
+  literals.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — passed after the root-clamping branch was changed from a one-arm `match` to its
+  equivalent `if let` form.
+- `cargo check -p rtools-wasm --target wasm32-unknown-unknown --locked` — passed.
+- `cargo deny check` — passed; advisories, bans, licenses, and sources were `ok`.
+  Existing duplicate-dependency and unmatched-ISC warnings remain.
+
+### Residual filesystem limits
+
+- The uppercase key is intentionally conservative rather than a platform-specific
+  Unicode normalization implementation. Filesystem-specific composed/decomposed
+  equivalence remains outside this portable preflight; non-Unicode paths still fail
+  closed instead of being merged lossily.
+- Directory scans and portable planning are preflight checks. The already-approved
+  no-replace copy publication and hard-link rename operations remain necessary final
+  defenses against races and aliases introduced after preflight.
