@@ -145,12 +145,19 @@ artifact.
   adapters use that safe default. Rust callers may deliberately select
   `OutputPolicy::UniqueName` or `OutputPolicy::Overwrite`; overwrite is never
   inferred from the presence of an output path.
+- Filesystem image outputs and `rtools config init --output` require every
+  parent directory to exist already. Create those directories from a trusted
+  path before invoking rTools; the writer will not create a missing parent.
+  This requirement does not change REST multipart request handling.
 - PDF output parents must already exist. The CLI requires an existing explicit
   directory for `pdf split`; Rust callers using `PdfSplitConfig::default()`
   must create its `output/` directory from a trusted path before processing.
 - Writing image operations use the verified drop-all metadata policy. Metadata
   preservation and GPS-only removal are unavailable and fail before output
-  reservation. EXIF inspection is read-only.
+  reservation. EXIF inspection is read-only. The public Rust `quality` fields
+  on resize, crop, filter, and watermark currently accept only the legacy
+  default `85`; other values return `INVALID_INPUT`. `ConvertConfig::output_dir`
+  is unsupported and must remain `None`; use its explicit `output` field.
 - `ResourceLimits` defines byte, decoded-pixel, PDF-page, batch-item, and
   duration ceilings. Milestone 1 enforces input-byte and decoded-pixel limits
   on image decode; the other typed ceilings must not be read as claims that an

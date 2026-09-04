@@ -92,6 +92,11 @@ pub fn verify_drop_all_artifact(path: &Path, limits: &ResourceLimits) -> RToolsR
     }
 }
 
+pub(crate) fn validate_drop_all_artifact(path: &Path, limits: &ResourceLimits) -> RToolsResult<()> {
+    crate::format::validate_image_artifact(path, limits)?;
+    verify_drop_all_artifact(path, limits)
+}
+
 fn is_structural_tiff_field(field: &exif::Field) -> bool {
     field.ifd_num == exif::In::PRIMARY
         && field.tag.context() == exif::Context::Tiff
@@ -161,9 +166,21 @@ impl Processor for MetadataProcessor {
             .ok_or_else(|| RToolsError::invalid_input("Metadata requires a file path input"))?;
 
         let img = crate::format::decode_bounded(path, &config.limits)?.image;
-        let width = img.width();
-        let height = img.height();
-        let metadata = std::fs::metadata(path)?;
+        let width = if config.include_dimensions {
+            img.width()
+        } else {
+            0
+        };
+        let height = if config.include_dimensions {
+            img.height()
+        } else {
+            0
+        };
+        let file_size = if config.include_file_info {
+            std::fs::metadata(path)?.len()
+        } else {
+            0
+        };
 
         let format = input
             .format
@@ -172,9 +189,7 @@ impl Processor for MetadataProcessor {
 
         let exif_data = if config.include_exif {
             let exif_proc = crate::exif::ExifProcessor;
-            exif_proc
-                .process(input, crate::exif::ExifConfig::default())
-                .ok()
+            Some(exif_proc.process(input, crate::exif::ExifConfig::default())?)
         } else {
             None
         };
@@ -183,8 +198,10 @@ impl Processor for MetadataProcessor {
             width,
             height,
             format,
-            file_size: metadata.len(),
-            color_space: Some(format!("{:?}", img.color())),
+            file_size,
+            color_space: config
+                .include_file_info
+                .then(|| format!("{:?}", img.color())),
             bit_depth: None,
             exif: exif_data,
         })
@@ -201,7 +218,57 @@ impl Processor for MetadataProcessor {
 
 #[cfg(test)]
 mod tests {
-    use super::is_structural_tiff_field;
+    use super::{is_structural_tiff_field, validate_drop_all_artifact};
+    use rtools_core::{ErrorCode, OutputPolicy, PendingOutput, ResourceLimits};
+
+    fn write_jpeg_with_orientation(path: &std::path::Path) {
+        image::RgbImage::from_pixel(2, 2, image::Rgb([20, 40, 60]))
+            .save(path)
+            .unwrap();
+        let jpeg = std::fs::read(path).unwrap();
+        let mut tiff = b"II\x2a\0\x08\0\0\0".to_vec();
+        tiff.extend_from_slice(&1_u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0112_u16.to_le_bytes());
+        tiff.extend_from_slice(&3_u16.to_le_bytes());
+        tiff.extend_from_slice(&1_u32.to_le_bytes());
+        tiff.extend_from_slice(&[6, 0, 0, 0]);
+        tiff.extend_from_slice(&0_u32.to_le_bytes());
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend_from_slice(&tiff);
+        let mut encoded = Vec::with_capacity(jpeg.len() + app1.len() + 4);
+        encoded.extend_from_slice(&jpeg[..2]);
+        encoded.extend_from_slice(b"\xff\xe1");
+        encoded.extend_from_slice(&u16::try_from(app1.len() + 2).unwrap().to_be_bytes());
+        encoded.extend_from_slice(&app1);
+        encoded.extend_from_slice(&jpeg[2..]);
+        std::fs::write(path, encoded).unwrap();
+    }
+
+    #[test]
+    fn drop_all_validation_failure_prevents_pending_output_publication() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("metadata-bearing.jpg");
+        let output = tmp.path().join("must-not-publish.jpg");
+        write_jpeg_with_orientation(&source);
+        let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+        let temporary = pending.temporary_path().to_owned();
+        std::fs::copy(&source, &temporary).unwrap();
+
+        let error = pending
+            .commit(|artifact| validate_drop_all_artifact(artifact, &ResourceLimits::default()))
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+        assert!(!output.exists());
+        assert!(!temporary.exists());
+        let leftovers = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".rtools-"))
+            .collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+    }
 
     #[test]
     fn tiff_allowlist_is_primary_ifd_only_and_rejects_non_structural_tags() {

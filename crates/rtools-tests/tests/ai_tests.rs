@@ -2,7 +2,7 @@ use rtools_ai::{
     duplicates::{DuplicateAction, DuplicatesConfig, DuplicatesProcessor, HashAlgorithm},
     rename::{RenameConfig, RenameProcessor},
 };
-use rtools_core::{error::RToolsError, FileInput, Processor};
+use rtools_core::{error::RToolsError, FileInput, Processor, ResourceLimits};
 use tempfile::TempDir;
 
 /// Create a test PNG filled with a deterministic pattern seeded from the file
@@ -53,6 +53,40 @@ fn create_test_images(dir: &std::path::Path, count: usize) -> Vec<std::path::Pat
     (0..count)
         .map(|i| create_test_image(dir, &format!("img_{i}.png"), 100, 100))
         .collect()
+}
+
+fn crc32(bytes: &[u8]) -> [u8; 4] {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    (!crc).to_be_bytes()
+}
+
+fn write_png_header(path: &std::path::Path, width: u32, height: u32) {
+    let mut header = Vec::with_capacity(58);
+    header.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    header.extend_from_slice(&13_u32.to_be_bytes());
+    header.extend_from_slice(b"IHDR");
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    header.extend_from_slice(&crc32(&header[12..]));
+    header.extend_from_slice(&1_u32.to_be_bytes());
+    header.extend_from_slice(b"IDAT");
+    header.push(0);
+    header.extend_from_slice(&crc32(b"IDAT\0"));
+    header.extend_from_slice(&0_u32.to_be_bytes());
+    header.extend_from_slice(b"IEND");
+    header.extend_from_slice(&crc32(b"IEND"));
+    std::fs::write(path, header).unwrap();
 }
 
 #[test]
@@ -129,6 +163,7 @@ fn test_find_duplicates_identical() {
         algorithm: HashAlgorithm::Perceptual,
         action: DuplicateAction::Report,
         dry_run: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = DuplicatesProcessor;
@@ -151,6 +186,7 @@ fn test_find_duplicates_different() {
         algorithm: HashAlgorithm::Perceptual,
         action: DuplicateAction::Report,
         dry_run: false,
+        limits: ResourceLimits::default(),
     };
 
     let processor = DuplicatesProcessor;
@@ -239,6 +275,7 @@ fn duplicate_threshold_half_distance_rounds_up_to_include_one_bit_hash() {
                 algorithm: HashAlgorithm::Difference,
                 action: DuplicateAction::Report,
                 dry_run: true,
+                limits: ResourceLimits::default(),
             },
         )
         .unwrap();
@@ -249,4 +286,49 @@ fn duplicate_threshold_half_distance_rounds_up_to_include_one_bit_hash() {
         "a half-distance must round up to one"
     );
     assert_eq!(result.total_duplicates, 1);
+}
+
+#[test]
+fn duplicate_analysis_rejects_declared_canvas_before_decode_allocation() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("declared-canvas.png");
+    write_png_header(&input, 64, 64);
+    let mut value = serde_json::to_value(DuplicatesConfig::default()).unwrap();
+    value["limits"] = serde_json::to_value(rtools_core::ResourceLimits {
+        max_decoded_pixels: 4,
+        ..rtools_core::ResourceLimits::default()
+    })
+    .unwrap();
+    let config = serde_json::from_value(value).unwrap();
+
+    let error = DuplicatesProcessor
+        .process(vec![FileInput::from_path(input)], config)
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            RToolsError::ResourceLimitExceeded {
+                resource: "decoded_pixels",
+                actual: 4_096,
+                limit: 4,
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn duplicate_threshold_nan_is_invalid_before_input_access() {
+    let error = DuplicatesProcessor
+        .process(
+            vec![FileInput::from_path("missing-duplicate.png".into())],
+            DuplicatesConfig {
+                threshold: f64::NAN,
+                ..DuplicatesConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), rtools_core::ErrorCode::InvalidInput);
 }

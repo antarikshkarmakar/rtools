@@ -11,12 +11,12 @@ use std::time::Instant;
 pub struct ConvertConfig {
     /// Target output format
     pub target_format: ImageFormat,
-    /// Output path (None = auto-generate)
+    /// Output path (None = auto-generate); its parent must exist.
     pub output: Option<PathBuf>,
     /// Collision behavior for the final output path.
     #[serde(default)]
     pub output_policy: OutputPolicy,
-    /// Output directory (for batch operations)
+    /// Legacy batch output directory; currently unsupported and must be None.
     pub output_dir: Option<PathBuf>,
     /// Quality for lossy formats (0-100)
     pub quality: u8,
@@ -94,9 +94,6 @@ impl Processor for ConvertProcessor {
                 .join(file_name),
         };
 
-        if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let pending = PendingOutput::new(&output_path, config.output_policy)?;
 
         // Log alpha channel warning for JPEG targets
@@ -203,8 +200,7 @@ impl Processor for ConvertProcessor {
         }
 
         let output_path = pending.commit(|artifact| {
-            crate::format::validate_image_artifact(artifact)?;
-            crate::metadata::verify_drop_all_artifact(artifact, &config.limits)
+            crate::metadata::validate_drop_all_artifact(artifact, &config.limits)
         })?;
 
         let elapsed = start.elapsed();
@@ -228,6 +224,11 @@ impl Processor for ConvertProcessor {
 
     fn validate_config(&self, config: &ConvertConfig) -> RToolsResult<()> {
         crate::metadata::MetadataPolicy::from_flags(config.preserve_metadata, config.strip_gps)?;
+        if config.output_dir.is_some() {
+            return Err(RToolsError::invalid_input(
+                "Convert output_dir is unsupported; specify output instead",
+            ));
+        }
         if config.quality > 100 {
             return Err(RToolsError::invalid_input(
                 "Quality must be between 0 and 100",

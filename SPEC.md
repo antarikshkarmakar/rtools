@@ -248,12 +248,17 @@ rtools [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 rtools --output-format json doctor
 
 # Available image commands
+# Explicit output parents must already exist; rTools does not create them.
 rtools image compress --input photo.jpg --output compressed.jpg --quality 85
 rtools image convert --format webp --input photo.jpg --output converted.webp
 rtools image resize --input photo.jpg --output resized.jpg --width 1920 --maintain-aspect
 rtools image crop --input photo.jpg --output cropped.jpg --ratio 16:9 --gravity center
 rtools image watermark --input photo.jpg --image mark.png --output marked.jpg --position bottom-right --opacity 0.5
 rtools image filter --input photo.jpg --output filtered.jpg --preset kodak-portra-400
+
+# Config initialization has the same existing-parent requirement.
+mkdir -p config
+rtools config init --output config/rtools.toml
 
 # Experimental deterministic operations; --dry-run writes nothing
 rtools --dry-run ai organize --strategy date --input photos/ --output organized/

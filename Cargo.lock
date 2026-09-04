@@ -2367,6 +2367,7 @@ dependencies = [
  "icu_casemap",
  "image",
  "rtools-core",
+ "rtools-image",
  "serde",
  "tempfile",
 ]

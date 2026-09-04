@@ -200,7 +200,7 @@ pub async fn alt_text(
 }
 
 pub async fn duplicates(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<AiResponse>, (StatusCode, String)> {
     let temp_dir =
@@ -229,6 +229,7 @@ pub async fn duplicates(
         algorithm: rtools_ai::duplicates::HashAlgorithm::Perceptual,
         action: rtools_ai::duplicates::DuplicateAction::Report,
         dry_run: false,
+        limits: state.config.limits.clone(),
     };
 
     let processor = rtools_ai::DuplicatesProcessor;

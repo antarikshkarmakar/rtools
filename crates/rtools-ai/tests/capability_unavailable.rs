@@ -1,7 +1,7 @@
 use rtools_ai::{AltTextConfig, AltTextProcessor, OcrConfig, OcrProcessor};
 use rtools_core::{ErrorCode, FileInput, Processor, RToolsError};
 use std::path::PathBuf;
-use {chrono as _, icu_casemap as _, image as _, serde as _, tempfile as _};
+use {chrono as _, icu_casemap as _, image as _, rtools_image as _, serde as _, tempfile as _};
 
 #[test]
 fn alt_text_returns_capability_error_instead_of_filename_caption() {

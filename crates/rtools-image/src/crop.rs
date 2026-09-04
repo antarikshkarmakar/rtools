@@ -61,12 +61,12 @@ pub enum Gravity {
 pub struct CropConfig {
     /// Crop region
     pub region: CropRegion,
-    /// Output path (None = overwrite)
+    /// Output path (None = generated alongside input); its parent must exist.
     pub output: Option<PathBuf>,
     /// Collision behavior for the final output path.
     #[serde(default)]
     pub output_policy: OutputPolicy,
-    /// Output quality for lossy formats (0-100)
+    /// Legacy output quality; currently only the default value 85 is supported.
     pub quality: u8,
     /// Resource limits enforced before image decoding.
     #[serde(default)]
@@ -143,14 +143,17 @@ impl Processor for CropProcessor {
                 width,
                 height,
             } => {
-                if *x >= orig_width || *y >= orig_height || *width == 0 || *height == 0 {
+                let wholly_in_bounds = x
+                    .checked_add(*width)
+                    .is_some_and(|right| right <= orig_width)
+                    && y.checked_add(*height)
+                        .is_some_and(|bottom| bottom <= orig_height);
+                if *width == 0 || *height == 0 || !wholly_in_bounds {
                     return Err(RToolsError::invalid_input(
                         "Crop region outside image bounds",
                     ));
                 }
-                let cw = (*width).min(orig_width.saturating_sub(*x));
-                let ch = (*height).min(orig_height.saturating_sub(*y));
-                (*x, *y, cw, ch)
+                (*x, *y, *width, *height)
             }
             CropRegion::AspectRatio { ratio, gravity } => {
                 calculate_aspect_crop(orig_width, orig_height, ratio, gravity)
@@ -199,9 +202,6 @@ impl Processor for CropProcessor {
                 .join(file_name),
         };
 
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let image_format = image::ImageFormat::from_path(&output)
             .map_err(|error| RToolsError::image(format!("Invalid crop output format: {error}")))?;
         let pending = PendingOutput::new(&output, config.output_policy)?;
@@ -209,16 +209,17 @@ impl Processor for CropProcessor {
         cropped
             .save_with_format(pending.temporary_path(), image_format)
             .map_err(|e| RToolsError::image(format!("Failed to save cropped image: {e}")))?;
-        let output = pending.commit(crate::format::validate_image_artifact)?;
+        let output = pending.commit(|artifact| {
+            crate::metadata::validate_drop_all_artifact(artifact, &config.limits)
+        })?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
 
-        let format = input
-            .format
-            .or_else(|| rtools_core::ImageFormat::from_path(path))
-            .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
+        let format = rtools_core::ImageFormat::from_path(&output).ok_or_else(|| {
+            RToolsError::unsupported_format("Cannot determine committed crop output format")
+        })?;
 
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
@@ -236,6 +237,11 @@ impl Processor for CropProcessor {
     }
 
     fn validate_config(&self, config: &CropConfig) -> RToolsResult<()> {
+        if config.quality != 85 {
+            return Err(RToolsError::invalid_input(
+                "Crop quality is unsupported; use the legacy value 85",
+            ));
+        }
         match &config.region {
             CropRegion::Percentage {
                 x,
@@ -243,18 +249,18 @@ impl Processor for CropProcessor {
                 width,
                 height,
             } => {
-                if *x < 0.0 || *x > 100.0 {
+                if !x.is_finite() || *x < 0.0 || *x > 100.0 {
                     return Err(RToolsError::invalid_input("Percentage x must be 0.0-100.0"));
                 }
-                if *y < 0.0 || *y > 100.0 {
+                if !y.is_finite() || *y < 0.0 || *y > 100.0 {
                     return Err(RToolsError::invalid_input("Percentage y must be 0.0-100.0"));
                 }
-                if *width <= 0.0 || *width > 100.0 {
+                if !width.is_finite() || *width <= 0.0 || *width > 100.0 {
                     return Err(RToolsError::invalid_input(
                         "Percentage width must be 0.0-100.0",
                     ));
                 }
-                if *height <= 0.0 || *height > 100.0 {
+                if !height.is_finite() || *height <= 0.0 || *height > 100.0 {
                     return Err(RToolsError::invalid_input(
                         "Percentage height must be 0.0-100.0",
                     ));
@@ -268,7 +274,7 @@ impl Processor for CropProcessor {
             CropRegion::AspectRatio {
                 ratio: AspectRatio::Custom(w, h),
                 ..
-            } if (*w <= 0.0 || *h <= 0.0) => {
+            } if (!w.is_finite() || !h.is_finite() || *w <= 0.0 || *h <= 0.0) => {
                 return Err(RToolsError::invalid_input(
                     "Custom aspect ratio dimensions must be positive",
                 ));

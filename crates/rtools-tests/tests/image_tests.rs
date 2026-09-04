@@ -9,7 +9,7 @@ use rtools_image::{
     ResizeConfig, ResizeProcessor, WatermarkConfig, WatermarkProcessor,
 };
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn decode_fixture(dir: &std::path::Path, name: &str, encoded: &str) -> PathBuf {
@@ -19,6 +19,22 @@ fn decode_fixture(dir: &std::path::Path, name: &str, encoded: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
     path
+}
+
+#[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::windows::fs::symlink_dir(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory symlink {} -> {}: {error}. Enable Windows Developer Mode or grant SeCreateSymbolicLinkPrivilege so this safety regression can run",
+            link.display(),
+            target.display()
+        )
+    });
 }
 
 #[test]
@@ -540,6 +556,84 @@ fn compress_and_convert_drop_real_gps_and_orientation_metadata_before_commit() {
 }
 
 #[test]
+fn resize_crop_filter_and_watermark_drop_real_metadata_before_commit() {
+    let tmp = TempDir::new().unwrap();
+    let input = decode_fixture(
+        tmp.path(),
+        "all-writers-gps-orientation.jpg",
+        include_str!("../fixtures/images/gps-orientation-6.jpg.b64"),
+    );
+    let source = ExifProcessor
+        .process(FileInput::from_path(input.clone()), ExifConfig::default())
+        .unwrap();
+    assert_eq!(source.orientation, Some(6));
+    assert!(source.gps_latitude.is_some());
+    assert!(source.gps_longitude.is_some());
+    let watermark = create_solid_png(tmp.path(), "drop-all-overlay.png", 1, 1, [255, 0, 0, 255]);
+    let outputs = [
+        tmp.path().join("drop-all-resize.png"),
+        tmp.path().join("drop-all-crop.png"),
+        tmp.path().join("drop-all-filter.png"),
+        tmp.path().join("drop-all-watermark.png"),
+    ];
+
+    let results = [
+        ResizeProcessor.process(
+            FileInput::from_path(input.clone()),
+            ResizeConfig {
+                width: Some(8),
+                output: Some(outputs[0].clone()),
+                ..ResizeConfig::default()
+            },
+        ),
+        CropProcessor.process(
+            FileInput::from_path(input.clone()),
+            CropConfig {
+                region: CropRegion::Pixels {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 8,
+                },
+                output: Some(outputs[1].clone()),
+                ..CropConfig::default()
+            },
+        ),
+        FilterProcessor.process(
+            FileInput::from_path(input.clone()),
+            FilterConfig {
+                output: Some(outputs[2].clone()),
+                ..FilterConfig::default()
+            },
+        ),
+        WatermarkProcessor.process(
+            FileInput::from_path(input),
+            WatermarkConfig {
+                watermark: WatermarkType::Image {
+                    image_path: watermark,
+                    scale: 1.0,
+                },
+                position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                output: Some(outputs[3].clone()),
+                ..WatermarkConfig::default()
+            },
+        ),
+    ];
+
+    for (output, result) in outputs.iter().zip(results) {
+        result.unwrap();
+        rtools_image::metadata::verify_drop_all_artifact(output, &ResourceLimits::default())
+            .unwrap();
+        let exif = ExifProcessor
+            .process(FileInput::from_path(output.clone()), ExifConfig::default())
+            .unwrap();
+        assert!(exif.orientation.is_none(), "{}", output.display());
+        assert!(exif.gps_latitude.is_none(), "{}", output.display());
+        assert!(exif.gps_longitude.is_none(), "{}", output.display());
+    }
+}
+
+#[test]
 fn converting_real_gps_and_orientation_jpeg_to_tiff_keeps_only_structural_fields() {
     let tmp = TempDir::new().unwrap();
     let input = decode_fixture(
@@ -846,6 +940,82 @@ fn rejects_decoder_allocation_over_limit_before_creating_output() {
 }
 
 #[test]
+fn resize_crop_filter_and_watermark_reject_oversized_artifacts_before_publication() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_solid_png(tmp.path(), "small-source.png", 16, 16, [20, 40, 60, 255]);
+    let watermark = create_solid_png(tmp.path(), "small-watermark.png", 1, 1, [255, 0, 0, 255]);
+    let input_limit = std::fs::metadata(&input)
+        .unwrap()
+        .len()
+        .max(std::fs::metadata(&watermark).unwrap().len());
+    let limits = ResourceLimits {
+        max_input_bytes: input_limit,
+        ..ResourceLimits::default()
+    };
+    let outputs = [
+        tmp.path().join("bounded-resize.bmp"),
+        tmp.path().join("bounded-crop.bmp"),
+        tmp.path().join("bounded-filter.bmp"),
+        tmp.path().join("bounded-watermark.bmp"),
+    ];
+    let cases = [
+        ResizeProcessor.process(
+            FileInput::from_path(input.clone()),
+            ResizeConfig {
+                width: Some(16),
+                height: Some(16),
+                maintain_aspect: false,
+                output: Some(outputs[0].clone()),
+                limits: limits.clone(),
+                ..ResizeConfig::default()
+            },
+        ),
+        CropProcessor.process(
+            FileInput::from_path(input.clone()),
+            CropConfig {
+                output: Some(outputs[1].clone()),
+                limits: limits.clone(),
+                ..CropConfig::default()
+            },
+        ),
+        FilterProcessor.process(
+            FileInput::from_path(input.clone()),
+            FilterConfig {
+                output: Some(outputs[2].clone()),
+                limits: limits.clone(),
+                ..FilterConfig::default()
+            },
+        ),
+        WatermarkProcessor.process(
+            FileInput::from_path(input),
+            WatermarkConfig {
+                watermark: WatermarkType::Image {
+                    image_path: watermark,
+                    scale: 1.0,
+                },
+                position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                output: Some(outputs[3].clone()),
+                limits,
+                ..WatermarkConfig::default()
+            },
+        ),
+    ];
+
+    for (output, result) in outputs.iter().zip(cases) {
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ResourceLimitExceeded, "{error:?}");
+        assert!(!output.exists(), "{} was published", output.display());
+    }
+    let leftovers = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_string_lossy().contains(".rtools-"))
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
 fn rejects_encoded_input_over_byte_limit_before_creating_output() {
     let tmp = TempDir::new().unwrap();
     let input = create_test_image(tmp.path(), "too-many-bytes.png", 2, 2);
@@ -1009,6 +1179,64 @@ fn test_resize_maintain_aspect() {
 }
 
 #[test]
+fn resize_checks_computed_target_pixels_before_output_allocation() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "small-resize-input.png", 2, 2);
+    let output = tmp.path().join("oversized-target.png");
+    let limits = ResourceLimits {
+        max_decoded_pixels: 10_000,
+        ..ResourceLimits::default()
+    };
+
+    let error = ResizeProcessor
+        .process(
+            FileInput::from_path(input.clone()),
+            ResizeConfig {
+                width: Some(101),
+                height: Some(100),
+                maintain_aspect: false,
+                output: Some(output.clone()),
+                limits,
+                ..ResizeConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        rtools_core::RToolsError::ResourceLimitExceeded {
+            resource: "decoded_pixels",
+            actual: 10_100,
+            limit: 10_000,
+        }
+    ));
+    assert!(!output.exists());
+
+    let default_output = tmp.path().join("default-limit-32768-square.png");
+    let default_error = ResizeProcessor
+        .process(
+            FileInput::from_path(input),
+            ResizeConfig {
+                width: Some(32_768),
+                height: Some(32_768),
+                maintain_aspect: false,
+                output: Some(default_output.clone()),
+                ..ResizeConfig::default()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(
+        default_error,
+        rtools_core::RToolsError::ResourceLimitExceeded {
+            resource: "decoded_pixels",
+            actual: 1_073_741_824,
+            limit: 100_000_000,
+        }
+    ));
+    assert!(!default_output.exists());
+}
+
+#[test]
 fn test_crop_image() {
     let tmp = TempDir::new().unwrap();
     let input = create_test_image(tmp.path(), "crop.png", 200, 200);
@@ -1039,6 +1267,82 @@ fn test_crop_image() {
 }
 
 #[test]
+fn crop_pixel_rectangle_must_be_wholly_in_bounds_before_output_creation() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "crop-bounds.png", 4, 4);
+    let output = tmp.path().join("clipped.png");
+
+    let error = CropProcessor
+        .process(
+            FileInput::from_path(input),
+            CropConfig {
+                region: CropRegion::Pixels {
+                    x: 3,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+                output: Some(output.clone()),
+                ..CropConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(!output.exists());
+}
+
+#[test]
+fn nonfinite_crop_and_filter_values_fail_before_input_access() {
+    let missing = FileInput::from_path(PathBuf::from("missing-numeric-input.png"));
+    let crop_cases = [
+        CropRegion::Percentage {
+            x: f64::NAN,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        },
+        CropRegion::Percentage {
+            x: 0.0,
+            y: 0.0,
+            width: f64::NAN,
+            height: 10.0,
+        },
+        CropRegion::AspectRatio {
+            ratio: AspectRatio::Custom(f64::NAN, 1.0),
+            gravity: Gravity::Center,
+        },
+        CropRegion::AspectRatio {
+            ratio: AspectRatio::Custom(1.0, f64::INFINITY),
+            gravity: Gravity::Center,
+        },
+    ];
+    for region in crop_cases {
+        let error = CropProcessor
+            .process(
+                missing.clone(),
+                CropConfig {
+                    region,
+                    ..CropConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    }
+
+    let error = FilterProcessor
+        .process(
+            missing,
+            FilterConfig {
+                strength: f64::NAN,
+                ..FilterConfig::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+}
+
+#[test]
 fn test_get_metadata() {
     let tmp = TempDir::new().unwrap();
     let input = create_test_image(tmp.path(), "meta.png", 320, 240);
@@ -1051,6 +1355,222 @@ fn test_get_metadata() {
 
     assert_eq!(result.width, 320);
     assert_eq!(result.height, 240);
+}
+
+#[test]
+fn metadata_projection_honors_dimension_and_file_info_flags() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "metadata-projection.png", 7, 5);
+
+    let result = MetadataProcessor
+        .process(
+            FileInput::from_path(input),
+            MetadataConfig {
+                include_exif: false,
+                include_dimensions: false,
+                include_file_info: false,
+                ..MetadataConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!((result.width, result.height), (0, 0));
+    assert_eq!(result.file_size, 0);
+    assert!(result.color_space.is_none());
+    assert!(result.exif.is_none());
+}
+
+#[test]
+fn unsupported_image_quality_and_convert_output_dir_fail_before_input_access() {
+    let tmp = TempDir::new().unwrap();
+    let missing = FileInput::from_path(tmp.path().join("missing.png"));
+    let output = tmp.path().join("never-created/output.png");
+    let watermark = create_test_image(tmp.path(), "quality-watermark.png", 1, 1);
+    let cases = [
+        ResizeProcessor.process(
+            missing.clone(),
+            ResizeConfig {
+                width: Some(1),
+                quality: 84,
+                output: Some(output.clone()),
+                ..ResizeConfig::default()
+            },
+        ),
+        CropProcessor.process(
+            missing.clone(),
+            CropConfig {
+                quality: 84,
+                output: Some(output.clone()),
+                ..CropConfig::default()
+            },
+        ),
+        FilterProcessor.process(
+            missing.clone(),
+            FilterConfig {
+                quality: 84,
+                output: Some(output.clone()),
+                ..FilterConfig::default()
+            },
+        ),
+        WatermarkProcessor.process(
+            missing.clone(),
+            WatermarkConfig {
+                watermark: WatermarkType::Image {
+                    image_path: watermark,
+                    scale: 1.0,
+                },
+                quality: 84,
+                output: Some(output.clone()),
+                ..WatermarkConfig::default()
+            },
+        ),
+        ConvertProcessor.process(
+            missing,
+            ConvertConfig {
+                target_format: rtools_core::ImageFormat::Png,
+                output_dir: Some(tmp.path().join("ignored-output-dir")),
+                output: Some(output.clone()),
+                ..ConvertConfig::default()
+            },
+        ),
+    ];
+
+    for result in cases {
+        assert_eq!(result.unwrap_err().code(), ErrorCode::InvalidInput);
+    }
+    assert!(!output.parent().unwrap().exists());
+}
+
+#[test]
+fn crop_filter_and_watermark_mime_follow_committed_output_format() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "mime-source.jpg", 32, 32);
+    let watermark = create_test_image(tmp.path(), "mime-watermark.png", 2, 2);
+    let outputs = [
+        CropProcessor
+            .process(
+                FileInput::from_path(input.clone()),
+                CropConfig {
+                    region: CropRegion::Pixels {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 16,
+                    },
+                    output: Some(tmp.path().join("mime-crop.png")),
+                    ..CropConfig::default()
+                },
+            )
+            .unwrap(),
+        FilterProcessor
+            .process(
+                FileInput::from_path(input.clone()),
+                FilterConfig {
+                    output: Some(tmp.path().join("mime-filter.png")),
+                    ..FilterConfig::default()
+                },
+            )
+            .unwrap(),
+        WatermarkProcessor
+            .process(
+                FileInput::from_path(input),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(tmp.path().join("mime-applied.png")),
+                    ..WatermarkConfig::default()
+                },
+            )
+            .unwrap(),
+    ];
+
+    for output in outputs {
+        assert_eq!(output.mime_type.as_deref(), Some("image/png"));
+    }
+}
+
+#[test]
+fn malformed_exif_is_reported_but_image_decode_remains_available() {
+    let tmp = TempDir::new().unwrap();
+    let plain = create_test_image(tmp.path(), "malformed-source.jpg", 7, 5);
+    let plain_bytes = std::fs::read(&plain).unwrap();
+    let mut malformed = Vec::with_capacity(plain_bytes.len() + 14);
+    malformed.extend_from_slice(&plain_bytes[..2]);
+    malformed.extend_from_slice(b"\xff\xe1\x00\x0cExif\0\0bad!");
+    malformed.extend_from_slice(&plain_bytes[2..]);
+    let malformed_path = tmp.path().join("malformed-exif.jpg");
+    std::fs::write(&malformed_path, malformed).unwrap();
+
+    let decoded =
+        rtools_image::format::decode_bounded(&malformed_path, &ResourceLimits::default()).unwrap();
+    assert_eq!(decoded.image.dimensions(), (7, 5));
+
+    let exif_error = ExifProcessor
+        .process(
+            FileInput::from_path(malformed_path.clone()),
+            ExifConfig::default(),
+        )
+        .unwrap_err();
+    assert_eq!(exif_error.code(), ErrorCode::ProcessingFailed);
+    assert!(!exif_error
+        .to_string()
+        .contains(&malformed_path.display().to_string()));
+
+    let metadata_error = MetadataProcessor
+        .process(
+            FileInput::from_path(malformed_path),
+            MetadataConfig::default(),
+        )
+        .unwrap_err();
+    assert_eq!(metadata_error.code(), ErrorCode::ProcessingFailed);
+}
+
+#[test]
+fn gps_altitude_ref_byte_marks_below_sea_level() {
+    let tmp = TempDir::new().unwrap();
+    let plain = create_test_image(tmp.path(), "altitude-source.jpg", 2, 2);
+    let jpeg = std::fs::read(&plain).unwrap();
+
+    let mut tiff = Vec::new();
+    tiff.extend_from_slice(b"II\x2a\0\x08\0\0\0");
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    tiff.extend_from_slice(&0x8825_u16.to_le_bytes());
+    tiff.extend_from_slice(&4_u16.to_le_bytes());
+    tiff.extend_from_slice(&1_u32.to_le_bytes());
+    tiff.extend_from_slice(&26_u32.to_le_bytes());
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend_from_slice(&2_u16.to_le_bytes());
+    tiff.extend_from_slice(&5_u16.to_le_bytes());
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    tiff.extend_from_slice(&1_u32.to_le_bytes());
+    tiff.extend_from_slice(&[1, 0, 0, 0]);
+    tiff.extend_from_slice(&6_u16.to_le_bytes());
+    tiff.extend_from_slice(&5_u16.to_le_bytes());
+    tiff.extend_from_slice(&1_u32.to_le_bytes());
+    tiff.extend_from_slice(&56_u32.to_le_bytes());
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend_from_slice(&25_u32.to_le_bytes());
+    tiff.extend_from_slice(&2_u32.to_le_bytes());
+
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend_from_slice(&tiff);
+    let mut encoded = Vec::with_capacity(jpeg.len() + app1.len() + 4);
+    encoded.extend_from_slice(&jpeg[..2]);
+    encoded.extend_from_slice(b"\xff\xe1");
+    encoded.extend_from_slice(&u16::try_from(app1.len() + 2).unwrap().to_be_bytes());
+    encoded.extend_from_slice(&app1);
+    encoded.extend_from_slice(&jpeg[2..]);
+    let input = tmp.path().join("below-sea-level.jpg");
+    std::fs::write(&input, encoded).unwrap();
+
+    let exif = ExifProcessor
+        .process(FileInput::from_path(input), ExifConfig::default())
+        .unwrap();
+
+    assert_eq!(exif.gps_altitude, Some(-12.5));
 }
 
 #[test]
@@ -1100,7 +1620,7 @@ fn test_compress_custom_quality() {
 }
 
 #[test]
-fn test_output_path_created() {
+fn missing_image_output_parent_is_rejected_without_creation() {
     let tmp = TempDir::new().unwrap();
     let input = create_test_image(tmp.path(), "create.png", 50, 50);
     let out_dir = tmp.path().join("nested").join("output");
@@ -1117,9 +1637,109 @@ fn test_output_path_created() {
     };
 
     let processor = CompressProcessor;
-    let result = processor.process(file_input, config).unwrap();
+    let error = processor.process(file_input, config).unwrap_err();
 
-    assert!(result.destination.as_path().unwrap().exists());
+    assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    assert!(!out_dir.exists());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn every_image_writer_rejects_linked_missing_parent_without_outside_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let selected = tmp.path().join("selected");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir(&selected).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    create_directory_symlink(&outside, &selected.join("link"));
+    let input = create_test_image(tmp.path(), "input.png", 32, 32);
+    let watermark = create_test_image(tmp.path(), "watermark.png", 2, 2);
+
+    let output = |operation: &str| selected.join(format!("link/{operation}/result.png"));
+    let cases = [
+        (
+            "compress",
+            CompressProcessor.process(
+                FileInput::from_path(input.clone()),
+                CompressConfig {
+                    format: Some(rtools_core::ImageFormat::Png),
+                    output: Some(output("compress")),
+                    ..CompressConfig::default()
+                },
+            ),
+        ),
+        (
+            "convert",
+            ConvertProcessor.process(
+                FileInput::from_path(input.clone()),
+                ConvertConfig {
+                    target_format: rtools_core::ImageFormat::Png,
+                    output: Some(output("convert")),
+                    ..ConvertConfig::default()
+                },
+            ),
+        ),
+        (
+            "resize",
+            ResizeProcessor.process(
+                FileInput::from_path(input.clone()),
+                ResizeConfig {
+                    width: Some(16),
+                    output: Some(output("resize")),
+                    ..ResizeConfig::default()
+                },
+            ),
+        ),
+        (
+            "crop",
+            CropProcessor.process(
+                FileInput::from_path(input.clone()),
+                CropConfig {
+                    region: CropRegion::Pixels {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 16,
+                    },
+                    output: Some(output("crop")),
+                    ..CropConfig::default()
+                },
+            ),
+        ),
+        (
+            "filter",
+            FilterProcessor.process(
+                FileInput::from_path(input.clone()),
+                FilterConfig {
+                    output: Some(output("filter")),
+                    ..FilterConfig::default()
+                },
+            ),
+        ),
+        (
+            "watermark",
+            WatermarkProcessor.process(
+                FileInput::from_path(input),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(output("watermark")),
+                    ..WatermarkConfig::default()
+                },
+            ),
+        ),
+    ];
+
+    for (operation, result) in cases {
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), ErrorCode::PathPolicyViolation, "{operation}");
+        assert!(!outside.join(operation).exists(), "{operation}");
+        assert!(!output(operation).exists(), "{operation}");
+    }
+    assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
 }
 
 #[test]

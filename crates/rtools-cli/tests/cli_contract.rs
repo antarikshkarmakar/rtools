@@ -30,6 +30,12 @@ fn assert_exit(output: &Output, expected: i32) {
     );
 }
 
+fn create_png(path: &Path, width: u32, height: u32) {
+    image::RgbaImage::from_pixel(width, height, image::Rgba([20, 40, 60, 255]))
+        .save(path)
+        .unwrap();
+}
+
 #[test]
 fn unavailable_pdf_text_returns_capability_exit_without_success_output() {
     let temp = tempfile::tempdir().unwrap();
@@ -86,6 +92,46 @@ fn config_init_preserves_existing_bytes_and_returns_output_exists() {
     assert_eq!(std::fs::read(&output_path).unwrap(), original);
 }
 
+#[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::windows::fs::symlink_dir(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory symlink {} -> {}: {error}. Enable Windows Developer Mode or grant SeCreateSymbolicLinkPrivilege so this safety regression can run",
+            link.display(),
+            target.display()
+        )
+    });
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn config_init_rejects_linked_ancestor_without_creating_outside() {
+    let temp = tempfile::tempdir().unwrap();
+    let selected = temp.path().join("selected");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&selected).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    create_directory_symlink(&outside, &selected.join("link"));
+    let outside_child = outside.join("new-child");
+    let output_path = selected.join("link/new-child/rtools.toml");
+
+    let output = command(temp.path())
+        .args(["config", "init", "--output"])
+        .arg(&output_path)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 5);
+    assert!(!outside_child.exists());
+    assert!(!output_path.exists());
+    assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+}
+
 #[test]
 fn malformed_crop_region_is_rejected_as_invalid_input() {
     let temp = tempfile::tempdir().unwrap();
@@ -102,6 +148,83 @@ fn malformed_crop_region_is_rejected_as_invalid_input() {
         .unwrap();
 
     assert_exit(&output, 2);
+}
+
+#[test]
+fn out_of_bounds_crop_exits_invalid_without_publishing_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("crop-input.png");
+    let destination = temp.path().join("crop-output.png");
+    create_png(&input, 4, 4);
+
+    let output = command(temp.path())
+        .args(["image", "crop", "--input"])
+        .arg(&input)
+        .args(["--region", "3,0,2,1", "--output"])
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+    assert!(!destination.exists());
+}
+
+#[test]
+fn nonfinite_filter_strength_exits_invalid_without_publishing_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("filter-input.png");
+    let destination = temp.path().join("filter-output.png");
+    create_png(&input, 4, 4);
+
+    let output = command(temp.path())
+        .args(["image", "filter", "--input"])
+        .arg(&input)
+        .args([
+            "--preset",
+            "kodak-portra400",
+            "--strength",
+            "NaN",
+            "--output",
+        ])
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+    assert!(!destination.exists());
+}
+
+#[test]
+fn nonfinite_duplicate_threshold_exits_invalid() {
+    let temp = tempfile::tempdir().unwrap();
+    create_png(&temp.path().join("duplicate-input.png"), 4, 4);
+
+    let output = command(temp.path())
+        .args(["ai", "duplicates", "--input"])
+        .arg(temp.path())
+        .args(["--threshold", "NaN"])
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+}
+
+#[test]
+fn duplicate_cli_uses_configured_decoded_pixel_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    create_png(&temp.path().join("oversized.png"), 3, 3);
+    let config = temp.path().join("limits.toml");
+    std::fs::write(&config, "[limits]\nmax_decoded_pixels = 4\n").unwrap();
+
+    let output = command(temp.path())
+        .arg("--config")
+        .arg(&config)
+        .args(["ai", "duplicates", "--input"])
+        .arg(temp.path())
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 4);
 }
 
 #[test]

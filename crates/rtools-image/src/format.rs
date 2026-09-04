@@ -163,20 +163,24 @@ pub fn decode_bounded(path: &Path, limits: &ResourceLimits) -> RToolsResult<Deco
     // after the metadata check without reading beyond the configured limit + 1.
     let encoded = read_bounded_snapshot(path, limits)?;
 
-    let decoder_limits = decoder_limits(limits);
-    let per_enforcement_point_cap = decoder_limits.max_alloc.unwrap_or(u64::MAX);
     let orientation = exif_orientation(&encoded);
-    let mut reader = ImageReader::new(Cursor::new(encoded.as_slice())).with_guessed_format()?;
-    let format = reader
+    let header_reader = ImageReader::new(Cursor::new(encoded.as_slice())).with_guessed_format()?;
+    let format = header_reader
         .format()
         .ok_or_else(|| RToolsError::unsupported_format("Cannot determine image format"))?;
-    reader.limits(decoder_limits.clone());
-    let decoder = reader
-        .into_decoder()
-        .map_err(|error| map_decode_error(error, per_enforcement_point_cap))?;
-    let (width, height) = decoder.dimensions();
+    // Read only enough of the format header to obtain dimensions before
+    // applying the caller-derived allocation cap. Some decoders reserve small
+    // bookkeeping buffers while being constructed, and a very small pixel
+    // budget must not hide a precise declared-canvas violation behind that
+    // dependency-internal allocation error.
+    let header_allocation_cap = Limits::default().max_alloc.unwrap_or(u64::MAX);
+    let (width, height) = header_reader
+        .into_dimensions()
+        .map_err(|error| map_decode_error(error, header_allocation_cap))?;
     limits.check_decoded_pixels(width, height)?;
-    drop(decoder);
+
+    let decoder_limits = decoder_limits(limits);
+    let per_enforcement_point_cap = decoder_limits.max_alloc.unwrap_or(u64::MAX);
     reject_animated_input(
         &encoded,
         format,
@@ -214,13 +218,17 @@ pub(crate) fn read_bounded_snapshot(path: &Path, limits: &ResourceLimits) -> RTo
     Ok(encoded)
 }
 
-/// Reopen and fully decode a newly encoded image before it becomes visible.
-pub(crate) fn validate_image_artifact(path: &Path) -> RToolsResult<()> {
-    ImageReader::open(path)?
-        .with_guessed_format()?
-        .decode()
-        .map_err(|error| RToolsError::image(format!("encoded image validation failed: {error}")))?;
-    Ok(())
+/// Reopen and fully decode a newly encoded image within the configured limits
+/// before it becomes visible.
+pub(crate) fn validate_image_artifact(path: &Path, limits: &ResourceLimits) -> RToolsResult<()> {
+    decode_bounded(path, limits)
+        .map(|_| ())
+        .map_err(|error| match error {
+            RToolsError::Image(message) => {
+                RToolsError::image(format!("encoded image validation failed: {message}"))
+            }
+            error => error,
+        })
 }
 
 /// Image format utilities
@@ -244,7 +252,67 @@ pub const fn supports_transparency(format: &ImageFormat) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{decoder_limits, ResourceLimits};
+    use super::{decoder_limits, validate_image_artifact, ResourceLimits};
+    use rtools_core::RToolsError;
+
+    fn crc32(bytes: &[u8]) -> [u8; 4] {
+        let mut crc = u32::MAX;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        (!crc).to_be_bytes()
+    }
+
+    fn write_png_header(path: &std::path::Path, width: u32, height: u32) {
+        let mut header = Vec::with_capacity(58);
+        header.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        header.extend_from_slice(&13_u32.to_be_bytes());
+        header.extend_from_slice(b"IHDR");
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        header.extend_from_slice(&crc32(&header[12..]));
+        header.extend_from_slice(&1_u32.to_be_bytes());
+        header.extend_from_slice(b"IDAT");
+        header.push(0);
+        header.extend_from_slice(&crc32(b"IDAT\0"));
+        header.extend_from_slice(&0_u32.to_be_bytes());
+        header.extend_from_slice(b"IEND");
+        header.extend_from_slice(&crc32(b"IEND"));
+        std::fs::write(path, header).unwrap();
+    }
+
+    #[test]
+    fn generated_artifact_validation_checks_declared_canvas_before_decode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let artifact = tmp.path().join("declared-canvas.png");
+        write_png_header(&artifact, 64, 64);
+        let limits = ResourceLimits {
+            max_decoded_pixels: 4,
+            ..ResourceLimits::default()
+        };
+
+        let error = validate_image_artifact(&artifact, &limits).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                RToolsError::ResourceLimitExceeded {
+                    resource: "decoded_pixels",
+                    actual: 4_096,
+                    limit: 4,
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
 
     #[test]
     fn default_resource_limits_do_not_raise_dependency_allocation_cap() {

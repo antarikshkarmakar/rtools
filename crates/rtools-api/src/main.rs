@@ -358,6 +358,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_adapter_uses_configured_decoded_pixel_limit() {
+        let mut config = rtools_core::AppConfig::default();
+        config.limits.max_decoded_pixels = 1;
+        let app = Router::new()
+            .route("/duplicates", post(handlers::ai::duplicates))
+            .with_state(Arc::new(AppState { config }));
+
+        let response = app
+            .oneshot(multipart_request(
+                "/duplicates",
+                Some(("declared-canvas.png", png_bytes())),
+            ))
+            .await
+            .expect("router call must complete");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body must read");
+        let text = String::from_utf8_lossy(&body);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{text}");
+        assert!(text.contains("decoded_pixels"), "{text}");
+        assert!(text.contains("4 (limit: 1)"), "{text}");
+    }
+
+    #[tokio::test]
     async fn empty_alt_text_request_returns_structured_invalid_input() {
         let before = persistent_alt_text_temp_dirs();
         let response = test_app()

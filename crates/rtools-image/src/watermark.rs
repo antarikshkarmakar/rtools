@@ -48,12 +48,12 @@ pub struct WatermarkConfig {
     pub position: WatermarkPosition,
     /// Opacity (0.0-1.0)
     pub opacity: f64,
-    /// Output path (None = overwrite)
+    /// Output path (None = generated alongside input); its parent must exist.
     pub output: Option<PathBuf>,
     /// Collision behavior for the final output path.
     #[serde(default)]
     pub output_policy: OutputPolicy,
-    /// Output quality for lossy formats (0-100)
+    /// Legacy output quality; currently only the default value 85 is supported.
     pub quality: u8,
     /// Resource limits enforced before image decoding.
     #[serde(default)]
@@ -246,9 +246,6 @@ impl Processor for WatermarkProcessor {
                 .join(file_name),
         };
 
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let image_format = image::ImageFormat::from_path(&output).map_err(|error| {
             RToolsError::image(format!("Invalid watermark output format: {error}"))
         })?;
@@ -257,16 +254,17 @@ impl Processor for WatermarkProcessor {
         base_img
             .save_with_format(pending.temporary_path(), image_format)
             .map_err(|e| RToolsError::image(format!("Failed to save watermarked image: {e}")))?;
-        let output = pending.commit(crate::format::validate_image_artifact)?;
+        let output = pending.commit(|artifact| {
+            crate::metadata::validate_drop_all_artifact(artifact, &config.limits)
+        })?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
 
-        let format = input
-            .format
-            .or_else(|| rtools_core::ImageFormat::from_path(path))
-            .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
+        let format = rtools_core::ImageFormat::from_path(&output).ok_or_else(|| {
+            RToolsError::unsupported_format("Cannot determine committed watermark output format")
+        })?;
 
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
@@ -284,6 +282,11 @@ impl Processor for WatermarkProcessor {
     }
 
     fn validate_config(&self, config: &WatermarkConfig) -> RToolsResult<()> {
+        if config.quality != 85 {
+            return Err(RToolsError::invalid_input(
+                "Watermark quality is unsupported; use the legacy value 85",
+            ));
+        }
         if !config.opacity.is_finite() || config.opacity < 0.0 || config.opacity > 1.0 {
             return Err(RToolsError::invalid_input(
                 "Opacity must be between 0.0 and 1.0",

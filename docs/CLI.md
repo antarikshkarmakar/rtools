@@ -20,6 +20,11 @@ rtools [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 
 ### Image Processing
 
+All explicit filesystem output paths require an existing parent directory.
+rTools validates that parent before reserving or encoding an artifact and does
+not create missing output directories. For example, run `mkdir -p processed`
+before passing `--output processed/photo.png`.
+
 #### `rtools image compress`
 
 Compress images with quality preservation.
@@ -491,6 +496,9 @@ Generate default configuration file.
 ```bash
 rtools config init [-o rtools.toml]
 ```
+
+The selected configuration file's parent directory must already exist. The
+command does not create a missing parent directory.
 
 #### `rtools config validate`
 

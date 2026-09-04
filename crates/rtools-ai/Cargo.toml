@@ -12,6 +12,7 @@ categories = ["multimedia::images"]
 
 [dependencies]
 rtools-core = { path = "../rtools-core", version = "0.1.0" }
+rtools-image = { path = "../rtools-image", version = "0.1.0" }
 serde = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 

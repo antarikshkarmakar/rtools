@@ -44,7 +44,7 @@ pub struct CompressConfig {
     pub preset: CompressionPreset,
     /// Target output format (None = same as input)
     pub format: Option<ImageFormat>,
-    /// Output path (None = {stem}_compressed.{ext})
+    /// Output path (None = {stem}_compressed.{ext}); its parent must exist.
     pub output: Option<PathBuf>,
     /// Collision behavior for the final output path.
     #[serde(default)]
@@ -129,9 +129,6 @@ impl Processor for CompressProcessor {
                 .join(file_name),
         };
 
-        if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let pending = PendingOutput::new(&output_path, config.output_policy)?;
 
         // Log alpha channel warning for JPEG targets
@@ -221,8 +218,7 @@ impl Processor for CompressProcessor {
         }
 
         let output_path = pending.commit(|artifact| {
-            crate::format::validate_image_artifact(artifact)?;
-            crate::metadata::verify_drop_all_artifact(artifact, &config.limits)
+            crate::metadata::validate_drop_all_artifact(artifact, &config.limits)
         })?;
 
         let elapsed = start.elapsed();

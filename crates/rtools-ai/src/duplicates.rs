@@ -1,7 +1,7 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::{FileInput, Processor};
+use rtools_core::{FileInput, Processor, ResourceLimits};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Duplicates detection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +14,9 @@ pub struct DuplicatesConfig {
     pub action: DuplicateAction,
     /// Dry run mode
     pub dry_run: bool,
+    /// Resource limits enforced before image decoding.
+    #[serde(default)]
+    pub limits: ResourceLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +48,7 @@ impl Default for DuplicatesConfig {
             algorithm: HashAlgorithm::Perceptual,
             action: DuplicateAction::Report,
             dry_run: false,
+            limits: ResourceLimits::default(),
         }
     }
 }
@@ -78,7 +82,7 @@ impl Processor for DuplicatesProcessor {
                 RToolsError::invalid_input("Duplicates requires file path inputs")
             })?;
 
-            let hash = calculate_image_hash(path, &config.algorithm)?;
+            let hash = calculate_image_hash(path, &config.algorithm, &config.limits)?;
             file_hashes.push((path.clone(), hash));
         }
 
@@ -127,7 +131,7 @@ impl Processor for DuplicatesProcessor {
     }
 
     fn validate_config(&self, config: &DuplicatesConfig) -> RToolsResult<()> {
-        if config.threshold < 0.0 || config.threshold > 1.0 {
+        if !config.threshold.is_finite() || config.threshold < 0.0 || config.threshold > 1.0 {
             return Err(RToolsError::invalid_input(
                 "Threshold must be between 0.0 and 1.0",
             ));
@@ -177,14 +181,12 @@ pub struct DuplicateGroup {
 }
 
 /// Calculate robust 64-bit image perceptual hash (aHash / dHash)
-fn calculate_image_hash(path: &PathBuf, algorithm: &HashAlgorithm) -> RToolsResult<u64> {
-    let img = image::open(path).map_err(|e| {
-        RToolsError::image(format!(
-            "Failed to open image for hashing {}: {}",
-            path.display(),
-            e
-        ))
-    })?;
+fn calculate_image_hash(
+    path: &Path,
+    algorithm: &HashAlgorithm,
+    limits: &ResourceLimits,
+) -> RToolsResult<u64> {
+    let img = rtools_image::format::decode_bounded(path, limits)?.image;
 
     match algorithm {
         HashAlgorithm::Average => {

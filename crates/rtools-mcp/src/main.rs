@@ -394,6 +394,7 @@ impl RToolsServer {
                     algorithm: rtools_ai::duplicates::HashAlgorithm::Perceptual,
                     action: rtools_ai::duplicates::DuplicateAction::Report,
                     dry_run: false,
+                    limits: rtools_core::ResourceLimits::default(),
                 };
                 let processor = rtools_ai::DuplicatesProcessor;
                 match processor.process(inputs, config) {
@@ -595,6 +596,40 @@ mod tests {
         std::fs::write(path, bytes.into_inner()).expect("test PNG must write");
     }
 
+    fn crc32(bytes: &[u8]) -> [u8; 4] {
+        let mut crc = u32::MAX;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        (!crc).to_be_bytes()
+    }
+
+    fn write_declared_png(path: &std::path::Path, width: u32, height: u32) {
+        let mut header = Vec::with_capacity(58);
+        header.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        header.extend_from_slice(&13_u32.to_be_bytes());
+        header.extend_from_slice(b"IHDR");
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        header.extend_from_slice(&crc32(&header[12..]));
+        header.extend_from_slice(&1_u32.to_be_bytes());
+        header.extend_from_slice(b"IDAT");
+        header.push(0);
+        header.extend_from_slice(&crc32(b"IDAT\0"));
+        header.extend_from_slice(&0_u32.to_be_bytes());
+        header.extend_from_slice(b"IEND");
+        header.extend_from_slice(&crc32(b"IEND"));
+        std::fs::write(path, header).expect("declared PNG must write");
+    }
+
     fn is_error(result: &CallToolResult) -> bool {
         result.is_error == Some(true)
     }
@@ -745,5 +780,25 @@ mod tests {
             .await
             .expect("tool dispatch must complete");
         assert!(is_error(&duplicates), "{duplicates:?}");
+    }
+
+    #[tokio::test]
+    async fn duplicate_tool_uses_default_decoded_pixel_limit() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        write_declared_png(&temp.path().join("oversized.png"), 10_001, 10_000);
+
+        let result = RToolsServer
+            .handle_tool(
+                "find_duplicates",
+                serde_json::json!({"input_dir": temp.path()}),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        let document = serde_json::to_string(&result).expect("tool result must serialize");
+
+        assert!(is_error(&result), "{result:?}");
+        assert!(document.contains("decoded_pixels"), "{document}");
+        assert!(document.contains("100010000"), "{document}");
+        assert!(document.contains("100000000"), "{document}");
     }
 }

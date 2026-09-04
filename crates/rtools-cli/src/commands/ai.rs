@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[allow(clippy::too_many_lines)]
 pub fn handle_ai_command(
     command: AiCommands,
-    _config: &AppConfig,
+    config: &AppConfig,
     global_dry_run: bool,
 ) -> RToolsResult<CommandResult> {
     match command {
@@ -132,6 +132,7 @@ pub fn handle_ai_command(
                     DuplicateMode::Symlink => rtools_ai::duplicates::DuplicateAction::Symlink,
                 },
                 dry_run: global_dry_run,
+                limits: config.limits.clone(),
             };
             let inputs = source_paths.into_iter().map(FileInput::from_path).collect();
             let result = processor.process(inputs, processor_config)?;

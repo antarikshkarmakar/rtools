@@ -528,14 +528,11 @@ impl AppConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when the parent directory cannot be created, the
-    /// destination already exists, or the configuration cannot be serialized
-    /// or atomically written.
+    /// Returns an error when the parent directory does not already exist and
+    /// validate, the destination exists, or the configuration cannot be
+    /// serialized or atomically written.
     pub fn save(&self, path: &PathBuf) -> RToolsResult<()> {
         let toml = toml::to_string_pretty(self)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let pending = PendingOutput::new(path, OutputPolicy::FailIfExists)?;
         std::fs::write(pending.temporary_path(), toml)?;
         pending.commit(|_| Ok(()))?;
@@ -627,7 +624,12 @@ fn num_cpus() -> Option<usize> {
 mod tests {
     use super::{AppConfig, ConfigLocations, EnvironmentSource};
     use crate::ErrorCode;
-    use std::{ffi::OsStr, fs, path::PathBuf, process::Command};
+    use std::{
+        ffi::OsStr,
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+    };
     use tempfile::{tempdir, TempDir};
 
     fn load_isolated(
@@ -673,6 +675,42 @@ mod tests {
         load_isolated(Some(&explicit), &ConfigLocations::default()).unwrap();
 
         assert!(!temporary.exists());
+    }
+
+    #[cfg(unix)]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_dir(target, link).unwrap_or_else(|error| {
+            panic!(
+                "failed to create directory symlink {} -> {}: {error}. Enable Windows Developer Mode or grant SeCreateSymbolicLinkPrivilege so this safety regression can run",
+                link.display(),
+                target.display()
+            )
+        });
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn save_rejects_linked_ancestor_before_creating_a_missing_parent() {
+        let sandbox = tempdir().unwrap();
+        let selected = sandbox.path().join("selected");
+        let outside = sandbox.path().join("outside");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&outside).unwrap();
+        create_directory_symlink(&outside, &selected.join("link"));
+        let outside_child = outside.join("new-child");
+        let output = selected.join("link/new-child/config.toml");
+
+        let error = AppConfig::default().save(&output).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+        assert!(!outside_child.exists());
+        assert!(!output.exists());
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
     }
 
     #[test]

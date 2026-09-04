@@ -37,24 +37,29 @@ impl Processor for ExifProcessor {
         };
 
         let mut bufreader = std::io::BufReader::new(file);
-        let Ok(exif) = exif::Reader::new().read_from_container(&mut bufreader) else {
-            // Return empty ExifData when no EXIF metadata is found or unsupported.
-            return Ok(ExifData {
-                camera_make: None,
-                camera_model: None,
-                lens_model: None,
-                datetime_original: None,
-                datetime_digitized: None,
-                gps_latitude: None,
-                gps_longitude: None,
-                gps_altitude: None,
-                exposure_time: None,
-                f_number: None,
-                iso: None,
-                focal_length: None,
-                flash: None,
-                orientation: None,
-            });
+        let exif = match exif::Reader::new().read_from_container(&mut bufreader) {
+            Ok(exif) => exif,
+            Err(exif::Error::NotFound(_)) => {
+                return Ok(ExifData {
+                    camera_make: None,
+                    camera_model: None,
+                    lens_model: None,
+                    datetime_original: None,
+                    datetime_digitized: None,
+                    gps_latitude: None,
+                    gps_longitude: None,
+                    gps_altitude: None,
+                    exposure_time: None,
+                    f_number: None,
+                    iso: None,
+                    focal_length: None,
+                    flash: None,
+                    orientation: None,
+                });
+            }
+            Err(_) => {
+                return Err(RToolsError::image("Malformed EXIF metadata"));
+            }
         };
 
         let camera_make = exif
@@ -120,7 +125,7 @@ impl Processor for ExifProcessor {
             let below_sea_level = exif
                 .get_field(exif::Tag::GPSAltitudeRef, exif::In::PRIMARY)
                 .is_some_and(
-                    |f| matches!(f.value, exif::Value::Short(ref s) if s.first() == Some(&1)),
+                    |f| matches!(f.value, exif::Value::Byte(ref bytes) if bytes.first() == Some(&1)),
                 );
             if below_sea_level {
                 gps_altitude = Some(-alt);
