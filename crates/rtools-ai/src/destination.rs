@@ -1,8 +1,8 @@
+use icu_casemap::CaseMapper;
 use rtools_core::{OutputPolicy, PendingOutput, RToolsError, RToolsResult};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
-use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 
 /// A lexical, case-normalized identity for destinations that must be portable
 /// to case-insensitive filesystems.
@@ -177,11 +177,7 @@ fn reject_windows_drive_relative(path: &Path) -> RToolsResult<()> {
 fn normalized_component(component: &OsStr, path: &Path) -> RToolsResult<String> {
     component
         .to_str()
-        .map(|component| {
-            component
-                .case_fold_with(Variant::Full, Locale::NonTurkic)
-                .collect()
-        })
+        .map(|component| CaseMapper::new().fold_string(component).into_owned())
         .ok_or_else(|| {
             RToolsError::path_policy_violation(format!(
                 "portable destination alias checks require Unicode path components: {}",
@@ -202,7 +198,7 @@ fn path_entry_exists(path: &Path) -> RToolsResult<bool> {
 mod tests {
     use super::{
         destination_or_case_alias_exists, destination_or_case_alias_exists_with_base,
-        portable_destination_key_with_base, Path,
+        normalized_component, portable_destination_key_with_base, OsStr, Path,
     };
     use rtools_core::ErrorCode;
 
@@ -251,6 +247,22 @@ mod tests {
         assert_eq!(
             portable_destination_key_with_base(Path::new("/../../same.jpg"), base).unwrap(),
             portable_destination_key_with_base(Path::new("/same.jpg"), base).unwrap()
+        );
+    }
+
+    #[test]
+    fn casefold_data_includes_unicode_11_mtavruli_mapping() {
+        assert_eq!(
+            normalized_component(OsStr::new("\u{1c90}"), Path::new("\u{1c90}")).unwrap(),
+            "\u{10d0}"
+        );
+    }
+
+    #[test]
+    fn casefold_data_includes_unicode_17_mapping() {
+        assert_eq!(
+            normalized_component(OsStr::new("\u{a7ce}"), Path::new("\u{a7ce}")).unwrap(),
+            "\u{a7cf}"
         );
     }
 

@@ -605,6 +605,39 @@ fn rename_dry_run_rejects_kelvin_sign_and_k_destination_aliases() {
 }
 
 #[test]
+fn rename_dry_run_rejects_mtavruli_and_mkhedruli_destination_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first").join("\u{1c90}.jpg");
+    let second = temp.path().join("second").join("\u{10d0}.jpg");
+    std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+    let output_dir = temp.path().join("out");
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(first.clone()),
+                FileInput::from_path(second.clone()),
+            ],
+            RenameConfig {
+                pattern: "{name}".to_string(),
+                output_dir: Some(output_dir.clone()),
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: true,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(std::fs::read(first).unwrap(), b"first");
+    assert_eq!(std::fs::read(second).unwrap(), b"second");
+    assert!(!output_dir.exists());
+}
+
+#[test]
 fn rename_dry_run_rejects_expanding_unicode_destination_aliases() {
     let temp = tempfile::tempdir().unwrap();
     let first = temp.path().join("first").join("ß.jpg");

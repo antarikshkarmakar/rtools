@@ -464,3 +464,100 @@ This is an incomplete refactor state, not a reviewed or accepted design. Continu
 - Full case folding intentionally does not add canonical Unicode normalization.
   Filesystem-specific composed/decomposed equivalence remains a future conservative
   audit area; the final filesystem-enforced no-replace defenses remain in force.
+
+## Fix round 5/5: current compiled Unicode case-fold data
+
+### Restart handoff and RED-GREEN record
+
+- Work resumed after a host restart at
+  `8d4f8d5913ce32124c5e5d7a0acd1452d72c3a80`. The restart preserved five
+  partially edited `rtools-ai` files: the dependency replacement, ICU folding call,
+  Georgian unit/production regressions, and removed integration-test lint markers.
+  `Cargo.lock` had not yet been resolved. The partial diff was inspected and retained;
+  no reset or unrelated plan material was used.
+- The pre-restart RED was
+  `cargo test -p rtools-ai --test dry_run
+  rename_dry_run_rejects_mtavruli_and_mkhedruli_destination_aliases --locked`:
+  the archived Unicode 9 implementation returned two successful plans for U+1C90
+  Mtavruli `Ა.jpg` and U+10D0 Mkhedruli `ა.jpg` instead of `OUTPUT_EXISTS`.
+- After resolving the lockfile, the focused Georgian unit mapping and production
+  dry-run commands each passed 1/1. The production regression also proves both source
+  byte strings remain unchanged and no output directory is created.
+- Added `casefold_data_includes_unicode_17_mapping`, using the Unicode 17-only
+  U+A7CE to U+A7CF case-fold pair, so a future data downgrade cannot satisfy only the
+  older Georgian regression. It passes against the locked compiled data.
+- The first resumed all-target `rtools-ai` run passed all 37 tests but exposed two
+  `unused_crate_dependencies` warnings: independent `capability_modes` and
+  `capability_unavailable` test crates did not name the replacement direct
+  dependency. Narrow `icu_casemap as _` imports restored the existing lint contract;
+  the final package run is warning-free. The first format check requested only the
+  two new assertion line wraps; rustfmt was applied and the final check passes.
+
+### Dependency and design evidence
+
+- `rtools-ai` pins `icu_casemap = "=2.3.0"`. Cargo's resolved feature set is
+  `default,compiled_data`; `CaseMapper::new()` therefore uses the baked singleton
+  rather than an ambient/runtime provider.
+- `Cargo.lock` pins `icu_casemap_data` at 2.3.0 and removes
+  `unicode-casefold` 0.2.0. Cargo added 21 packages in the ICU4X graph; `cargo tree -i
+  icu_casemap --locked` shows one direct path through `rtools-ai`, while the inverse
+  query for `unicode-casefold` finds no package.
+- Local registry metadata for `icu_casemap_data` 2.3.0 records CLDR 48.2.1 and ICU
+  `release-78.1rc` as its generation sources. ICU 78 is the Unicode 17 update, and
+  the U+A7CE/U+A7CF regression directly verifies that generation boundary. Both
+  `icu_casemap` and its data crate report the `Unicode-3.0` license and Rust 1.88
+  MSRV; the workspace allows that license and pins Rust 1.95.0.
+- `CaseMapper::fold_string` is the full, locale-independent, context-insensitive
+  default fold. It excludes the separate Turkic tailoring, preserving the previous
+  explicit non-Turkic policy while supporting expanding mappings. Non-Unicode path
+  components remain fail-closed, and no normalization or publication behavior was
+  changed.
+
+### Changed files in this fix round
+
+- `Cargo.lock`, `crates/rtools-ai/Cargo.toml`
+- `crates/rtools-ai/src/destination.rs`
+- `crates/rtools-ai/tests/{capability_modes,capability_unavailable,dry_run}.rs`
+- `.superpowers/sdd/2026-09-02-milestone-1-release-safety/task-8-report.md`
+
+### Verification
+
+- `cargo test -p rtools-ai --lib
+  casefold_data_includes_unicode_11_mtavruli_mapping --locked` — 1 passed, 0 failed.
+- `cargo test -p rtools-ai --test dry_run
+  rename_dry_run_rejects_mtavruli_and_mkhedruli_destination_aliases --locked` — 1
+  passed, 0 failed.
+- `cargo test -p rtools-ai --lib casefold_data_includes_unicode_17_mapping
+  --locked` — 1 passed, 0 failed.
+- `cargo test -p rtools-ai --lib destination::tests --locked` — 7 passed, 0
+  failed, covering current data, relative anchoring, exact-directory aliases, root
+  clamping, and drive-relative rejection.
+- `cargo test -p rtools-ai --test dry_run --locked` — 20 passed, 0 failed,
+  including Georgian, Kelvin/k, sigma/final-sigma, sharp-s expansion, non-Unicode
+  fail-closed, relative/absolute identity, and pre-mutation no-overwrite coverage.
+- `cargo test -p rtools-ai --all-targets --all-features --locked` — 37 passed,
+  0 failed, no warnings.
+- `cargo test --workspace --all-targets --all-features --locked` — 209 passed,
+  0 failed, no warnings, in the final post-rustfmt run.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — passed in the final post-rustfmt run.
+- `cargo check -p rtools-wasm --target wasm32-unknown-unknown --locked` — passed.
+- `cargo fmt --all -- --check` — passed after applying rustfmt's two line wraps.
+- `cargo deny check` — passed; advisories, bans, licenses, and sources were `ok`.
+  The pre-existing duplicate-version and unmatched-license-allowance warnings remain.
+- `git diff --check` — passed; only Git's LF-to-CRLF informational notices appeared.
+
+### Residual risks
+
+- The maintained ICU4X implementation replaces one dependency with a 21-package
+  lockfile graph and baked data, increasing clean-build time and supply-chain
+  surface. Exact versions, checksums, source policy, advisories, and licenses are
+  locked/audited; future data upgrades must deliberately update the version-boundary
+  regression.
+- Full default case folding still does not perform canonical Unicode normalization.
+  Filesystem-specific composed/decomposed equivalence remains outside this portable
+  preflight, with the existing filesystem-enforced no-replace operations retained as
+  the final defense.
+- Native Windows filesystem/path execution was not available in this WSL toolchain.
+  The cross-target drive-relative syntax regression passes, but native execution
+  remains CI-bound.
