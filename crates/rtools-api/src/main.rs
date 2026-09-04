@@ -318,6 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_adapter_treats_valid_bmp_and_gif_as_empty_exif() {
+        let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
         for (name, format) in [
             ("plain.bmp", ImageFormat::Bmp),
             ("plain.gif", ImageFormat::Gif),

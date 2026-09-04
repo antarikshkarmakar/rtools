@@ -239,13 +239,21 @@ fn every_general_writer_rejects_qoi_without_output_artifacts() {
     let input = temp.path().join("writer-input.png");
     let watermark = temp.path().join("writer-watermark.png");
     create_png(&input, 4, 4);
-    create_png(&watermark, 1, 1);
+    create_png(&watermark, 5, 5);
 
     let cases: [(&str, Vec<&str>); 4] = [
         ("resize", vec!["--width", "2"]),
         ("crop", vec!["--region", "0,0,2,2"]),
-        ("filter", vec!["--preset", "kodak-portra400"]),
-        ("watermark", vec!["--image", watermark.to_str().unwrap()]),
+        ("filter", vec!["--preset", "portra"]),
+        (
+            "watermark",
+            vec![
+                "--image",
+                watermark.to_str().unwrap(),
+                "--position",
+                "center",
+            ],
+        ),
     ];
     let mut failures = Vec::new();
     for (operation, extra) in cases {
@@ -264,6 +272,13 @@ fn every_general_writer_rejects_qoi_without_output_artifacts() {
                 output.status.code(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let report = stdout_json(&output);
+        if report["failures"][0]["code"] != "UNSUPPORTED_FORMAT" {
+            failures.push(format!(
+                "{operation} returned error code {:?}",
+                report["failures"][0]["code"]
             ));
         }
         if destination.exists() {
