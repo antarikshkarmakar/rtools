@@ -50,10 +50,10 @@ rows.
 | `image.resize` | `available` | Resize a bounded single-frame image. |
 | `image.watermark.image` | `available` | Apply an image watermark with bounded decode and validated placement. |
 | `image.watermark.text` | `unavailable` | Text rendering is not implemented for watermarks. |
-| `pdf.compress` | `experimental` | PDF structure preservation is only partially verified. |
-| `pdf.merge` | `experimental` | PDF structure preservation is only partially verified. |
+| `pdf.compress` | `experimental` | Collision-safe publication is enforced; PDF structure preservation is only partially verified. |
+| `pdf.merge` | `experimental` | Collision-safe publication is enforced; PDF structure preservation is only partially verified. |
 | `pdf.ocr` | `unavailable` | No verified searchable-PDF OCR adapter. |
-| `pdf.split` | `experimental` | PDF structure preservation is only partially verified. |
+| `pdf.split` | `experimental` | All page destinations are reserved before collision-safe publication; PDF structure preservation is only partially verified. |
 | `pdf.text` | `unavailable` | PDF text extraction is not implemented in the CLI. |
 | `pdf.to_image` | `unavailable` | No verified PDFium rendering adapter. |
 

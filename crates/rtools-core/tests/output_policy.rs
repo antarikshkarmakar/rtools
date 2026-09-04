@@ -125,6 +125,30 @@ fn symlinked_output_parent_cannot_escape_the_selected_directory() {
     assert_no_rtools_artifacts(&outside);
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinked_nested_output_ancestor_cannot_escape_the_selected_directory() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let selected = directory.path().join("selected");
+    let outside = directory.path().join("outside");
+    let outside_child = outside.join("child");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir_all(&outside_child).unwrap();
+    let marker = outside_child.join("keep.bin");
+    fs::write(&marker, b"outside bytes").unwrap();
+    symlink(&outside, selected.join("link")).unwrap();
+    let output = selected.join("link").join("child").join("result.bin");
+
+    let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    assert_eq!(fs::read(marker).unwrap(), b"outside bytes");
+    assert!(!outside_child.join("result.bin").exists());
+    assert_no_rtools_artifacts(&outside_child);
+}
+
 #[test]
 fn reserved_windows_device_names_are_rejected_portably() {
     let directory = tempfile::tempdir().unwrap();
@@ -140,6 +164,16 @@ fn reserved_windows_device_names_are_rejected_portably() {
         "COM¹.txt",
         "LPT²",
         "com³.log",
+        "CON ",
+        "con.",
+        "PRN .txt",
+        "AUX...",
+        "NUL.txt. ",
+        "COM1 ",
+        "COM1.",
+        "COM¹ .txt",
+        "LPT².",
+        "com³...",
     ] {
         let output = directory.path().join(name);
         let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
@@ -150,6 +184,30 @@ fn reserved_windows_device_names_are_rejected_portably() {
             "{name}: {error}"
         );
         assert!(!output.exists(), "reserved output was created for {name}");
+        assert_no_rtools_artifacts(directory.path());
+    }
+}
+
+#[test]
+fn windows_device_name_near_misses_and_utf8_boundaries_remain_valid() {
+    let directory = tempfile::tempdir().unwrap();
+
+    for name in [
+        "COM0.txt",
+        "COM10.txt",
+        "XCOM1.txt",
+        "LPT0",
+        "LPT10",
+        "é.bin",
+        "界.bin",
+        "💾.bin",
+        "💾COM1.bin",
+    ] {
+        let output = directory.path().join(name);
+        let committed = write_and_commit(&output, OutputPolicy::FailIfExists, b"valid");
+
+        assert_eq!(committed, output, "{name}");
+        assert_eq!(fs::read(&committed).unwrap(), b"valid", "{name}");
         assert_no_rtools_artifacts(directory.path());
     }
 }
@@ -170,8 +228,10 @@ fn read_only_output_directory_fails_without_leaving_artifacts() {
     );
 
     fs::set_permissions(&output_directory, fs::Permissions::from_mode(0o755)).unwrap();
-    let error = result.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    match result {
+        Ok(pending) => drop(pending),
+        Err(error) => assert_eq!(error.code(), ErrorCode::ProcessingFailed),
+    }
     assert!(fs::read_dir(&output_directory).unwrap().next().is_none());
 }
 

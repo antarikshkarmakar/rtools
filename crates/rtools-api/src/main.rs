@@ -151,6 +151,7 @@ mod tests {
             .route("/rename", post(handlers::ai::rename))
             .route("/organize", post(handlers::ai::organize))
             .route("/duplicates", post(handlers::ai::duplicates))
+            .route("/api/v1/ai/alt-text", post(handlers::ai::alt_text))
             .with_state(Arc::new(AppState {
                 config: rtools_core::AppConfig::default(),
             }))
@@ -165,6 +166,19 @@ mod tests {
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name.starts_with("rtools-api-image-"))
+            })
+            .collect()
+    }
+
+    fn persistent_alt_text_temp_dirs() -> BTreeSet<PathBuf> {
+        std::fs::read_dir(std::env::temp_dir())
+            .expect("system temp directory must be readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("rtools-api-alt-text-"))
             })
             .collect()
     }
@@ -341,5 +355,26 @@ mod tests {
         let text = String::from_utf8_lossy(&rename_body);
         assert_eq!(status, StatusCode::OK, "{text}");
         assert!(!text.contains("{subject}"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn empty_alt_text_request_returns_structured_invalid_input() {
+        let before = persistent_alt_text_temp_dirs();
+        let response = test_app()
+            .oneshot(multipart_request("/api/v1/ai/alt-text", None))
+            .await
+            .expect("router call must complete");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body must read");
+        let document: serde_json::Value =
+            serde_json::from_slice(&body).expect("error response must be JSON");
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(document["success"], false);
+        assert_eq!(document["code"], "INVALID_INPUT");
+        assert!(document.get("results").is_none());
+        assert_eq!(persistent_alt_text_temp_dirs(), before);
     }
 }

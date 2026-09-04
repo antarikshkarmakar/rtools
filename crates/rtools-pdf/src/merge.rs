@@ -161,12 +161,10 @@ impl Processor for PdfMergeProcessor {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        document
-            .save(&config.output)
-            .map_err(|e| RToolsError::pdf(format!("Failed to save merged PDF: {e}")))?;
+        let output = crate::output::save_pdf(&mut document, &config.output, "merged PDF")?;
 
         let elapsed = start.elapsed();
-        let output_size = std::fs::metadata(&config.output)?.len();
+        let output_size = std::fs::metadata(&output)?.len();
 
         let input_size: u64 = input_paths
             .iter()
@@ -175,7 +173,7 @@ impl Processor for PdfMergeProcessor {
             .sum();
 
         Ok(FileOutput {
-            destination: rtools_core::output::OutputDestination::File(config.output),
+            destination: rtools_core::output::OutputDestination::File(output),
             name: None,
             mime_type: Some("application/pdf".to_string()),
             stats: Some(ProcessStats {

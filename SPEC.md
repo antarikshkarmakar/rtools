@@ -31,13 +31,13 @@ rendering, ONNX inference, or fabricated batch execution.
 
 ### Output and metadata safety
 
-- Every writing image configuration defaults to `OutputPolicy::FailIfExists`.
-  The CLI, REST, and MCP adapters retain that default. `UniqueName` and
-  `Overwrite` are explicit Rust API selections; merely supplying an output path
-  never grants overwrite permission.
+- Every executable image and PDF write defaults to fail if its destination
+  exists. The CLI, REST, and MCP adapters retain that default. `UniqueName` and
+  `Overwrite` are explicit Rust API selections for image operations; merely
+  supplying an output path never grants overwrite permission.
 - Output reservation and a sibling temporary artifact precede validated atomic
-  publication. Reserved Windows device names and a symlink used as the output
-  parent are rejected portably.
+  publication. Reserved Windows device names, ambiguous Windows drive/root
+  relative paths, and symlinks in any output-parent ancestor are rejected.
 - Writing image operations re-encode with a verified drop-all metadata policy.
   Preserve and GPS-only policies are unavailable and fail before any output is
   reserved. EXIF human and JSON operations are read-only.

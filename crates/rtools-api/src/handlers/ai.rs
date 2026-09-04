@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use rtools_core::Processor;
+use rtools_core::{ErrorCode, Processor, RToolsError};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -14,6 +14,24 @@ pub struct AiResponse {
     pub success: bool,
     pub message: String,
     pub results: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+pub struct AiErrorResponse {
+    pub success: bool,
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+fn ai_error(status: StatusCode, error: &RToolsError) -> (StatusCode, Json<AiErrorResponse>) {
+    (
+        status,
+        Json(AiErrorResponse {
+            success: false,
+            code: error.code(),
+            message: error.to_string(),
+        }),
+    )
 }
 
 pub async fn organize(
@@ -121,25 +139,31 @@ pub struct AltTextResult {
 pub async fn alt_text(
     State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
-) -> Result<Json<AiResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+) -> Result<Json<AiResponse>, (StatusCode, Json<AiErrorResponse>)> {
+    let temp_dir = tempfile::Builder::new()
+        .prefix("rtools-api-alt-text-")
+        .tempdir()
+        .map_err(|error| ai_error(StatusCode::INTERNAL_SERVER_ERROR, &RToolsError::from(error)))?;
     let mut results = Vec::new();
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|error| {
+        ai_error(
+            StatusCode::BAD_REQUEST,
+            &RToolsError::invalid_input(error.to_string()),
+        )
+    })? {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        let data = field.bytes().await.map_err(|error| {
+            ai_error(
+                StatusCode::BAD_REQUEST,
+                &RToolsError::invalid_input(error.to_string()),
+            )
+        })?;
 
         let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        std::fs::write(&temp_path, &data).map_err(|error| {
+            ai_error(StatusCode::INTERNAL_SERVER_ERROR, &RToolsError::from(error))
+        })?;
 
         let input = rtools_core::FileInput::from_path(temp_path);
         let config = rtools_ai::alt_text::AltTextConfig::default();
@@ -154,9 +178,16 @@ pub async fn alt_text(
                 });
             }
             Err(e) => {
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+                return Err(ai_error(StatusCode::INTERNAL_SERVER_ERROR, &e));
             }
         }
+    }
+
+    if results.is_empty() {
+        return Err(ai_error(
+            StatusCode::BAD_REQUEST,
+            &RToolsError::invalid_input("At least one image is required for alt text"),
+        ));
     }
 
     Ok(Json(AiResponse {

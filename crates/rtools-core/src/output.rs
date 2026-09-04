@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -195,6 +195,7 @@ impl Drop for PendingOutput {
 }
 
 fn validate_output_parent(output: &Path) -> RToolsResult<()> {
+    reject_ambiguous_windows_path(output)?;
     let file_name = output.file_name().ok_or_else(|| {
         RToolsError::path_policy_violation(format!("output must name a file: {}", output.display()))
     })?;
@@ -211,22 +212,79 @@ fn validate_output_parent(output: &Path) -> RToolsResult<()> {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let metadata = fs::symlink_metadata(parent).map_err(|error| {
+    validate_output_ancestor_chain(parent)
+}
+
+fn reject_ambiguous_windows_path(path: &Path) -> RToolsResult<()> {
+    let portable_drive_relative = path.as_os_str().to_str().is_some_and(|path_text| {
+        let bytes = path_text.as_bytes();
+        bytes.first().is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(1) == Some(&b':')
+            && !matches!(bytes.get(2), Some(b'/' | b'\\'))
+    });
+    if portable_drive_relative {
+        return Err(RToolsError::path_policy_violation(format!(
+            "Windows drive-relative output paths are not allowed: {}",
+            path.display()
+        )));
+    }
+
+    #[cfg(windows)]
+    if !path.is_absolute()
+        && (path.has_root() || matches!(path.components().next(), Some(Component::Prefix(_))))
+    {
+        return Err(RToolsError::path_policy_violation(format!(
+            "Windows root-relative or drive-relative output paths are not allowed: {}",
+            path.display()
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_output_ancestor_chain(parent: &Path) -> RToolsResult<()> {
+    let mut current = if parent.is_absolute() {
+        PathBuf::new()
+    } else {
+        let current = std::env::current_dir().map_err(|error| {
+            RToolsError::path_policy_violation(format!(
+                "output path anchor is unavailable: {error}"
+            ))
+        })?;
+        validate_output_directory(&current)?;
+        current
+    };
+
+    for component in parent.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::CurDir => {}
+            Component::RootDir | Component::ParentDir | Component::Normal(_) => {
+                current.push(component.as_os_str());
+                validate_output_directory(&current)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_output_directory(path: &Path) -> RToolsResult<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
         RToolsError::path_policy_violation(format!(
-            "output parent is unavailable ({}): {error}",
-            parent.display()
+            "output parent ancestor is unavailable ({}): {error}",
+            path.display()
         ))
     })?;
     if metadata.file_type().is_symlink() {
         return Err(RToolsError::path_policy_violation(format!(
-            "output parent must not be a symlink: {}",
-            parent.display()
+            "output parent ancestor must not be a symlink: {}",
+            path.display()
         )));
     }
     if !metadata.is_dir() {
         return Err(RToolsError::path_policy_violation(format!(
-            "output parent is not a directory: {}",
-            parent.display()
+            "output parent ancestor is not a directory: {}",
+            path.display()
         )));
     }
     Ok(())
@@ -549,6 +607,31 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod path_validation_tests {
+    use crate::ErrorCode;
+    use std::path::Path;
+
+    #[test]
+    fn windows_drive_relative_output_is_rejected_portably_without_filesystem_side_effects() {
+        let output = Path::new("Q:rtools-drive-relative-output-policy-test.pdf");
+
+        let error = super::validate_output_parent(output).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_root_relative_output_is_rejected_without_using_the_current_drive() {
+        let output = Path::new(r"\rtools-root-relative-output-policy-test.pdf");
+
+        let error = super::validate_output_parent(output).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
+    }
 }
 
 #[cfg(test)]

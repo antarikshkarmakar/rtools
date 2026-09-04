@@ -4,6 +4,7 @@ pub mod extract;
 pub mod merge;
 pub mod metadata;
 pub mod ocr;
+mod output;
 pub mod redact;
 pub mod split;
 

@@ -1,5 +1,5 @@
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, OutputPolicy, PendingOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -83,30 +83,49 @@ impl Processor for PdfSplitProcessor {
             ));
         }
         std::fs::create_dir_all(&config.output_dir)?;
-        let mut outputs = Vec::new();
+        let planned_outputs: Vec<_> = pages_to_extract
+            .iter()
+            .map(|&page_num| {
+                let filename = config
+                    .filename_pattern
+                    .replace("{n}", &page_num.to_string())
+                    .replace("{total}", &page_count.to_string());
+                let output_path = config.output_dir.join(&filename);
 
-        for &page_num in &pages_to_extract {
-            let filename = config
-                .filename_pattern
-                .replace("{n}", &page_num.to_string())
-                .replace("{total}", &page_count.to_string());
+                (page_num, filename, output_path)
+            })
+            .collect();
+        let mut pending_outputs = Vec::with_capacity(planned_outputs.len());
+        for (page_num, filename, output_path) in planned_outputs {
+            let pending = PendingOutput::new(&output_path, OutputPolicy::FailIfExists)?;
+            pending_outputs.push((page_num, filename, pending));
+        }
 
-            let output_path = config.output_dir.join(&filename);
-
+        for (page_num, _, pending) in &pending_outputs {
             // Extract single page by cloning document and pruning pages
             let mut page_doc = doc.clone();
             let pages_to_delete: Vec<u32> = page_doc
                 .get_pages()
                 .keys()
                 .copied()
-                .filter(|&p| p != page_num)
+                .filter(|p| p != page_num)
                 .collect();
             page_doc.delete_pages(&pages_to_delete);
 
-            page_doc
-                .save(&output_path)
-                .map_err(|e| RToolsError::pdf(format!("Failed to save page {page_num}: {e}")))?;
+            crate::output::encode_pdf(
+                &mut page_doc,
+                pending.temporary_path(),
+                &format!("page {page_num}"),
+            )?;
+        }
 
+        for (_, _, pending) in &pending_outputs {
+            crate::output::validate_pdf_artifact(pending.temporary_path())?;
+        }
+
+        let mut outputs = Vec::with_capacity(pending_outputs.len());
+        for (_, filename, pending) in pending_outputs {
+            let output_path = crate::output::commit_pdf(pending)?;
             outputs.push(FileOutput {
                 destination: rtools_core::output::OutputDestination::File(output_path),
                 name: Some(filename),

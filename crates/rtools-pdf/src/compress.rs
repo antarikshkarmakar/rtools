@@ -101,9 +101,7 @@ impl Processor for PdfCompressProcessor {
             doc.trailer.remove(b"Info");
         }
 
-        // Save compressed PDF
-        doc.save(&output)
-            .map_err(|e| RToolsError::pdf(format!("Failed to save compressed PDF: {e}")))?;
+        let output = crate::output::save_pdf(&mut doc, &output, "compressed PDF")?;
 
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
