@@ -9,10 +9,30 @@ use std::path::Path;
 use tempfile::tempdir;
 
 #[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory symlink {} -> {}: {error}",
+            link.display(),
+            target.display()
+        )
+    });
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::windows::fs::symlink_dir(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory symlink {} -> {}: {error}. Enable Windows Developer Mode or grant SeCreateSymbolicLinkPrivilege so CreateSymbolicLink can succeed; this safety regression must not be skipped",
+            link.display(),
+            target.display()
+        )
+    });
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn merge_rejects_symlinked_missing_parent_without_creating_outside() {
-    use std::os::unix::fs::symlink;
-
     let temp = tempdir().unwrap();
     let first = temp.path().join("first.pdf");
     let second = temp.path().join("second.pdf");
@@ -24,7 +44,7 @@ fn merge_rejects_symlinked_missing_parent_without_creating_outside() {
     let outside = temp.path().join("outside");
     fs::create_dir(&selected).unwrap();
     fs::create_dir(&outside).unwrap();
-    symlink(&outside, selected.join("link")).unwrap();
+    create_directory_symlink(&outside, &selected.join("link"));
     let outside_child = outside.join("new-child");
     let output = selected.join("link/new-child/result.pdf");
 
@@ -49,11 +69,9 @@ fn merge_rejects_symlinked_missing_parent_without_creating_outside() {
     assert_no_rtools_artifacts(&outside);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn compress_rejects_symlinked_missing_parent_without_creating_outside() {
-    use std::os::unix::fs::symlink;
-
     let temp = tempdir().unwrap();
     let input = temp.path().join("input.pdf");
     write_pdf(&input, 1);
@@ -62,7 +80,7 @@ fn compress_rejects_symlinked_missing_parent_without_creating_outside() {
     let outside = temp.path().join("outside");
     fs::create_dir(&selected).unwrap();
     fs::create_dir(&outside).unwrap();
-    symlink(&outside, selected.join("link")).unwrap();
+    create_directory_symlink(&outside, &selected.join("link"));
     let outside_child = outside.join("new-child");
     let output = selected.join("link/new-child/result.pdf");
 
@@ -83,11 +101,9 @@ fn compress_rejects_symlinked_missing_parent_without_creating_outside() {
     assert_no_rtools_artifacts(&outside);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn split_rejects_symlinked_missing_parent_without_creating_outside() {
-    use std::os::unix::fs::symlink;
-
     let temp = tempdir().unwrap();
     let input = temp.path().join("input.pdf");
     write_pdf(&input, 2);
@@ -96,7 +112,7 @@ fn split_rejects_symlinked_missing_parent_without_creating_outside() {
     let outside = temp.path().join("outside");
     fs::create_dir(&selected).unwrap();
     fs::create_dir(&outside).unwrap();
-    symlink(&outside, selected.join("link")).unwrap();
+    create_directory_symlink(&outside, &selected.join("link"));
     let outside_child = outside.join("new-child");
     let output_dir = selected.join("link/new-child");
 

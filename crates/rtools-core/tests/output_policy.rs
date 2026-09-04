@@ -35,6 +35,28 @@ fn assert_no_rtools_artifacts(directory: &Path) {
     assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
 }
 
+#[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory symlink {} -> {}: {error}",
+            link.display(),
+            target.display()
+        )
+    });
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) {
+    std::os::windows::fs::symlink_dir(target, link).unwrap_or_else(|error| {
+        panic!(
+            "failed to create directory symlink {} -> {}: {error}. Enable Windows Developer Mode or grant SeCreateSymbolicLinkPrivilege so CreateSymbolicLink can succeed; this safety regression must not be skipped",
+            link.display(),
+            target.display()
+        )
+    });
+}
+
 #[test]
 fn fail_if_exists_never_changes_existing_file() {
     let directory = tempfile::tempdir().unwrap();
@@ -104,18 +126,16 @@ fn non_directory_parent_is_rejected() {
     assert_eq!(fs::read(parent).unwrap(), b"file");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn symlinked_output_parent_cannot_escape_the_selected_directory() {
-    use std::os::unix::fs::symlink;
-
     let directory = tempfile::tempdir().unwrap();
     let selected = directory.path().join("selected");
     let outside = directory.path().join("outside");
     fs::create_dir(&selected).unwrap();
     fs::create_dir(&outside).unwrap();
     let escaped_parent = selected.join("escape");
-    symlink(&outside, &escaped_parent).unwrap();
+    create_directory_symlink(&outside, &escaped_parent);
     let output = escaped_parent.join("result.bin");
 
     let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
@@ -125,11 +145,9 @@ fn symlinked_output_parent_cannot_escape_the_selected_directory() {
     assert_no_rtools_artifacts(&outside);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn symlinked_nested_output_ancestor_cannot_escape_the_selected_directory() {
-    use std::os::unix::fs::symlink;
-
     let directory = tempfile::tempdir().unwrap();
     let selected = directory.path().join("selected");
     let outside = directory.path().join("outside");
@@ -138,7 +156,7 @@ fn symlinked_nested_output_ancestor_cannot_escape_the_selected_directory() {
     fs::create_dir_all(&outside_child).unwrap();
     let marker = outside_child.join("keep.bin");
     fs::write(&marker, b"outside bytes").unwrap();
-    symlink(&outside, selected.join("link")).unwrap();
+    create_directory_symlink(&outside, &selected.join("link"));
     let output = selected.join("link").join("child").join("result.bin");
 
     let error = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap_err();
