@@ -372,3 +372,95 @@ This is an incomplete refactor state, not a reviewed or accepted design. Continu
 - Directory scans and portable planning are preflight checks. The already-approved
   no-replace copy publication and hard-link rename operations remain necessary final
   defenses against races and aliases introduced after preflight.
+
+## Fix round 4/5: explicit traversal anchors and full Unicode case folding
+
+### RED-GREEN record
+
+1. **Relative traversal anchor and exact directory aliases.** Added an initial
+   combined real-filesystem unit regression before the production helper existed.
+   `cargo test -p rtools-ai --lib
+   destination_scan_anchors_a_relative_first_component_and_checks_exact_aliases
+   --locked` was compile-RED with unresolved import
+   `destination_or_case_alias_exists_with_base`. After anchoring traversal to an
+   injected absolute base, the fixture was split into the two requested contracts:
+   a normal relative first component from the real process current directory, and
+   exact `out` traversal with an `Out` sibling. The final focused destination suite
+   passes both.
+2. **Windows drive-relative paths.** Added a target-portable test against an explicit
+   absolute base before the rejection existed. `cargo test -p rtools-ai --lib
+   destination_helpers_reject_windows_drive_relative_paths --locked` was RED because
+   `C:foo` returned
+   `Ok(PortableDestinationKey([RootDir, Normal("WORKSPACE"), Normal("BASE"),
+   Normal("C:FOO")]))`. GREEN rejects it with `PATH_POLICY_VIOLATION` through both
+   key creation and alias scanning before any join or traversal. The pre-existing
+   rooted-parent test continues to prove lexical root clamping.
+3. **Full Unicode case folding.** Added
+   `rename_dry_run_rejects_kelvin_sign_and_k_destination_aliases` before replacing
+   uppercase normalization. `cargo test -p rtools-ai --test dry_run
+   rename_dry_run_rejects_kelvin_sign_and_k_destination_aliases --locked` was RED:
+   rename returned two successful plans for `K.jpg` and `k.jpg`. After adding the
+   exact direct dependency `unicode-casefold = "=0.2.0"` and using explicit
+   `Variant::Full`/`Locale::NonTurkic` folding, the same command passes. The existing
+   sigma/final-sigma and sharp-s expansion regressions also pass in the full suite.
+
+### Design decisions
+
+- `destination_or_case_alias_exists` captures `current_dir` once. Its private
+  injected-base helper starts relative traversal at that explicit absolute base and
+  still scans every requested existing component, including an exact spelling when
+  a case-fold-equivalent sibling exists.
+- Drive-letter-plus-colon paths without a following root separator are rejected
+  conservatively on every target. No attempt is made to inherit Windows per-drive
+  current-directory state; absolute `C:/...` and `C:\\...` spellings are not matched
+  by that rejection.
+- Filename identity uses the dependency's deterministic full non-Turkic Unicode case
+  fold. Non-Unicode components remain fail-closed. No Unicode normalization layer was
+  added, and the approved no-replace copy/hard-link publication code was unchanged.
+- The two other rtools-ai integration targets import the direct dependency as `_`
+  solely to satisfy the workspace `unused_crate_dependencies` lint for independent
+  integration-test crates.
+
+### Changed files in this fix round
+
+- `Cargo.lock`, `crates/rtools-ai/Cargo.toml`
+- `crates/rtools-ai/src/destination.rs`
+- `crates/rtools-ai/tests/{capability_modes,capability_unavailable,dry_run}.rs`
+- `.superpowers/sdd/2026-09-02-milestone-1-release-safety/task-8-report.md`
+
+### Verification (fresh after final formatting and lint corrections)
+
+- `cargo test -p rtools-ai --lib destination::tests --locked` — 5 passed, 0
+  failed.
+- `cargo test -p rtools-ai --test dry_run --locked` — 19 passed, 0 failed,
+  including sigma/final-sigma, Kelvin/k, sharp-s expansion, non-Unicode fail-closed,
+  relative/absolute identity, and no-overwrite execution coverage.
+- `cargo test -p rtools-ai --all-targets --all-features --locked` — 34 passed, 0
+  failed. Its first run exposed only integration-target unused-dependency warnings;
+  the narrow `_` imports removed them.
+- `cargo clippy -p rtools-ai --all-targets --all-features --locked -- -D warnings`
+  — passed. Its first run rejected the intentionally non-NFC Kelvin literal; a
+  function-scoped `unicode_not_nfc` allowance documents why replacing U+212A with
+  `K` would erase the regression.
+- `cargo test --workspace --all-targets --all-features --locked` — 203 passed, 0
+  failed.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — passed.
+- `cargo tree -i unicode-casefold --locked` — one pinned package,
+  `unicode-casefold v0.2.0`, used directly by `rtools-ai`; it adds no transitive
+  packages.
+- `cargo deny check` — passed; advisories, bans, licenses, and sources were `ok`.
+  Existing duplicate-dependency and unmatched-ISC warnings remain.
+- `cargo check -p rtools-wasm --target wasm32-unknown-unknown --locked` — passed.
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed; only Git's LF-to-CRLF informational notices appeared.
+
+### Residual risk
+
+- This WSL toolchain has only `x86_64-unknown-linux-gnu` and
+  `wasm32-unknown-unknown` installed, so native Windows path parsing was not executed
+  locally. The drive-relative contract is covered by a pure cross-target syntax test
+  and rejects before platform path joining; native Windows execution remains CI-bound.
+- Full case folding intentionally does not add canonical Unicode normalization.
+  Filesystem-specific composed/decomposed equivalence remains a future conservative
+  audit area; the final filesystem-enforced no-replace defenses remain in force.

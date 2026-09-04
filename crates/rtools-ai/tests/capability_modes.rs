@@ -4,7 +4,7 @@ use rtools_ai::organize::{OrganizeConfig, OrganizeProcessor, OrganizeStrategy};
 use rtools_ai::rename::{RenameConfig, RenameProcessor};
 use rtools_core::{ErrorCode, FileInput, Processor, RToolsError};
 use tempfile::tempdir;
-use {chrono as _, serde as _};
+use {chrono as _, serde as _, unicode_casefold as _};
 
 #[test]
 fn unsupported_organize_modes_fail_before_directory_or_input_work() {
