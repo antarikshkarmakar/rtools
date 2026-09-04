@@ -1,8 +1,12 @@
+use crate::destination::{
+    copy_no_replace, destination_or_case_alias_exists, insert_unique_destination,
+};
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// AI organize configuration
@@ -83,16 +87,22 @@ impl Processor for OrganizeProcessor {
 
             let orig_file_name = path
                 .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+                .and_then(OsStr::to_str)
+                .ok_or_else(|| {
+                    RToolsError::path_policy_violation(format!(
+                        "organize destination filename is not Unicode: {}",
+                        path.display()
+                    ))
+                })?
+                .to_owned();
             let target_path = target_dir.join(&orig_file_name);
-            if destination_exists(&target_path)? || planned_destinations.contains(&target_path) {
+            if destination_or_case_alias_exists(&target_path)?
+                || !insert_unique_destination(&mut planned_destinations, &target_path)?
+            {
                 return Err(RToolsError::output_exists(
                     target_path.display().to_string(),
                 ));
             }
-            planned_destinations.insert(target_path.clone());
             plans.push((path.clone(), target_path));
         }
 
@@ -103,7 +113,7 @@ impl Processor for OrganizeProcessor {
                     RToolsError::path_policy_violation("Organize destination has no parent")
                 })?;
                 std::fs::create_dir_all(target_dir)?;
-                std::fs::copy(&path, &target_path)?;
+                copy_no_replace(&path, &target_path)?;
             }
 
             outputs.push(FileOutput {
@@ -137,14 +147,6 @@ impl Processor for OrganizeProcessor {
 
     fn name(&self) -> &'static str {
         "OrganizeProcessor"
-    }
-}
-
-fn destination_exists(path: &Path) -> RToolsResult<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
     }
 }
 

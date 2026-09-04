@@ -199,3 +199,87 @@ This is an incomplete refactor state, not a reviewed or accepted design. Continu
   retained in the report.
 - Tesseract availability is diagnostic-only until an adapter exists. The best-effort
   probe intentionally does not change registry capability state.
+
+## Fix round 2/5: portable destination aliases
+
+### RED-GREEN record
+
+- Added six real-filesystem case-alias regressions before changing production code:
+  two different source directories containing `A.jpg` and `a.jpg` must fail for
+  organize dry-run, organize execution, rename dry-run, and rename execution; an
+  already-present case-only directory entry must fail for each dry-run operation.
+  RED: the focused suite reported seven failures (the six aliases plus the
+  non-Unicode rule below), each returning successful plans on the case-sensitive
+  host. GREEN: all alias tests return `OUTPUT_EXISTS`, preserve both source byte
+  strings, create no dry-run artifacts, and leave no earlier execution artifact.
+- Added the Unix-only
+  `rename_rejects_non_unicode_destination_names_without_lossy_normalization`
+  regression. RED: a byte-invalid filename became a replacement-character name
+  through `to_string_lossy` and planned successfully. GREEN: destination identity
+  construction fails closed with `PATH_POLICY_VIOLATION` and preserves source bytes.
+- The first no-replace rename implementation copied through `PendingOutput` and
+  removed the source after commit. A pre-commit review correctly identified this as
+  a metadata/identity regression. Added
+  `rename_non_dry_preserves_regular_file_identity_and_modified_time` before changing
+  it. RED: the copied target inode was `13864` while the source inode was `13534`.
+  GREEN: the target has the source device, inode, and modified time, and the source
+  is absent only after the target exists.
+
+### Design decisions
+
+- `rtools-ai::destination` supplies the shared portable destination policy.
+  `PortableDestinationKey` lexically eliminates `.`/normal/`..` pairs and compares
+  Unicode path components with `to_lowercase`. The planner uses those keys for every
+  destination and scans each existing directory component for a case-only alias,
+  including aliases in an existing output-directory path. It rejects non-Unicode
+  components instead of lossy string conversion, so distinct byte paths are never
+  silently merged into one portable identity.
+- Organize retains copy semantics but publishes each non-dry copy through Task 4's
+  `PendingOutput` `FailIfExists` reservation and no-replace commit. This provides a
+  final filesystem-enforced collision defense after portable planning.
+- Rename deliberately does not copy. `hard_link(source, destination)` atomically
+  creates the no-replace target for supported regular files, maps `AlreadyExists` to
+  `OUTPUT_EXISTS`, and unlinks the source only after link creation. This preserves
+  source inode/metadata identity without a copy/delete rollback hazard. Task 4's
+  temporary-artifact primitive is intentionally not used for rename because it
+  requires a copied/rewritten temporary artifact and would change that identity.
+
+### Changed files in this fix round
+
+- `crates/rtools-ai/src/{destination,lib,organize,rename}.rs`
+- `crates/rtools-ai/tests/dry_run.rs`
+
+### Verification (fresh after final hard-link correction)
+
+- `cargo test -p rtools-ai --test dry_run --locked` — 13 passed, 0 failed.
+- `cargo test -p rtools-core --test output_policy --locked` — 19 passed, 0 failed,
+  including no-replace race defense and temporary/reservation cleanup.
+- `cargo test -p rtools-cli --test cli_contract --locked` — 15 passed, 0 failed.
+- `cargo test -p rtools-cli --locked` — 43 passed, 0 failed.
+- Original reproductions, with `test $? -ne 0` after expected failures:
+  - `cargo run -q -p rtools-cli -- pdf text --input missing.pdf` — nonzero and
+    `CAPABILITY_UNAVAILABLE`.
+  - `cargo run -q -p rtools-cli -- config validate --config /definitely/missing.toml`
+    — nonzero and `CONFIGURATION_INVALID`.
+  - `cargo run -q -p rtools-cli -- --output-format json doctor | jq -e '.status'`
+    — emitted one JSON report and jq succeeded.
+- `cargo test --workspace --all-targets --locked` — 195 passed, 0 failed.
+- `cargo fmt --all -- --check` — passed.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — passed.
+- `cargo check -p rtools-wasm --target wasm32-unknown-unknown --locked` — passed.
+- `cargo deny check` — passed; advisories, bans, licenses, and sources were `ok`.
+  Existing duplicate-dependency and unmatched-ISC warnings remain.
+- `git diff --check` — passed before this report append; rerun after staging below.
+
+### Residual filesystem limits
+
+- The rename no-replace move requires a hard-link-capable filesystem and source/
+  destination on the same filesystem. Unsupported file types/filesystems fail before
+  source unlink; no copying fallback is used because it would lose identity.
+- If source unlink fails after a successful hard link, rtools returns that error and
+  leaves a safe duplicate rather than deleting either artifact.
+- The portable key intentionally rejects non-Unicode components. It performs lexical
+  normalization and Unicode lowercase comparison, not platform-specific Unicode
+  normalization (for example, filesystem-specific composed/decomposed equivalence),
+  so such platform rules remain a conservative future audit area.

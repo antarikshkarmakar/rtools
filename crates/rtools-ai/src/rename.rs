@@ -1,8 +1,12 @@
+use crate::destination::{
+    destination_or_case_alias_exists, insert_unique_destination, move_no_replace,
+};
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::PathBuf;
 
 /// AI rename configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,20 +80,20 @@ impl Processor for RenameProcessor {
                 .unwrap_or_else(|| path.parent().unwrap_or_else(|| std::path::Path::new(".")));
             let new_path = output_dir.join(&new_name);
 
-            if planned_destinations.contains(&new_path)
+            if !insert_unique_destination(&mut planned_destinations, &new_path)?
                 || (new_path != *path
-                    && (destination_exists(&new_path)? || input_paths.contains(&new_path)))
+                    && (destination_or_case_alias_exists(&new_path)?
+                        || input_paths.contains(&new_path)))
             {
                 return Err(RToolsError::output_exists(new_path.display().to_string()));
             }
-            planned_destinations.insert(new_path.clone());
             plans.push((path.clone(), new_path));
         }
 
         let mut outputs = Vec::with_capacity(plans.len());
         for (path, new_path) in plans {
             if !config.dry_run && new_path != path {
-                std::fs::rename(&path, &new_path)?;
+                move_no_replace(&path, &new_path)?;
             }
 
             outputs.push(FileOutput {
@@ -123,14 +127,6 @@ impl Processor for RenameProcessor {
 
     fn name(&self) -> &'static str {
         "RenameProcessor"
-    }
-}
-
-fn destination_exists(path: &Path) -> RToolsResult<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
     }
 }
 
@@ -193,8 +189,21 @@ fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<
     let modified = metadata.modified()?;
     let datetime: chrono::DateTime<chrono::Local> = modified.into();
 
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let ext = path.extension().unwrap_or_default().to_string_lossy();
+    let stem = path.file_stem().and_then(OsStr::to_str).ok_or_else(|| {
+        RToolsError::path_policy_violation(format!(
+            "rename destination filename stem is not Unicode: {}",
+            path.display()
+        ))
+    })?;
+    let ext = match path.extension() {
+        Some(extension) => extension.to_str().ok_or_else(|| {
+            RToolsError::path_policy_violation(format!(
+                "rename destination filename extension is not Unicode: {}",
+                path.display()
+            ))
+        })?,
+        None => "",
+    };
 
     let token = |name| ["{", name, "}"].concat();
     let (date, time, datetime_token, index_token, name_token, extension_token) = (
@@ -213,8 +222,8 @@ fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<
             &datetime.format("%Y%m%d_%H%M%S").to_string(),
         )
         .replace(&index_token, &index.to_string())
-        .replace(&name_token, &stem)
-        .replace(&extension_token, &ext);
+        .replace(&name_token, stem)
+        .replace(&extension_token, ext);
 
     // Only append extension if the pattern doesn't already include {ext}
     // (which would have been replaced with the actual extension)

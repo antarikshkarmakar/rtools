@@ -1,4 +1,5 @@
 pub mod alt_text;
+pub(crate) mod destination;
 pub mod duplicates;
 pub mod ocr;
 pub mod organize;
