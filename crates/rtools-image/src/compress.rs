@@ -129,6 +129,14 @@ impl Processor for CompressProcessor {
                 .join(file_name),
         };
 
+        let (output_format, encoder_format) =
+            crate::format::resolve_output_format(&output_path, "Compression")?;
+        if output_format != target_format {
+            return Err(RToolsError::invalid_input(
+                "Compression output extension must match the requested format",
+            ));
+        }
+
         let pending = PendingOutput::new(&output_path, config.output_policy)?;
 
         // Log alpha channel warning for JPEG targets
@@ -207,10 +215,7 @@ impl Processor for CompressProcessor {
                     .map_err(|e| RToolsError::image(format!("AVIF compression failed: {e}")))?;
             }
             _ => {
-                let image_format = image::ImageFormat::from_path(&output_path).map_err(|e| {
-                    RToolsError::image(format!("Unsupported compression output format: {e}"))
-                })?;
-                img.save_with_format(pending.temporary_path(), image_format)
+                img.save_with_format(pending.temporary_path(), encoder_format)
                     .map_err(|e| {
                         RToolsError::image(format!("Compression failed for {target_format:?}: {e}"))
                     })?;
@@ -218,7 +223,8 @@ impl Processor for CompressProcessor {
         }
 
         let output_path = pending.commit(|artifact| {
-            crate::metadata::validate_drop_all_artifact(artifact, &config.limits)
+            crate::metadata::validate_drop_all_artifact(artifact, &config.limits)?;
+            crate::format::verify_image_artifact_format(artifact, &config.limits, encoder_format)
         })?;
 
         let elapsed = start.elapsed();

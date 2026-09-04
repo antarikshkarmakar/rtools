@@ -737,6 +737,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_tool_treats_valid_bmp_and_gif_as_empty_exif() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        for (name, format) in [
+            ("plain.bmp", ImageFormat::Bmp),
+            ("plain.gif", ImageFormat::Gif),
+        ] {
+            let input = temp.path().join(name);
+            image::DynamicImage::new_rgba8(2, 2)
+                .save_with_format(&input, format)
+                .expect("fixture must encode");
+
+            let result = RToolsServer
+                .handle_tool("get_metadata", serde_json::json!({"input_path": input}))
+                .await
+                .expect("tool dispatch must complete");
+            assert!(!is_error(&result), "{name}: {result:?}");
+            let serialized = serde_json::to_value(&result).expect("tool result must serialize");
+            let text = serialized["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|block| block["text"].as_str())
+                .expect("metadata tool must return text");
+            let metadata: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert!(
+                metadata["exif"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(serde_json::Value::is_null),
+                "{name}: {metadata}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn unsupported_ai_modes_and_empty_duplicates_propagate_errors() {
         let temp = tempfile::tempdir().expect("temp dir");
         let input = temp.path().join("input.png");

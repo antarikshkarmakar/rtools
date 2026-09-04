@@ -210,6 +210,80 @@ fn nonfinite_duplicate_threshold_exits_invalid() {
 }
 
 #[test]
+fn compress_format_extension_mismatch_is_invalid_without_output_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("compress-input.png");
+    let destination = temp.path().join("claimed.png");
+    create_png(&input, 4, 4);
+
+    let output = command(temp.path())
+        .args(["--output-format", "json", "image", "compress", "--input"])
+        .arg(&input)
+        .args(["--format", "tiff", "--output"])
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+    assert_eq!(stdout_json(&output)["failures"][0]["code"], "INVALID_INPUT");
+    assert!(!destination.exists());
+    assert!(std::fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .all(|name| !name.to_string_lossy().contains(".rtools.")));
+}
+
+#[test]
+fn every_general_writer_rejects_qoi_without_output_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("writer-input.png");
+    let watermark = temp.path().join("writer-watermark.png");
+    create_png(&input, 4, 4);
+    create_png(&watermark, 1, 1);
+
+    let cases: [(&str, Vec<&str>); 4] = [
+        ("resize", vec!["--width", "2"]),
+        ("crop", vec!["--region", "0,0,2,2"]),
+        ("filter", vec!["--preset", "kodak-portra400"]),
+        ("watermark", vec!["--image", watermark.to_str().unwrap()]),
+    ];
+    let mut failures = Vec::new();
+    for (operation, extra) in cases {
+        let destination = temp.path().join(format!("{operation}.qoi"));
+        let mut process = command(temp.path());
+        process
+            .args(["--output-format", "json", "image", operation, "--input"])
+            .arg(&input)
+            .args(extra)
+            .arg("--output")
+            .arg(&destination);
+        let output = process.output().unwrap();
+        if output.status.code() != Some(2) {
+            failures.push(format!(
+                "{operation} exit {:?}; stdout={}; stderr={}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        if destination.exists() {
+            failures.push(format!("{operation} published a final output"));
+        }
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains(".rtools."))
+        .collect();
+    if !leftovers.is_empty() {
+        failures.push(format!(
+            "leftover temporary/reservation artifacts: {leftovers:?}"
+        ));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+#[test]
 fn duplicate_cli_uses_configured_decoded_pixel_limit() {
     let temp = tempfile::tempdir().unwrap();
     create_png(&temp.path().join("oversized.png"), 3, 3);

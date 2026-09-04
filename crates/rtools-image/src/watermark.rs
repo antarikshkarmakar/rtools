@@ -246,9 +246,7 @@ impl Processor for WatermarkProcessor {
                 .join(file_name),
         };
 
-        let image_format = image::ImageFormat::from_path(&output).map_err(|error| {
-            RToolsError::image(format!("Invalid watermark output format: {error}"))
-        })?;
+        let (format, image_format) = crate::format::resolve_output_format(&output, "Watermark")?;
         let pending = PendingOutput::new(&output, config.output_policy)?;
 
         base_img
@@ -261,10 +259,6 @@ impl Processor for WatermarkProcessor {
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
-
-        let format = rtools_core::ImageFormat::from_path(&output).ok_or_else(|| {
-            RToolsError::unsupported_format("Cannot determine committed watermark output format")
-        })?;
 
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),

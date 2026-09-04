@@ -218,6 +218,39 @@ pub(crate) fn read_bounded_snapshot(path: &Path, limits: &ResourceLimits) -> RTo
     Ok(encoded)
 }
 
+/// Resolve one encoder format and one public MIME-bearing format from an
+/// output path before any output reservation is created.
+pub(crate) fn resolve_output_format(
+    path: &Path,
+    operation: &str,
+) -> RToolsResult<(ImageFormat, image::ImageFormat)> {
+    let public_format = ImageFormat::from_path(path).ok_or_else(|| {
+        RToolsError::unsupported_format(format!("{operation} output format is unsupported"))
+    })?;
+    let encoder_format = image::ImageFormat::from_path(path).map_err(|_| {
+        RToolsError::unsupported_format(format!("{operation} output format is unsupported"))
+    })?;
+    Ok((public_format, encoder_format))
+}
+
+/// Verify the encoded bytes advertise the exact format selected before
+/// output reservation.
+pub(crate) fn verify_image_artifact_format(
+    path: &Path,
+    limits: &ResourceLimits,
+    expected: image::ImageFormat,
+) -> RToolsResult<()> {
+    let encoded = read_bounded_snapshot(path, limits)?;
+    let actual = image::guess_format(&encoded)
+        .map_err(|_| RToolsError::image("encoded image format validation failed"))?;
+    if actual != expected {
+        return Err(RToolsError::image(
+            "encoded image format did not match the requested output format",
+        ));
+    }
+    Ok(())
+}
+
 /// Reopen and fully decode a newly encoded image within the configured limits
 /// before it becomes visible.
 pub(crate) fn validate_image_artifact(path: &Path, limits: &ResourceLimits) -> RToolsResult<()> {

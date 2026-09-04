@@ -2,6 +2,7 @@ use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ExifData;
 use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::path::PathBuf;
 
 /// EXIF viewer configuration
@@ -40,22 +41,10 @@ impl Processor for ExifProcessor {
         let exif = match exif::Reader::new().read_from_container(&mut bufreader) {
             Ok(exif) => exif,
             Err(exif::Error::NotFound(_)) => {
-                return Ok(ExifData {
-                    camera_make: None,
-                    camera_model: None,
-                    lens_model: None,
-                    datetime_original: None,
-                    datetime_digitized: None,
-                    gps_latitude: None,
-                    gps_longitude: None,
-                    gps_altitude: None,
-                    exposure_time: None,
-                    f_number: None,
-                    iso: None,
-                    focal_length: None,
-                    flash: None,
-                    orientation: None,
-                });
+                return Ok(empty_exif_data());
+            }
+            Err(exif::Error::InvalidFormat(_)) if is_valid_non_exif_container(path)? => {
+                return Ok(empty_exif_data());
             }
             Err(_) => {
                 return Err(RToolsError::image("Malformed EXIF metadata"));
@@ -203,6 +192,48 @@ impl Processor for ExifProcessor {
     fn name(&self) -> &'static str {
         "ExifProcessor"
     }
+}
+
+const fn empty_exif_data() -> ExifData {
+    ExifData {
+        camera_make: None,
+        camera_model: None,
+        lens_model: None,
+        datetime_original: None,
+        datetime_digitized: None,
+        gps_latitude: None,
+        gps_longitude: None,
+        gps_altitude: None,
+        exposure_time: None,
+        f_number: None,
+        iso: None,
+        focal_length: None,
+        flash: None,
+        orientation: None,
+    }
+}
+
+fn is_valid_non_exif_container(path: &Path) -> RToolsResult<bool> {
+    let reader = image::ImageReader::open(path)
+        .and_then(image::ImageReader::with_guessed_format)
+        .map_err(|_| RToolsError::image("Malformed EXIF metadata"))?;
+    let Some(format) = reader.format() else {
+        return Ok(false);
+    };
+    if matches!(
+        format,
+        image::ImageFormat::Jpeg
+            | image::ImageFormat::Png
+            | image::ImageFormat::WebP
+            | image::ImageFormat::Avif
+            | image::ImageFormat::Tiff
+    ) {
+        return Ok(false);
+    }
+    reader
+        .into_dimensions()
+        .map(|_| true)
+        .map_err(|_| RToolsError::image("Malformed EXIF metadata"))
 }
 
 fn decode_dms(values: &[exif::Rational]) -> Option<f64> {

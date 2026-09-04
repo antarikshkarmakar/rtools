@@ -157,9 +157,8 @@ impl Processor for ResizeProcessor {
                 .join(file_name),
         };
 
-        let image_format = image::ImageFormat::from_path(&output).map_err(|error| {
-            RToolsError::image(format!("Invalid resize output format: {error}"))
-        })?;
+        let (output_format, image_format) =
+            crate::format::resolve_output_format(&output, "Resize")?;
         let pending = PendingOutput::new(&output, config.output_policy)?;
 
         resized
@@ -172,11 +171,6 @@ impl Processor for ResizeProcessor {
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
-
-        // Derive MIME type from output path, not input
-        let output_format = rtools_core::ImageFormat::from_path(&output)
-            .or(input.format)
-            .unwrap_or(rtools_core::types::ImageFormat::Jpeg);
 
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),

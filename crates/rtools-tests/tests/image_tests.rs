@@ -1442,11 +1442,21 @@ fn unsupported_image_quality_and_convert_output_dir_fail_before_input_access() {
 }
 
 #[test]
-fn crop_filter_and_watermark_mime_follow_committed_output_format() {
+fn general_writers_mime_follows_the_supported_output_format() {
     let tmp = TempDir::new().unwrap();
     let input = create_test_image(tmp.path(), "mime-source.jpg", 32, 32);
     let watermark = create_test_image(tmp.path(), "mime-watermark.png", 2, 2);
     let outputs = [
+        ResizeProcessor
+            .process(
+                FileInput::from_path(input.clone()),
+                ResizeConfig {
+                    width: Some(16),
+                    output: Some(tmp.path().join("mime-resize.png")),
+                    ..ResizeConfig::default()
+                },
+            )
+            .unwrap(),
         CropProcessor
             .process(
                 FileInput::from_path(input.clone()),
@@ -1490,6 +1500,211 @@ fn crop_filter_and_watermark_mime_follow_committed_output_format() {
     for output in outputs {
         assert_eq!(output.mime_type.as_deref(), Some("image/png"));
     }
+}
+
+#[test]
+fn compress_rejects_requested_format_output_extension_mismatch_without_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "compress-format-source.png", 8, 8);
+    let output = tmp.path().join("claimed.png");
+
+    let error = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Tiff),
+                output: Some(output.clone()),
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(!output.exists());
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains(".rtools."))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
+fn requested_tiff_compression_bytes_and_mime_match_the_target_format() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "compress-tiff-source.png", 8, 8);
+    let output = tmp.path().join("compressed.tiff");
+
+    let result = CompressProcessor
+        .process(
+            FileInput::from_path(input),
+            CompressConfig {
+                format: Some(rtools_core::ImageFormat::Tiff),
+                output: Some(output.clone()),
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(result.mime_type.as_deref(), Some("image/tiff"));
+    assert_eq!(
+        image::guess_format(&std::fs::read(output).unwrap()).unwrap(),
+        image::ImageFormat::Tiff
+    );
+}
+
+#[test]
+fn every_general_writer_rejects_unreportable_qoi_without_output_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "qoi-source.png", 8, 8);
+    let watermark = create_test_image(tmp.path(), "qoi-watermark.png", 2, 2);
+    let output = |operation: &str| tmp.path().join(format!("{operation}.qoi"));
+    let cases = [
+        (
+            "resize",
+            ResizeProcessor.process(
+                FileInput::from_path(input.clone()),
+                ResizeConfig {
+                    width: Some(4),
+                    output: Some(output("resize")),
+                    ..ResizeConfig::default()
+                },
+            ),
+        ),
+        (
+            "crop",
+            CropProcessor.process(
+                FileInput::from_path(input.clone()),
+                CropConfig {
+                    region: CropRegion::Pixels {
+                        x: 0,
+                        y: 0,
+                        width: 4,
+                        height: 4,
+                    },
+                    output: Some(output("crop")),
+                    ..CropConfig::default()
+                },
+            ),
+        ),
+        (
+            "filter",
+            FilterProcessor.process(
+                FileInput::from_path(input.clone()),
+                FilterConfig {
+                    output: Some(output("filter")),
+                    ..FilterConfig::default()
+                },
+            ),
+        ),
+        (
+            "watermark",
+            WatermarkProcessor.process(
+                FileInput::from_path(input),
+                WatermarkConfig {
+                    watermark: WatermarkType::Image {
+                        image_path: watermark,
+                        scale: 1.0,
+                    },
+                    position: WatermarkPosition::Pixels { x: 0, y: 0 },
+                    output: Some(output("watermark")),
+                    ..WatermarkConfig::default()
+                },
+            ),
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (operation, result) in cases {
+        match result {
+            Ok(result) => failures.push(format!(
+                "{operation} unexpectedly succeeded with MIME {:?}",
+                result.mime_type
+            )),
+            Err(error) if error.code() != ErrorCode::UnsupportedFormat => {
+                failures.push(format!("{operation} returned {:?}: {error}", error.code()));
+            }
+            Err(_) => {}
+        }
+        if output(operation).exists() {
+            failures.push(format!("{operation} published a final output"));
+        }
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains(".rtools."))
+        .collect();
+    if !leftovers.is_empty() {
+        failures.push(format!(
+            "leftover temporary/reservation artifacts: {leftovers:?}"
+        ));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+#[test]
+fn valid_bmp_and_gif_are_empty_exif_across_metadata_processors() {
+    let tmp = TempDir::new().unwrap();
+    for (name, format, expected_format) in [
+        (
+            "plain.bmp",
+            image::ImageFormat::Bmp,
+            rtools_core::ImageFormat::Bmp,
+        ),
+        (
+            "plain.gif",
+            image::ImageFormat::Gif,
+            rtools_core::ImageFormat::Gif,
+        ),
+    ] {
+        let path = tmp.path().join(name);
+        image::DynamicImage::new_rgba8(3, 2)
+            .save_with_format(&path, format)
+            .unwrap();
+
+        let exif = ExifProcessor
+            .process(FileInput::from_path(path.clone()), ExifConfig::default())
+            .unwrap();
+        let fields = serde_json::to_value(&exif).unwrap();
+        assert!(
+            fields
+                .as_object()
+                .unwrap()
+                .values()
+                .all(serde_json::Value::is_null),
+            "{name}: {fields}"
+        );
+
+        let metadata = MetadataProcessor
+            .process(FileInput::from_path(path), MetadataConfig::default())
+            .unwrap();
+        assert_eq!(metadata.format, expected_format, "{name}");
+        let fields = serde_json::to_value(metadata.exif.unwrap()).unwrap();
+        assert!(
+            fields
+                .as_object()
+                .unwrap()
+                .values()
+                .all(serde_json::Value::is_null),
+            "{name}: {fields}"
+        );
+    }
+}
+
+#[test]
+fn malformed_tiff_metadata_remains_a_structured_failure() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("malformed-metadata.tiff");
+    // Little-endian TIFF header followed by a truncated primary IFD.
+    std::fs::write(&path, b"II\x2a\0\x08\0\0\0\x01\0").unwrap();
+
+    let error = ExifProcessor
+        .process(FileInput::from_path(path.clone()), ExifConfig::default())
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+    assert!(!error.to_string().contains(&path.display().to_string()));
 }
 
 #[test]

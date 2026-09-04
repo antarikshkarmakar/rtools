@@ -109,12 +109,16 @@ mod tests {
 
     static IMAGE_ARTIFACT_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
-    fn png_bytes() -> Vec<u8> {
+    fn image_bytes(format: ImageFormat) -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(2, 2)
-            .write_to(&mut bytes, ImageFormat::Png)
-            .expect("test PNG must encode");
+            .write_to(&mut bytes, format)
+            .expect("test image must encode");
         bytes.into_inner()
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        image_bytes(ImageFormat::Png)
     }
 
     fn orientation_jpeg_bytes() -> Vec<u8> {
@@ -148,6 +152,7 @@ mod tests {
             .route("/compress", post(handlers::image::compress))
             .route("/convert", post(handlers::image::convert))
             .route("/resize", post(handlers::image::resize))
+            .route("/metadata", post(handlers::image::metadata))
             .route("/rename", post(handlers::ai::rename))
             .route("/organize", post(handlers::ai::organize))
             .route("/duplicates", post(handlers::ai::duplicates))
@@ -309,6 +314,42 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(persistent_image_temp_dirs(), before);
+    }
+
+    #[tokio::test]
+    async fn metadata_adapter_treats_valid_bmp_and_gif_as_empty_exif() {
+        for (name, format) in [
+            ("plain.bmp", ImageFormat::Bmp),
+            ("plain.gif", ImageFormat::Gif),
+        ] {
+            let response = test_app()
+                .oneshot(multipart_request(
+                    "/metadata",
+                    Some((name, image_bytes(format))),
+                ))
+                .await
+                .expect("router call must complete");
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body must read");
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{name}: {}",
+                String::from_utf8_lossy(&body)
+            );
+            let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(document["success"], true, "{name}: {document}");
+            assert!(
+                document["metadata"]["exif"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(serde_json::Value::is_null),
+                "{name}: {document}"
+            );
+        }
     }
 
     #[tokio::test]

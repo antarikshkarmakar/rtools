@@ -113,9 +113,7 @@ impl Processor for FilterProcessor {
         });
 
         let filtered = apply_film_filter(&img, &config.filter, config.strength.clamp(0.0, 1.0));
-        let image_format = image::ImageFormat::from_path(&output).map_err(|error| {
-            RToolsError::image(format!("Invalid filter output format: {error}"))
-        })?;
+        let (format, image_format) = crate::format::resolve_output_format(&output, "Filter")?;
         let pending = PendingOutput::new(&output, config.output_policy)?;
 
         filtered
@@ -128,10 +126,6 @@ impl Processor for FilterProcessor {
         let elapsed = start.elapsed();
         let input_size = std::fs::metadata(path)?.len();
         let output_size = std::fs::metadata(&output)?.len();
-
-        let format = rtools_core::ImageFormat::from_path(&output).ok_or_else(|| {
-            RToolsError::unsupported_format("Cannot determine committed filter output format")
-        })?;
 
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),

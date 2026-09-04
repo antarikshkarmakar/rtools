@@ -85,3 +85,46 @@ fn mixed_exif_inputs_emit_successes_and_item_failure() {
     assert_eq!(report["failures"].as_array().unwrap().len(), 1);
     assert_eq!(report["failures"][0]["item"], missing.display().to_string());
 }
+
+#[test]
+fn valid_bmp_and_gif_emit_successful_empty_exif_results() {
+    let temp = tempdir().expect("temp dir");
+    let bmp = temp.path().join("plain.bmp");
+    let gif = temp.path().join("plain.gif");
+    let image = image::DynamicImage::new_rgba8(2, 2);
+    image
+        .save_with_format(&bmp, image::ImageFormat::Bmp)
+        .expect("BMP fixture");
+    image
+        .save_with_format(&gif, image::ImageFormat::Gif)
+        .expect("GIF fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rtools"))
+        .args(["--output-format", "json", "image", "exif", "--input"])
+        .arg(&bmp)
+        .arg(&gif)
+        .args(["--format", "json"])
+        .output()
+        .expect("CLI must run");
+
+    assert!(
+        output.status.success(),
+        "stdout={}; stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["status"], "success");
+    let results = document["result"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for result in results {
+        assert!(
+            result["exif"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(Value::is_null),
+            "{result}"
+        );
+    }
+}
