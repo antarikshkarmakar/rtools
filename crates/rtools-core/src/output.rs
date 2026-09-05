@@ -5,7 +5,11 @@ use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
+#[cfg(not(windows))]
+use std::io::{Seek, SeekFrom};
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -127,12 +131,18 @@ impl PendingOutput {
         artifact.flush()?;
         artifact.sync_all()?;
 
-        ensure_open_lock_owned(self.open_reservation()?, &self.owner_token)?;
-        ensure_lock_owned(&self.reservation_path, &self.owner_token)?;
+        ensure_reservation_owned(
+            self.open_reservation()?,
+            &self.reservation_path,
+            &self.owner_token,
+        )?;
         self.recheck_destination()?;
         pre_publish()?;
-        ensure_open_lock_owned(self.open_reservation()?, &self.owner_token)?;
-        ensure_lock_owned(&self.reservation_path, &self.owner_token)?;
+        ensure_reservation_owned(
+            self.open_reservation()?,
+            &self.reservation_path,
+            &self.owner_token,
+        )?;
 
         // DrvFS defers the visible destination of a rename for an open locked
         // file. Close our verified handle while the canonical reservation name
@@ -459,11 +469,11 @@ fn map_reservation_collision(error: RToolsError, output: &Path) -> RToolsError {
 
 fn create_reservation(final_path: &Path, token: &str) -> RToolsResult<(PathBuf, File)> {
     let reservation = sibling_path(final_path, ".rtools.lock")?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .read(true)
-        .create_new(true)
-        .open(&reservation)?;
+    let mut options = OpenOptions::new();
+    options.write(true).read(true).create_new(true);
+    #[cfg(windows)]
+    options.share_mode(0);
+    let mut file = options.open(&reservation)?;
     if let Err(error) = file.lock() {
         drop(file);
         let _ = fs::remove_file(&reservation);
@@ -570,6 +580,7 @@ fn ensure_lock_owned(path: &Path, token: &str) -> RToolsResult<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn ensure_open_lock_owned(file: &File, token: &str) -> RToolsResult<()> {
     let mut file = file.try_clone()?;
     file.seek(SeekFrom::Start(0))?;
@@ -581,6 +592,23 @@ fn ensure_open_lock_owned(file: &File, token: &str) -> RToolsResult<()> {
             "open output reservation ownership changed",
         ));
     }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_reservation_owned(file: &File, path: &Path, token: &str) -> RToolsResult<()> {
+    ensure_open_lock_owned(file, token)?;
+    ensure_lock_owned(path, token)
+}
+
+#[cfg(windows)]
+fn ensure_reservation_owned(file: &File, _path: &Path, _token: &str) -> RToolsResult<()> {
+    // The reservation was atomically created with share_mode(0), so Windows
+    // prevents every other handle from reading, modifying, deleting, or
+    // renaming it until this owning handle is closed. Reopening it here would
+    // conflict with that mandatory lease. Retirement verifies the token again
+    // immediately after the handle is closed and before publication.
+    file.metadata()?;
     Ok(())
 }
 
@@ -866,6 +894,20 @@ mod atomic_output_tests {
         assert!(!temporary.exists());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_pending_output_commits_while_reservation_is_locked() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("result.bin");
+        let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+        fs::write(pending.temporary_path(), b"ours").unwrap();
+
+        let committed = pending.commit(|_| Ok(())).unwrap();
+
+        assert_eq!(committed, output);
+        assert_eq!(fs::read(output).unwrap(), b"ours");
+    }
+
     #[test]
     fn destination_created_after_recheck_is_preserved_by_publication_primitive() {
         let directory = tempfile::tempdir().unwrap();
@@ -940,6 +982,7 @@ mod atomic_output_tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn ownership_swap_after_final_verification_aborts_before_publication() {
         let directory = tempfile::tempdir().unwrap();

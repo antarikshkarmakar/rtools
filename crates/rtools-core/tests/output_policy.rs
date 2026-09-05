@@ -437,6 +437,7 @@ fn destination_created_after_reservation_is_not_overwritten() {
     assert_no_rtools_artifacts(directory.path());
 }
 
+#[cfg(not(windows))]
 #[test]
 fn changed_reservation_fails_commit_closed_and_preserves_foreign_lock() {
     let directory = tempfile::tempdir().unwrap();
@@ -455,6 +456,7 @@ fn changed_reservation_fails_commit_closed_and_preserves_foreign_lock() {
     assert_eq!(fs::read(&reservation).unwrap(), b"foreign-owner");
 }
 
+#[cfg(not(windows))]
 #[test]
 fn missing_reservation_fails_commit_closed_without_publishing_output() {
     let directory = tempfile::tempdir().unwrap();
@@ -472,6 +474,7 @@ fn missing_reservation_fails_commit_closed_without_publishing_output() {
     assert!(!temporary.exists());
 }
 
+#[cfg(not(windows))]
 #[test]
 fn drop_never_deletes_a_changed_reservation() {
     let directory = tempfile::tempdir().unwrap();
@@ -485,6 +488,24 @@ fn drop_never_deletes_a_changed_reservation() {
 
     assert!(!temporary.exists());
     assert_eq!(fs::read(reservation).unwrap(), b"foreign-owner");
+}
+
+#[cfg(windows)]
+#[test]
+fn live_windows_reservation_rejects_mutation_and_drop_cleans_owned_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("result.bin");
+    let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+    let temporary = pending.temporary_path().to_owned();
+    let reservation = reservation_path(directory.path(), &temporary);
+
+    assert!(fs::write(&reservation, b"foreign-owner").is_err());
+    assert!(fs::remove_file(&reservation).is_err());
+    assert!(reservation.exists());
+    drop(pending);
+    assert!(!output.exists());
+    assert!(!temporary.exists());
+    assert_no_rtools_artifacts(directory.path());
 }
 
 #[test]
