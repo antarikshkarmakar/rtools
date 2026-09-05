@@ -1,7 +1,8 @@
 use super::artifact::ArtifactResponse;
+use super::artifact::PendingArtifact;
 use super::{
-    parse_f64, parse_multipart, parse_u32, ApiError, ApiResult, FieldKind, IncomingFile,
-    RequestFiles,
+    parse_f64, parse_multipart, parse_u32, require_multipart, ApiError, ApiResult, FieldKind,
+    IncomingFile, MultipartInput, RequestFiles,
 };
 use axum::{extract::State, Json};
 use rtools_core::{FileInput, ImageFormat, Processor};
@@ -24,6 +25,7 @@ fn incoming_image(
     request: &RequestFiles,
     upload: IncomingFile,
     index: usize,
+    limits: &rtools_core::ResourceLimits,
 ) -> ApiResult<(FileInput, String, ImageFormat)> {
     let extension = Path::new(&upload.client_name)
         .extension()
@@ -35,6 +37,14 @@ fn incoming_image(
         .filter(|format| !matches!(format, ImageFormat::Pdf))
         .ok_or_else(|| ApiError::invalid(format!("Unsupported image format '{extension}'")))?;
     let path = request.write(index, format.extensions()[0], &upload.bytes)?;
+    if let Err(error) = rtools_image::format::decode_bounded(&path, limits) {
+        return match error.code() {
+            rtools_core::ErrorCode::ResourceLimitExceeded
+            | rtools_core::ErrorCode::CapabilityUnavailable
+            | rtools_core::ErrorCode::UnsupportedFormat => Err(error.into()),
+            _ => Err(ApiError::invalid("Uploaded image data is malformed")),
+        };
+    }
     let mut input = FileInput::from_path(path);
     input.format = Some(format);
     input.name = Some(upload.client_name.clone());
@@ -103,10 +113,10 @@ fn validate_rest_rename_pattern(pattern: &str) -> ApiResult<()> {
 
 pub async fn organize(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<AiResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[("files", FieldKind::Files), ("strategy", FieldKind::Text)],
         state.config.api.max_upload_size,
     )
@@ -137,7 +147,7 @@ pub async fn organize(
     let mut inputs = Vec::with_capacity(uploads.len());
     let mut metadata = Vec::with_capacity(uploads.len());
     for (index, upload) in uploads.into_iter().enumerate() {
-        let (input, name, format) = incoming_image(&request, upload, index)?;
+        let (input, name, format) = incoming_image(&request, upload, index, &state.config.limits)?;
         inputs.push(input);
         metadata.push((name, format));
     }
@@ -151,14 +161,18 @@ pub async fn organize(
             dry_run: false,
         },
     )?;
-    let mut artifacts = Vec::with_capacity(outputs.len());
-    for (output, (name, format)) in outputs.iter().zip(metadata) {
-        artifacts.push(state.artifacts.publish(
-            artifact_path(output)?,
-            name,
-            format.mime_type().to_string(),
-        )?);
-    }
+    let pending = outputs
+        .iter()
+        .zip(metadata)
+        .map(|(output, (name, format))| {
+            Ok(PendingArtifact {
+                source: artifact_path(output)?,
+                name,
+                media_type: format.mime_type().to_string(),
+            })
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
+    let artifacts = state.artifacts.publish_batch(pending).await?;
     Ok(Json(AiResponse {
         success: true,
         message: format!("Organized {} files", artifacts.len()),
@@ -168,10 +182,10 @@ pub async fn organize(
 
 pub async fn rename(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<AiResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("files", FieldKind::Files),
             ("pattern", FieldKind::Text),
@@ -193,8 +207,31 @@ pub async fn rename(
     let request = RequestFiles::new()?;
     let mut staged = Vec::with_capacity(uploads.len());
     for (index, upload) in uploads.into_iter().enumerate() {
-        staged.push(incoming_image(&request, upload, index)?);
+        staged.push(incoming_image(
+            &request,
+            upload,
+            index,
+            &state.config.limits,
+        )?);
     }
+
+    let mut planned_names = Vec::with_capacity(staged.len());
+    for (offset, (input, client_name, _)) in staged.iter().enumerate() {
+        let offset = u32::try_from(offset)
+            .map_err(|_| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
+        let index = start_number
+            .checked_add(offset)
+            .ok_or_else(|| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
+        let effective_pattern = pattern.replace(NAME_PLACEHOLDER, &safe_output_stem(client_name));
+        validate_rest_rename_pattern(&effective_pattern)?;
+        let source = input
+            .source
+            .as_path()
+            .ok_or_else(|| ApiError::invalid("Rename requires file path inputs"))?;
+        let rendered = rtools_ai::rename::render_filename(&effective_pattern, source, index)?;
+        planned_names.push(rendered);
+    }
+    rtools_ai::rename::validate_unique_portable_filenames(&planned_names)?;
 
     let mut completed = Vec::with_capacity(staged.len());
     for (offset, (input, client_name, format)) in staged.into_iter().enumerate() {
@@ -220,20 +257,21 @@ pub async fn rename(
             .ok_or_else(|| ApiError::invalid("Rename processor returned no artifact"))?;
         completed.push((output, client_name, format));
     }
-    let mut artifacts = Vec::<ArtifactResponse>::with_capacity(completed.len());
     let mut names = Vec::with_capacity(completed.len());
+    let mut pending = Vec::with_capacity(completed.len());
     for (output, _client_name, format) in &completed {
         let name = output
             .name
             .clone()
             .unwrap_or_else(|| "renamed-upload".to_string());
         names.push(name.clone());
-        artifacts.push(state.artifacts.publish(
-            artifact_path(output)?,
+        pending.push(PendingArtifact {
+            source: artifact_path(output)?,
             name,
-            format.mime_type().to_string(),
-        )?);
+            media_type: format.mime_type().to_string(),
+        });
     }
+    let artifacts: Vec<ArtifactResponse> = state.artifacts.publish_batch(pending).await?;
     Ok(Json(AiResponse {
         success: true,
         message: format!("Renamed {} files", artifacts.len()),
@@ -251,10 +289,10 @@ pub async fn alt_text() -> ApiResult<Json<AiResponse>> {
 
 pub async fn duplicates(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<AiResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("files", FieldKind::Files),
             ("threshold", FieldKind::Text),
@@ -285,7 +323,7 @@ pub async fn duplicates(
     let request = RequestFiles::new()?;
     let mut inputs = Vec::with_capacity(uploads.len());
     for (index, upload) in uploads.into_iter().enumerate() {
-        let (input, _, _) = incoming_image(&request, upload, index)?;
+        let (input, _, _) = incoming_image(&request, upload, index, &state.config.limits)?;
         inputs.push(input);
     }
     let result = rtools_ai::DuplicatesProcessor.process(

@@ -8,8 +8,11 @@ use axum::{
     Json,
 };
 use serde::Serialize;
+use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::{RwLock, Semaphore};
 use tower_http::cors::{Any, CorsLayer};
 
 mod handlers;
@@ -21,18 +24,28 @@ struct AppState {
 
 struct ArtifactStore {
     root: tempfile::TempDir,
+    records: RwLock<HashMap<String, handlers::artifact::ArtifactRecord>>,
+    downloads: Arc<Semaphore>,
 }
 
 impl AppState {
     fn new(config: rtools_core::AppConfig) -> anyhow::Result<Self> {
         config.validate()?;
+        let defaults = rtools_core::config::ImageConfig::default();
+        if config.image.webp_lossless != defaults.webp_lossless
+            || config.image.avif_enabled != defaults.avif_enabled
+            || config.image.max_dimension != defaults.max_dimension
+            || config.image.jpeg_quality != defaults.jpeg_quality
+            || config.image.png_compression != defaults.png_compression
+            || config.image.dither != defaults.dither
+        {
+            anyhow::bail!(
+                "non-default image encoder settings are not enforceable by the REST adapter"
+            );
+        }
         Ok(Self {
             config,
-            artifacts: ArtifactStore {
-                root: tempfile::Builder::new()
-                    .prefix("rtools-api-artifacts-")
-                    .tempdir()?,
-            },
+            artifacts: ArtifactStore::new()?,
         })
     }
 }
@@ -57,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    serve_with_shutdown(listener, app, shutdown_signal()).await?;
 
     Ok(())
 }
@@ -67,12 +80,16 @@ fn build_router(config: rtools_core::AppConfig) -> anyhow::Result<Router> {
         anyhow::anyhow!("api.max_upload_size exceeds this platform's addressable size")
     })?;
     let state = Arc::new(AppState::new(config)?);
+    Ok(build_router_with_state(state, upload_limit))
+}
+
+fn build_router_with_state(state: Arc<AppState>, upload_limit: usize) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Ok(Router::new()
+    Router::new()
         .route("/", get(root))
         .route("/health", get(health))
         .route("/api/v1/artifacts/:id", get(handlers::artifact::download))
@@ -93,7 +110,45 @@ fn build_router(config: rtools_core::AppConfig) -> anyhow::Result<Router> {
         .route("/api/v1/ai/duplicates", post(handlers::ai::duplicates))
         .layer(cors)
         .layer(DefaultBodyLimit::max(upload_limit))
-        .with_state(state))
+        .with_state(state)
+}
+
+async fn serve_with_shutdown<F>(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    signal: F,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    axum::serve(listener, app)
+        .with_graceful_shutdown(signal)
+        .await
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "failed to install Ctrl-C shutdown signal");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => tracing::error!(%error, "failed to install SIGTERM shutdown signal"),
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
 }
 
 async fn root() -> &'static str {
@@ -420,13 +475,9 @@ mod tests {
         let duplicate_body = to_bytes(duplicate_response.into_body(), usize::MAX)
             .await
             .expect("response body must read");
-        let duplicate_text = String::from_utf8_lossy(&duplicate_body);
-        assert!(
-            duplicate_text
-                .to_ascii_lowercase()
-                .contains("invalid input"),
-            "{duplicate_text}"
-        );
+        let duplicate_document: serde_json::Value =
+            serde_json::from_slice(&duplicate_body).unwrap();
+        assert_eq!(duplicate_document["code"], "INVALID_INPUT");
 
         let rename_response = test_app()
             .oneshot(multipart_request(
@@ -467,8 +518,10 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
 
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{text}");
-        assert!(text.contains("decoded_pixels"), "{text}");
-        assert!(text.contains("4 (limit: 1)"), "{text}");
+        let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(document["details"]["resource"], "decoded_pixels");
+        assert_eq!(document["details"]["actual"], 4);
+        assert_eq!(document["details"]["limit"], 1);
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ pub use compress::{PdfCompressConfig, PdfCompressProcessor};
 pub use merge::{PdfMergeConfig, PdfMergeProcessor};
 pub use metadata::{PdfMetadataConfig, PdfMetadataProcessor};
 pub use ocr::{PdfOcrConfig, PdfOcrProcessor};
+pub use output::validate_pdf_artifact;
 pub use split::{PdfSplitConfig, PdfSplitProcessor};
 
 #[cfg(test)]

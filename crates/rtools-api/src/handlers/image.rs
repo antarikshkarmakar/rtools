@@ -1,7 +1,7 @@
 use super::artifact::ArtifactResponse;
 use super::{
-    parse_bool, parse_multipart, parse_u32, parse_u8, ApiError, ApiResult, FieldKind, IncomingFile,
-    RequestFiles,
+    parse_bool, parse_multipart, parse_u32, parse_u8, require_multipart, ApiError, ApiResult,
+    FieldKind, IncomingFile, MultipartInput, RequestFiles,
 };
 use axum::{extract::State, Json};
 use rtools_core::{FileInput, ImageFormat, Processor, RToolsError};
@@ -39,6 +39,13 @@ pub struct MetadataResponse {
 fn image_format(value: &str) -> ApiResult<ImageFormat> {
     let format = ImageFormat::from_extension(value)
         .ok_or_else(|| ApiError::invalid(format!("Unsupported image format '{value}'")))?;
+    if matches!(format, ImageFormat::Avif | ImageFormat::Ico) {
+        return Err(ApiError::unavailable(
+            "api.image.format",
+            "This image format is not available through the REST encoder",
+            "Use jpeg, png, webp, tiff, bmp, or gif",
+        ));
+    }
     if matches!(
         format,
         ImageFormat::Heic
@@ -57,6 +64,7 @@ fn incoming_image(
     request: &RequestFiles,
     upload: IncomingFile,
     index: usize,
+    limits: &rtools_core::ResourceLimits,
 ) -> ApiResult<(FileInput, String)> {
     let extension = Path::new(&upload.client_name)
         .extension()
@@ -66,6 +74,14 @@ fn incoming_image(
         })?;
     let format = image_format(extension)?;
     let path = request.write(index, format.extensions()[0], &upload.bytes)?;
+    if let Err(error) = rtools_image::format::decode_bounded(&path, limits) {
+        return match error.code() {
+            rtools_core::ErrorCode::ResourceLimitExceeded
+            | rtools_core::ErrorCode::CapabilityUnavailable
+            | rtools_core::ErrorCode::UnsupportedFormat => Err(error.into()),
+            _ => Err(ApiError::invalid("Uploaded image data is malformed")),
+        };
+    }
     let mut input = FileInput::from_path(path);
     input.format = Some(format);
     input.name = Some(upload.client_name.clone());
@@ -92,10 +108,10 @@ fn output_path(output: &rtools_core::FileOutput) -> ApiResult<&PathBuf> {
 
 pub async fn compress(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<CompressResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("file", FieldKind::File),
             ("quality", FieldKind::Text),
@@ -106,9 +122,11 @@ pub async fn compress(
         state.config.api.max_upload_size,
     )
     .await?;
+    let requested_quality = form.optional_text("quality");
+    let has_requested_quality = requested_quality.is_some();
     let quality = parse_u8(
         "quality",
-        form.optional_text("quality"),
+        requested_quality,
         state.config.image.default_quality,
     )?;
     if !(1..=100).contains(&quality) {
@@ -126,6 +144,11 @@ pub async fn compress(
         false,
     )?;
     let strip_gps = parse_bool("strip_gps", form.optional_text("strip_gps"), false)?;
+    if preserve_metadata && strip_gps {
+        return Err(ApiError::invalid(
+            "preserve_metadata=true cannot be combined with strip_gps=true",
+        ));
+    }
     if preserve_metadata {
         return Err(ApiError::unavailable(
             "image.metadata.preserve",
@@ -143,10 +166,15 @@ pub async fn compress(
 
     let upload = form.one_file("file")?;
     let request = RequestFiles::new()?;
-    let (input, client_name) = incoming_image(&request, upload, 0)?;
+    let (input, client_name) = incoming_image(&request, upload, 0, &state.config.limits)?;
     let target_format = requested_format
         .or(input.format)
         .ok_or_else(|| ApiError::invalid("Could not determine the uploaded image format"))?;
+    if has_requested_quality && target_format != ImageFormat::Jpeg {
+        return Err(ApiError::invalid(
+            "Quality is effective only for JPEG output",
+        ));
+    }
     let output = rtools_image::CompressProcessor.process(
         input,
         rtools_image::CompressConfig {
@@ -164,11 +192,14 @@ pub async fn compress(
         display_stem(&client_name),
         target_format.extensions()[0]
     );
-    let artifact = state.artifacts.publish(
-        output_path(&output)?,
-        name,
-        target_format.mime_type().to_string(),
-    )?;
+    let artifact = state
+        .artifacts
+        .publish(
+            output_path(&output)?,
+            name,
+            target_format.mime_type().to_string(),
+        )
+        .await?;
     Ok(Json(CompressResponse {
         success: true,
         message: format!("Compressed {client_name}"),
@@ -180,10 +211,10 @@ pub async fn compress(
 
 pub async fn convert(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<ConvertResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("file", FieldKind::File),
             ("format", FieldKind::Text),
@@ -199,9 +230,11 @@ pub async fn convert(
             .as_deref()
             .ok_or_else(|| ApiError::invalid("Multipart field 'format' is required"))?,
     )?;
+    let requested_quality = form.optional_text("quality");
+    let has_requested_quality = requested_quality.is_some();
     let quality = parse_u8(
         "quality",
-        form.optional_text("quality"),
+        requested_quality,
         state.config.image.default_quality,
     )?;
     if !(1..=100).contains(&quality) {
@@ -215,6 +248,11 @@ pub async fn convert(
         false,
     )?;
     let strip_gps = parse_bool("strip_gps", form.optional_text("strip_gps"), false)?;
+    if preserve_metadata && strip_gps {
+        return Err(ApiError::invalid(
+            "preserve_metadata=true cannot be combined with strip_gps=true",
+        ));
+    }
     if preserve_metadata || strip_gps {
         return Err(ApiError::unavailable(
             if preserve_metadata {
@@ -226,9 +264,19 @@ pub async fn convert(
             "Omit metadata flags or set them to false",
         ));
     }
+    if has_requested_quality && target_format != ImageFormat::Jpeg {
+        return Err(ApiError::invalid(
+            "Quality is effective only for JPEG output",
+        ));
+    }
     let upload = form.one_file("file")?;
     let request = RequestFiles::new()?;
-    let (input, client_name) = incoming_image(&request, upload, 0)?;
+    let (input, client_name) = incoming_image(&request, upload, 0, &state.config.limits)?;
+    if input.format == Some(target_format) {
+        return Err(ApiError::invalid(
+            "Conversion target must differ from the uploaded image format",
+        ));
+    }
     let output = rtools_image::ConvertProcessor.process(
         input,
         rtools_image::ConvertConfig {
@@ -247,11 +295,14 @@ pub async fn convert(
         display_stem(&client_name),
         target_format.extensions()[0]
     );
-    let artifact = state.artifacts.publish(
-        output_path(&output)?,
-        name,
-        target_format.mime_type().to_string(),
-    )?;
+    let artifact = state
+        .artifacts
+        .publish(
+            output_path(&output)?,
+            name,
+            target_format.mime_type().to_string(),
+        )
+        .await?;
     Ok(Json(ConvertResponse {
         success: true,
         message: format!("Converted {client_name}"),
@@ -262,10 +313,10 @@ pub async fn convert(
 
 pub async fn resize(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<ConvertResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("file", FieldKind::File),
             ("width", FieldKind::Text),
@@ -289,7 +340,7 @@ pub async fn resize(
     )?;
     let upload = form.one_file("file")?;
     let request = RequestFiles::new()?;
-    let (input, client_name) = incoming_image(&request, upload, 0)?;
+    let (input, client_name) = incoming_image(&request, upload, 0, &state.config.limits)?;
     let input_format = input
         .format
         .ok_or_else(|| ApiError::invalid("Unknown image format"))?;
@@ -311,11 +362,14 @@ pub async fn resize(
         display_stem(&client_name),
         input_format.extensions()[0]
     );
-    let artifact = state.artifacts.publish(
-        output_path(&output)?,
-        name,
-        input_format.mime_type().to_string(),
-    )?;
+    let artifact = state
+        .artifacts
+        .publish(
+            output_path(&output)?,
+            name,
+            input_format.mime_type().to_string(),
+        )
+        .await?;
     Ok(Json(ConvertResponse {
         success: true,
         message: format!("Resized {client_name}"),
@@ -350,10 +404,10 @@ pub async fn filter() -> ApiResult<Json<ConvertResponse>> {
 
 pub async fn metadata(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<MetadataResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("file", FieldKind::File),
             ("include_exif", FieldKind::Text),
@@ -376,7 +430,7 @@ pub async fn metadata(
     )?;
     let upload = form.one_file("file")?;
     let request = RequestFiles::new()?;
-    let (input, _) = incoming_image(&request, upload, 0)?;
+    let (input, _) = incoming_image(&request, upload, 0, &state.config.limits)?;
     let metadata = rtools_image::MetadataProcessor.process(
         input,
         rtools_image::MetadataConfig {

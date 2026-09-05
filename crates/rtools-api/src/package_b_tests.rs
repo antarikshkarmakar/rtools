@@ -1,8 +1,9 @@
 use super::*;
 use axum::{
     body::{to_bytes, Body},
-    http::{header::CONTENT_TYPE, Request, StatusCode},
+    http::{header, header::CONTENT_TYPE, Method, Request, StatusCode},
 };
+use futures_util::StreamExt as _;
 use image::ImageFormat;
 use lopdf::{dictionary, Document, Object, Stream};
 use serde_json::Value;
@@ -1037,6 +1038,246 @@ async fn unavailable_endpoints_return_before_parsing_a_malformed_multipart_body(
 }
 
 #[tokio::test]
+async fn implemented_endpoints_wrap_missing_or_invalid_multipart_boundaries_as_json() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    for content_type in [None, Some("multipart/form-data; boundary=broken")] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/image/compress");
+        if let Some(content_type) = content_type {
+            request = request.header(CONTENT_TYPE, content_type);
+        }
+        let response = app()
+            .oneshot(request.body(Body::from("not multipart")).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers()[CONTENT_TYPE],
+            "application/json",
+            "multipart extractor rejections must use the API error envelope"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let document: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(document["success"], false);
+        assert_eq!(document["code"], "INVALID_INPUT");
+    }
+}
+
+#[tokio::test]
+async fn incompatible_metadata_flags_are_invalid_before_capability_selection() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    let (status, document) = json_response(
+        &app(),
+        multipart(
+            "/api/v1/image/compress",
+            vec![
+                Part::Text {
+                    field: "preserve_metadata",
+                    value: "true",
+                },
+                Part::Text {
+                    field: "strip_gps",
+                    value: "true",
+                },
+                Part::File {
+                    field: "file",
+                    name: "input.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(2, 2),
+                },
+            ],
+        ),
+    )
+    .await;
+    assert_structured(status, &document, StatusCode::BAD_REQUEST);
+    assert_eq!(document["code"], "INVALID_INPUT");
+}
+
+#[tokio::test]
+async fn unsupported_conversion_targets_and_ineffective_quality_fail_closed() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    for target in ["avif", "ico"] {
+        let before = request_directories();
+        let (status, document) = json_response(
+            &app(),
+            multipart(
+                "/api/v1/image/convert",
+                vec![
+                    Part::Text {
+                        field: "format",
+                        value: target,
+                    },
+                    Part::File {
+                        field: "file",
+                        name: "input.png",
+                        content_type: "image/png",
+                        bytes: png_bytes(2, 2),
+                    },
+                ],
+            ),
+        )
+        .await;
+        assert_structured(status, &document, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(request_directories(), before);
+    }
+
+    for target in ["png", "webp", "tiff", "bmp", "gif"] {
+        let (status, document) = json_response(
+            &app(),
+            multipart(
+                "/api/v1/image/convert",
+                vec![
+                    Part::Text {
+                        field: "format",
+                        value: target,
+                    },
+                    Part::Text {
+                        field: "quality",
+                        value: "50",
+                    },
+                    Part::File {
+                        field: "file",
+                        name: "input.png",
+                        content_type: "image/png",
+                        bytes: png_bytes(2, 2),
+                    },
+                ],
+            ),
+        )
+        .await;
+        assert_structured(status, &document, StatusCode::BAD_REQUEST);
+        assert_eq!(document["code"], "INVALID_INPUT");
+    }
+
+    let (status, document) = json_response(
+        &app(),
+        multipart(
+            "/api/v1/image/compress",
+            vec![
+                Part::Text {
+                    field: "format",
+                    value: "png",
+                },
+                Part::Text {
+                    field: "quality",
+                    value: "50",
+                },
+                Part::File {
+                    field: "file",
+                    name: "input.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(2, 2),
+                },
+            ],
+        ),
+    )
+    .await;
+    assert_structured(status, &document, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn conversion_format_matrix_is_truthful_and_jpeg_quality_is_effective() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    let app = app();
+    for target in ["jpeg", "png", "webp", "tiff", "bmp", "gif"] {
+        let (input_name, input_bytes) = if target == "bmp" {
+            ("input.png", png_bytes(16, 16))
+        } else {
+            let mut bytes = Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(16, 16)
+                .write_to(&mut bytes, ImageFormat::Bmp)
+                .unwrap();
+            ("input.bmp", bytes.into_inner())
+        };
+        let (status, document) = json_response(
+            &app,
+            multipart(
+                "/api/v1/image/convert",
+                vec![
+                    Part::Text {
+                        field: "format",
+                        value: target,
+                    },
+                    Part::File {
+                        field: "file",
+                        name: input_name,
+                        content_type: "application/octet-stream",
+                        bytes: input_bytes,
+                    },
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{target}: {document}");
+        let artifact = download(&app, &document).await;
+        assert!(image::load_from_memory(&artifact).is_ok(), "{target}");
+    }
+
+    let mut jpeg_outputs = Vec::new();
+    for quality in ["1", "100"] {
+        let (status, document) = json_response(
+            &app,
+            multipart(
+                "/api/v1/image/convert",
+                vec![
+                    Part::Text {
+                        field: "format",
+                        value: "jpeg",
+                    },
+                    Part::Text {
+                        field: "quality",
+                        value: quality,
+                    },
+                    Part::File {
+                        field: "file",
+                        name: "input.png",
+                        content_type: "image/png",
+                        bytes: png_bytes(64, 64),
+                    },
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{quality}: {document}");
+        jpeg_outputs.push(download(&app, &document).await);
+    }
+    assert_ne!(jpeg_outputs[0], jpeg_outputs[1]);
+}
+
+#[tokio::test]
+async fn malformed_processor_inputs_return_sanitized_client_errors() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    for (path, name, bytes) in [
+        (
+            "/api/v1/image/compress",
+            "bad.png",
+            b"not an image".to_vec(),
+        ),
+        ("/api/v1/pdf/compress", "bad.pdf", b"not a pdf".to_vec()),
+    ] {
+        let (status, document) = json_response(
+            &app(),
+            multipart(
+                path,
+                vec![Part::File {
+                    field: "file",
+                    name,
+                    content_type: "application/octet-stream",
+                    bytes,
+                }],
+            ),
+        )
+        .await;
+        assert_structured(status, &document, StatusCode::BAD_REQUEST);
+        let serialized = document.to_string();
+        assert!(!serialized.contains("/tmp/"), "{serialized}");
+        assert!(!serialized.contains("rtools-api-request-"), "{serialized}");
+        assert!(!serialized.contains(":\\\\"), "{serialized}");
+    }
+}
+
+#[tokio::test]
 async fn configured_upload_limit_rejects_before_request_file_creation() {
     let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
     let before = request_directories();
@@ -1057,6 +1298,10 @@ async fn configured_upload_limit_rejects_before_request_file_creation() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let document: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(document["code"], "RESOURCE_LIMIT_EXCEEDED");
     assert_eq!(request_directories(), before);
 }
 
@@ -1085,17 +1330,12 @@ async fn configured_upload_limit_also_applies_to_text_fields() {
     assert_eq!(request_directories(), before);
 }
 
-#[test]
-fn artifact_store_removes_published_files_when_server_state_drops() {
+#[tokio::test]
+async fn artifact_store_removes_published_files_when_server_state_drops() {
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("source.bin");
     std::fs::write(&source, b"artifact bytes").unwrap();
-    let store = ArtifactStore {
-        root: tempfile::Builder::new()
-            .prefix("rtools-api-artifact-lifecycle-")
-            .tempdir()
-            .unwrap(),
-    };
+    let store = ArtifactStore::new().unwrap();
     let root = store.root.path().to_path_buf();
     let artifact = store
         .publish(
@@ -1103,6 +1343,7 @@ fn artifact_store_removes_published_files_when_server_state_drops() {
             "source.bin".to_string(),
             "application/octet-stream".to_string(),
         )
+        .await
         .unwrap();
     assert_eq!(
         std::fs::read(root.join(artifact.id)).unwrap(),
@@ -1114,8 +1355,9 @@ fn artifact_store_removes_published_files_when_server_state_drops() {
     assert!(!root.exists());
 }
 
-#[test]
-fn request_and_artifact_storage_are_create_new_and_clean_failed_attempts() {
+#[tokio::test]
+async fn request_and_artifact_storage_are_create_new_and_clean_failed_attempts() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
     let request = handlers::RequestFiles::new().unwrap();
     let request_root = request.path().to_path_buf();
     let upload = request.write(7, "bin", b"first").unwrap();
@@ -1127,18 +1369,14 @@ fn request_and_artifact_storage_are_create_new_and_clean_failed_attempts() {
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("source.bin");
     std::fs::write(&source, b"artifact bytes").unwrap();
-    let store = ArtifactStore {
-        root: tempfile::Builder::new()
-            .prefix("rtools-api-artifact-failure-")
-            .tempdir()
-            .unwrap(),
-    };
+    let store = ArtifactStore::new().unwrap();
     let first = store
         .publish(
             &source,
             "same.bin".to_string(),
             "application/octet-stream".to_string(),
         )
+        .await
         .unwrap();
     let second = store
         .publish(
@@ -1146,6 +1384,7 @@ fn request_and_artifact_storage_are_create_new_and_clean_failed_attempts() {
             "same.bin".to_string(),
             "application/octet-stream".to_string(),
         )
+        .await
         .unwrap();
     assert_ne!(first.id, second.id);
     let before_failure = std::fs::read_dir(store.root.path()).unwrap().count();
@@ -1155,6 +1394,7 @@ fn request_and_artifact_storage_are_create_new_and_clean_failed_attempts() {
             "missing.bin".to_string(),
             "application/octet-stream".to_string(),
         )
+        .await
         .is_err());
     assert_eq!(
         std::fs::read_dir(store.root.path()).unwrap().count(),
@@ -1177,5 +1417,231 @@ fn artifact_identifiers_are_single_opaque_path_components() {
             "{candidate}"
         );
     }
-    assert!(handlers::artifact::valid_artifact_id("artifact-Ab3_9.png"));
+    assert!(handlers::artifact::valid_artifact_id(
+        "artifact-0123456789abcdef0123456789abcdef"
+    ));
+    assert!(!handlers::artifact::valid_artifact_id("artifact-Ab3_9.png"));
+}
+
+#[tokio::test]
+async fn artifact_downloads_use_authoritative_metadata_and_bounded_stream_chunks() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.bin");
+    let bytes = vec![0x5a; 256 * 1024 + 17];
+    tokio::fs::write(&source, &bytes).await.unwrap();
+    let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+    let artifact = state
+        .artifacts
+        .publish(
+            &source,
+            "résumé\r\nInjected: yes.heic".to_string(),
+            "image/heic".to_string(),
+        )
+        .await
+        .unwrap();
+    let unknown = state
+        .artifacts
+        .publish(
+            &source,
+            "unknown.extension".to_string(),
+            "application/x-rtools-test".to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(handlers::artifact::valid_artifact_id(&artifact.id));
+    assert_eq!(artifact.id.len(), 41);
+    assert_ne!(artifact.id, unknown.id);
+    let router = Router::new()
+        .route("/api/v1/artifacts/:id", get(handlers::artifact::download))
+        .with_state(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&artifact.download_url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/heic");
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH],
+        bytes.len().to_string()
+    );
+    let disposition = response.headers()[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap();
+    assert!(disposition.contains("filename*=UTF-8''"));
+    assert!(!disposition.contains('\r'));
+    assert!(!disposition.contains('\n'));
+
+    let mut stream = response.into_body().into_data_stream();
+    let mut received = Vec::new();
+    let mut chunks = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.unwrap();
+        assert!(chunk.len() <= 64 * 1024);
+        chunks += 1;
+        received.extend_from_slice(&chunk);
+    }
+    assert!(chunks > 1);
+    assert_eq!(received, bytes);
+
+    let head = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri(&artifact.download_url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "image/heic");
+    assert!(to_bytes(head.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let unknown_response = router
+        .oneshot(
+            Request::builder()
+                .uri(&unknown.download_url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unknown_response.headers()[header::CONTENT_TYPE],
+        "application/x-rtools-test"
+    );
+}
+
+#[tokio::test]
+async fn artifact_publication_batch_rolls_back_a_late_failure() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.bin");
+    tokio::fs::write(&source, b"first").await.unwrap();
+    let missing = source_dir.path().join("missing.bin");
+    let store = ArtifactStore::new().unwrap();
+    let root = store.root.path().to_path_buf();
+    let result = store
+        .publish_batch(vec![
+            handlers::artifact::PendingArtifact {
+                source: &source,
+                name: "first.bin".to_string(),
+                media_type: "application/x-test".to_string(),
+            },
+            handlers::artifact::PendingArtifact {
+                source: &missing,
+                name: "missing.bin".to_string(),
+                media_type: "application/octet-stream".to_string(),
+            },
+        ])
+        .await;
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
+    assert!(store.records.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn graceful_server_shutdown_drops_the_artifact_store() {
+    let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+    let root = state.artifacts.root.path().to_path_buf();
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.bin");
+    tokio::fs::write(&source, b"artifact").await.unwrap();
+    state
+        .artifacts
+        .publish(
+            &source,
+            "source.bin".to_string(),
+            "application/octet-stream".to_string(),
+        )
+        .await
+        .unwrap();
+    let router = build_router_with_state(state.clone(), 1024 * 1024);
+    drop(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(serve_with_shutdown(listener, router, async move {
+        let _ = shutdown_rx.await;
+    }));
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+    assert!(!root.exists());
+}
+
+#[test]
+fn non_default_unenforceable_image_config_fails_closed_at_startup() {
+    let mut configs = Vec::new();
+    let mut config = rtools_core::AppConfig::default();
+    config.image.webp_lossless = true;
+    configs.push(config);
+    let mut config = rtools_core::AppConfig::default();
+    config.image.avif_enabled = false;
+    configs.push(config);
+    let mut config = rtools_core::AppConfig::default();
+    config.image.max_dimension += 1;
+    configs.push(config);
+    let mut config = rtools_core::AppConfig::default();
+    config.image.jpeg_quality -= 1;
+    configs.push(config);
+    let mut config = rtools_core::AppConfig::default();
+    config.image.png_compression -= 1;
+    configs.push(config);
+    let mut config = rtools_core::AppConfig::default();
+    config.image.dither = true;
+    configs.push(config);
+    for config in configs {
+        assert!(AppState::new(config).is_err());
+    }
+}
+
+#[tokio::test]
+async fn rename_preflights_reserved_names_and_batch_collisions_without_artifacts() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    assert!(rtools_ai::rename::validate_unique_portable_filenames(&[
+        "\u{1c90}.png".to_string(),
+        "\u{10d0}.png".to_string(),
+    ])
+    .is_err());
+    for (name, pattern) in [("COM1.png", concat!("{", "name}")), ("first.png", "same")] {
+        let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+        let router = build_router_with_state(state.clone(), 1024 * 1024);
+        let mut parts = vec![Part::File {
+            field: "files",
+            name,
+            content_type: "image/png",
+            bytes: png_bytes(2, 2),
+        }];
+        if pattern == "same" {
+            parts.push(Part::File {
+                field: "files",
+                name: "second.png",
+                content_type: "image/png",
+                bytes: png_bytes(2, 2),
+            });
+        }
+        parts.push(Part::Text {
+            field: "pattern",
+            value: pattern,
+        });
+        let (status, document) =
+            json_response(&router, multipart("/api/v1/ai/rename", parts)).await;
+        assert_structured(status, &document, StatusCode::BAD_REQUEST);
+        assert!(state.artifacts.records.read().await.is_empty());
+        assert_eq!(
+            std::fs::read_dir(state.artifacts.root.path())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
 }

@@ -34,6 +34,11 @@ fn encode_pdf_to<W: Write>(
         .map_err(|error| RToolsError::pdf(format!("Failed to save {description}: {error}")))
 }
 
+/// Validate that a path contains a parseable PDF artifact.
+///
+/// # Errors
+///
+/// Returns a PDF processing error when the file cannot be loaded as a PDF.
 pub fn validate_pdf_artifact(path: &Path) -> RToolsResult<()> {
     Document::load(path)
         .map(|_| ())

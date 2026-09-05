@@ -2379,6 +2379,8 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
+ "futures-util",
+ "getrandom 0.4.3",
  "image",
  "lopdf",
  "rtools-ai",

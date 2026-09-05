@@ -4,7 +4,7 @@ pub mod image;
 pub mod pdf;
 
 use axum::{
-    extract::Multipart,
+    extract::{multipart::MultipartRejection, Multipart},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -21,6 +21,8 @@ pub struct ErrorResponse {
     pub success: bool,
     pub code: ErrorCode,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -40,6 +42,17 @@ impl ApiError {
             reason,
             remediation,
         ))
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::from_error(RToolsError::Internal(message.into()))
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            error: RToolsError::invalid_input(message),
+        }
     }
 
     pub const fn from_error(error: RToolsError) -> Self {
@@ -94,12 +107,49 @@ impl From<std::io::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let code = self.error.code();
+        let details = match &self.error {
+            RToolsError::ResourceLimitExceeded {
+                resource,
+                actual,
+                limit,
+            } => Some(serde_json::json!({
+                "resource": resource,
+                "actual": actual,
+                "limit": limit,
+            })),
+            RToolsError::ResourceLimitExceededUnknownActual { resource, limit } => {
+                Some(serde_json::json!({
+                    "resource": resource,
+                    "limit": limit,
+                }))
+            }
+            RToolsError::CapabilityUnavailable { operation_id, .. } => {
+                Some(serde_json::json!({ "operation_id": operation_id }))
+            }
+            _ => None,
+        };
+        let message = match code {
+            ErrorCode::InvalidInput => "The request is invalid.",
+            ErrorCode::CapabilityUnavailable => "The requested capability is unavailable.",
+            ErrorCode::UnsupportedFormat => "The requested format is not supported.",
+            ErrorCode::ResourceLimitExceeded => "A configured resource limit was exceeded.",
+            ErrorCode::OutputExists => "An output with that name already exists.",
+            ErrorCode::AuthenticationRequired => "Authentication is required.",
+            ErrorCode::ConfigurationInvalid
+            | ErrorCode::PathPolicyViolation
+            | ErrorCode::ProcessingFailed
+            | ErrorCode::PartialFailure
+            | ErrorCode::Cancelled
+            | ErrorCode::RollbackFailed => "The request could not be completed.",
+        };
         (
             self.status,
             Json(ErrorResponse {
                 success: false,
-                code: self.error.code(),
-                message: self.error.to_string(),
+                code,
+                message: message.to_string(),
+                details,
             }),
         )
             .into_response()
@@ -107,6 +157,11 @@ impl IntoResponse for ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+pub type MultipartInput = Result<Multipart, MultipartRejection>;
+
+pub fn require_multipart(input: MultipartInput) -> ApiResult<Multipart> {
+    input.map_err(|_| ApiError::invalid("A valid multipart/form-data request is required"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {

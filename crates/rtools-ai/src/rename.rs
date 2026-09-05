@@ -6,7 +6,7 @@ use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 /// AI rename configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ impl Processor for RenameProcessor {
             let index = config.start_number.checked_add(offset).ok_or_else(|| {
                 RToolsError::invalid_input("Rename sequence exceeds the u32 range")
             })?;
-            let new_name = generate_filename(&config.pattern, path, index)?;
+            let new_name = render_filename(&config.pattern, path, index)?;
             let output_dir = config
                 .output_dir
                 .as_deref()
@@ -183,8 +183,13 @@ pub fn validate_deterministic_pattern(pattern: &str) -> RToolsResult<()> {
     Ok(())
 }
 
-/// Generate filename from pattern, avoiding double extensions
-fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<String> {
+/// Render and validate the final portable filename produced by a rename pattern.
+///
+/// # Errors
+///
+/// Returns an error when file metadata is unavailable or the rendered name is
+/// not a portable filename.
+pub fn render_filename(pattern: &str, path: &Path, index: u32) -> RToolsResult<String> {
     let metadata = std::fs::metadata(path)?;
     let modified = metadata.modified()?;
     let datetime: chrono::DateTime<chrono::Local> = modified.into();
@@ -227,9 +232,71 @@ fn generate_filename(pattern: &str, path: &PathBuf, index: u32) -> RToolsResult<
 
     // Only append extension if the pattern doesn't already include {ext}
     // (which would have been replaced with the actual extension)
-    if pattern.contains(&extension_token) {
-        Ok(filename)
+    let rendered = if pattern.contains(&extension_token) {
+        filename
     } else {
-        Ok(format!("{filename}.{ext}"))
+        format!("{filename}.{ext}")
+    };
+    validate_portable_filename(&rendered)?;
+    Ok(rendered)
+}
+
+/// Validate a fully rendered rename result as one portable filename.
+///
+/// # Errors
+///
+/// Returns `INVALID_INPUT` for paths, reserved device names, control
+/// characters, or other non-portable filename syntax.
+pub fn validate_portable_filename(filename: &str) -> RToolsResult<()> {
+    let mut components = Path::new(filename).components();
+    if !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+        || filename.is_empty()
+        || matches!(filename, "." | "..")
+        || filename.ends_with(['.', ' '])
+        || filename
+            .chars()
+            .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
+    {
+        return Err(RToolsError::invalid_input(
+            "Rename result must be one portable filename",
+        ));
     }
+    let stem = filename
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches([' ', '.']);
+    let reserved = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if reserved
+        .iter()
+        .any(|candidate| stem.eq_ignore_ascii_case(candidate))
+    {
+        return Err(RToolsError::invalid_input(
+            "Rename result uses a reserved portable filename",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a batch of rendered filenames and reject portable aliases.
+///
+/// # Errors
+///
+/// Returns `INVALID_INPUT` if a filename is invalid or if two names collide
+/// after portable Unicode case folding.
+pub fn validate_unique_portable_filenames(filenames: &[String]) -> RToolsResult<()> {
+    let mut destinations = HashSet::with_capacity(filenames.len());
+    for filename in filenames {
+        validate_portable_filename(filename)?;
+        if !insert_unique_destination(&mut destinations, Path::new(filename))? {
+            return Err(RToolsError::invalid_input(
+                "Rename pattern produces duplicate output filenames",
+            ));
+        }
+    }
+    Ok(())
 }

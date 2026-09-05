@@ -1,5 +1,8 @@
 use super::artifact::ArtifactResponse;
-use super::{parse_bool, parse_multipart, ApiError, ApiResult, FieldKind, RequestFiles};
+use super::{
+    parse_bool, parse_multipart, require_multipart, ApiError, ApiResult, FieldKind, MultipartInput,
+    RequestFiles,
+};
 use axum::{extract::State, Json};
 use rtools_core::{FileInput, Processor};
 use serde::{Deserialize, Serialize};
@@ -16,10 +19,10 @@ pub struct PdfResponse {
 
 pub async fn merge(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<PdfResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[("files", FieldKind::Files)],
         state.config.api.max_upload_size,
     )
@@ -34,7 +37,10 @@ pub async fn merge(
     let request = RequestFiles::new()?;
     let mut paths = Vec::with_capacity(uploads.len());
     for (index, upload) in uploads.into_iter().enumerate() {
-        paths.push(request.write(index, "pdf", &upload.bytes)?);
+        let path = request.write(index, "pdf", &upload.bytes)?;
+        rtools_pdf::validate_pdf_artifact(&path)
+            .map_err(|_| ApiError::invalid("Uploaded PDF data is malformed"))?;
+        paths.push(path);
     }
     let output_path = request.path().join("merged.pdf");
     let inputs = paths.iter().cloned().map(FileInput::from_path).collect();
@@ -50,11 +56,14 @@ pub async fn merge(
         .destination
         .as_path()
         .ok_or_else(|| ApiError::invalid("PDF merge returned no path-based artifact"))?;
-    let artifact = state.artifacts.publish(
-        path,
-        "merged.pdf".to_string(),
-        "application/pdf".to_string(),
-    )?;
+    let artifact = state
+        .artifacts
+        .publish(
+            path,
+            "merged.pdf".to_string(),
+            "application/pdf".to_string(),
+        )
+        .await?;
     Ok(Json(PdfResponse {
         success: true,
         message: "PDFs merged successfully".to_string(),
@@ -64,10 +73,10 @@ pub async fn merge(
 
 pub async fn compress(
     State(state): State<Arc<AppState>>,
-    multipart: axum::extract::Multipart,
+    multipart: MultipartInput,
 ) -> ApiResult<Json<PdfResponse>> {
     let mut form = parse_multipart(
-        multipart,
+        require_multipart(multipart)?,
         &[
             ("file", FieldKind::File),
             ("level", FieldKind::Text),
@@ -113,6 +122,8 @@ pub async fn compress(
         .to_string();
     let request = RequestFiles::new()?;
     let path = request.write(0, "pdf", &upload.bytes)?;
+    rtools_pdf::validate_pdf_artifact(&path)
+        .map_err(|_| ApiError::invalid("Uploaded PDF data is malformed"))?;
     let output = rtools_pdf::PdfCompressProcessor.process(
         FileInput::from_path(path),
         rtools_pdf::PdfCompressConfig {
@@ -125,11 +136,14 @@ pub async fn compress(
         .destination
         .as_path()
         .ok_or_else(|| ApiError::invalid("PDF compression returned no path-based artifact"))?;
-    let artifact = state.artifacts.publish(
-        path,
-        format!("{display_name}_compressed.pdf"),
-        "application/pdf".to_string(),
-    )?;
+    let artifact = state
+        .artifacts
+        .publish(
+            path,
+            format!("{display_name}_compressed.pdf"),
+            "application/pdf".to_string(),
+        )
+        .await?;
     Ok(Json(PdfResponse {
         success: true,
         message: "PDF compressed successfully".to_string(),
