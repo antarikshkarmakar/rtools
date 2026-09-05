@@ -17,8 +17,7 @@ struct RToolsServer;
 struct CompressInput {
     input_path: String,
     output_path: Option<String>,
-    /// Optional JPEG quality. Omit for non-JPEG input because those encoders
-    /// do not use this value.
+    /// Optional JPEG quality. Omit unless the effective output format is JPEG.
     #[schemars(range(min = 1, max = 100))]
     quality: Option<u8>,
 }
@@ -26,7 +25,8 @@ struct CompressInput {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ConvertInput {
     input_path: String,
-    target_format: TargetFormatInput,
+    #[schemars(schema_with = "target_format_schema")]
+    target_format: String,
     output_path: Option<String>,
     /// Optional JPEG quality. Valid only when `target_format` is jpg or jpeg;
     /// omit it for every other target format.
@@ -36,7 +36,7 @@ struct ConvertInput {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-enum TargetFormatInput {
+enum TargetFormatSchema {
     Webp,
     Png,
     Jpg,
@@ -49,20 +49,21 @@ enum TargetFormatInput {
     Hdr,
 }
 
-impl TargetFormatInput {
-    const fn extension(self) -> &'static str {
-        match self {
-            Self::Webp => "webp",
-            Self::Png => "png",
-            Self::Jpg => "jpg",
-            Self::Jpeg => "jpeg",
-            Self::Avif => "avif",
-            Self::Tiff => "tiff",
-            Self::Tif => "tif",
-            Self::Bmp => "bmp",
-            Self::Gif => "gif",
-            Self::Hdr => "hdr",
-        }
+fn target_format_schema(generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+    TargetFormatSchema::json_schema(generator)
+}
+
+fn parse_target_format(value: &str) -> Option<rtools_core::ImageFormat> {
+    match value {
+        "webp" => Some(rtools_core::ImageFormat::Webp),
+        "png" => Some(rtools_core::ImageFormat::Png),
+        "jpg" | "jpeg" => Some(rtools_core::ImageFormat::Jpeg),
+        "avif" => Some(rtools_core::ImageFormat::Avif),
+        "tiff" | "tif" => Some(rtools_core::ImageFormat::Tiff),
+        "bmp" => Some(rtools_core::ImageFormat::Bmp),
+        "gif" => Some(rtools_core::ImageFormat::Gif),
+        "hdr" => Some(rtools_core::ImageFormat::Hdr),
+        _ => None,
     }
 }
 
@@ -211,7 +212,7 @@ const MCP_TOOL_CONTRACTS: &[McpToolContract] = &[
         operation_id: "image.compress",
         state: "available",
         description: "Compress an image with quality preservation",
-        adapter_contract: "quality=1..100 for JPEG input only; omit for non-JPEG",
+        adapter_contract: "output extension must match input; quality=1..100 for JPEG output only; omit for non-JPEG",
         structured_errors: true,
     },
     McpToolContract {
@@ -347,9 +348,36 @@ impl RToolsServer {
                 let input: CompressInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let input_path = PathBuf::from(&input.input_path);
-                let target_format = rtools_core::ImageFormat::from_path(&input_path);
-                if input.quality.is_some() && target_format != Some(rtools_core::ImageFormat::Jpeg)
-                {
+                let Some(input_format) = rtools_core::ImageFormat::from_path(&input_path) else {
+                    return Ok(tool_error(
+                        "image.compress",
+                        &RToolsError::invalid_input("Unsupported image input format"),
+                    ));
+                };
+                let target_format = if let Some(output_path) = input.output_path.as_deref() {
+                    let Some(output_format) =
+                        rtools_core::ImageFormat::from_path(std::path::Path::new(output_path))
+                    else {
+                        return Ok(tool_error(
+                            "image.compress",
+                            &RToolsError::invalid_input(
+                                "Output path must have a supported image extension",
+                            ),
+                        ));
+                    };
+                    if output_format != input_format {
+                        return Ok(tool_error(
+                            "image.compress",
+                            &RToolsError::invalid_input(
+                                "Compression output format must match the input format",
+                            ),
+                        ));
+                    }
+                    output_format
+                } else {
+                    input_format
+                };
+                if input.quality.is_some() && target_format != rtools_core::ImageFormat::Jpeg {
                     return Ok(tool_error(
                         "image.compress",
                         &RToolsError::invalid_input(
@@ -391,13 +419,12 @@ impl RToolsServer {
             "convert_image" => {
                 let input: ConvertInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input =
-                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
-                let target_format =
-                    rtools_core::ImageFormat::from_extension(input.target_format.extension())
-                        .ok_or_else(|| {
-                            McpError::invalid_params("Unsupported target format", None)
-                        })?;
+                let Some(target_format) = parse_target_format(&input.target_format) else {
+                    return Ok(tool_error(
+                        "image.convert",
+                        &RToolsError::invalid_input("Unsupported target format"),
+                    ));
+                };
                 if input.quality.is_some() && target_format != rtools_core::ImageFormat::Jpeg {
                     return Ok(tool_error(
                         "image.convert",
@@ -406,6 +433,8 @@ impl RToolsServer {
                         ),
                     ));
                 }
+                let file_input =
+                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_image::ConvertConfig {
                     target_format,
                     output: input.output_path.map(PathBuf::from),
@@ -419,10 +448,7 @@ impl RToolsServer {
                 let processor = rtools_image::ConvertProcessor;
                 match processor.process(file_input, config) {
                     Ok(output) => Ok(CallToolResult::success(vec![
-                        ContentBlock::text(format!(
-                            "Converted to {}",
-                            input.target_format.extension()
-                        )),
+                        ContentBlock::text(format!("Converted to {}", input.target_format)),
                         file_output_content(&output)?,
                     ])),
                     Err(error) => Ok(tool_error("image.convert", &error)),
@@ -964,6 +990,14 @@ mod tests {
             merge["inputSchema"]["properties"]["input_paths"]["minItems"],
             2
         );
+
+        let convert = tool_by_name("convert_image");
+        assert_eq!(
+            convert["inputSchema"]["properties"]["target_format"]["enum"],
+            serde_json::json!([
+                "webp", "png", "jpg", "jpeg", "avif", "tiff", "tif", "bmp", "gif", "hdr"
+            ])
+        );
     }
 
     #[tokio::test]
@@ -1140,6 +1174,72 @@ mod tests {
             );
             assert!(!document.contains("PRIVATE-CANARY"), "{tool}: {document}");
             assert!(!output.exists(), "{tool}: {}", output.display());
+        }
+        assert!(!canary.exists());
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_compress_validates_explicit_output_format_before_input_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let canary = temp.path().join("PRIVATE-CANARY-compress-output-format");
+        for output in [canary.join("output.png"), canary.join("output")] {
+            let result = RToolsServer
+                .handle_tool(
+                    "compress_image",
+                    serde_json::json!({
+                        "input_path": canary.join("missing.jpg"),
+                        "output_path": output,
+                        "quality": 50,
+                    }),
+                )
+                .await
+                .expect("output format validation must return a tool result");
+            let serialized = serde_json::to_value(&result).unwrap();
+            let document = serde_json::to_string(&serialized).unwrap();
+            assert!(is_error(&result), "{document}");
+            assert_eq!(
+                serialized["structuredContent"]["code"], "INVALID_INPUT",
+                "{document}"
+            );
+            assert_eq!(
+                serialized["structuredContent"]["operation_id"], "image.compress",
+                "{document}"
+            );
+            assert!(!document.contains("PRIVATE-CANARY"), "{document}");
+            assert!(!output.exists(), "{}", output.display());
+        }
+        assert!(!canary.exists());
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_unknown_conversion_target_is_a_structured_tool_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let canary = temp.path().join("PRIVATE-CANARY-unknown-convert-target");
+        for quality in [None, Some(50)] {
+            let mut arguments = serde_json::json!({
+                "input_path": canary.join("missing.png"),
+                "target_format": "bogus",
+                "output_path": canary.join("output.bogus"),
+            });
+            if let Some(quality) = quality {
+                arguments["quality"] = quality.into();
+            }
+            let result = RToolsServer
+                .handle_tool("convert_image", arguments)
+                .await
+                .expect("unknown target must return a structured tool result");
+            let serialized = serde_json::to_value(&result).unwrap();
+            let document = serde_json::to_string(&serialized).unwrap();
+            assert!(is_error(&result), "{document}");
+            assert_eq!(
+                serialized["structuredContent"]["code"], "INVALID_INPUT",
+                "{document}"
+            );
+            assert_eq!(
+                serialized["structuredContent"]["operation_id"], "image.convert",
+                "{document}"
+            );
+            assert!(!document.contains("PRIVATE-CANARY"), "{document}");
         }
         assert!(!canary.exists());
     }

@@ -1,8 +1,10 @@
 use crate::error::{RToolsError, RToolsResult};
 use crate::types::ProcessStats;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
+use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -472,6 +474,16 @@ fn owner_token() -> String {
     format!("{}-{counter}-{timestamp}", std::process::id())
 }
 
+fn cleanup_nonce(token: &str) -> String {
+    let random_word = |domain: u8| {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write(token.as_bytes());
+        hasher.write_u8(domain);
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", random_word(0), random_word(1))
+}
+
 fn unique_candidate(path: &Path, suffix: u16) -> RToolsResult<PathBuf> {
     let stem = path.file_stem().ok_or_else(|| {
         RToolsError::path_policy_violation(format!("output must name a file: {}", path.display()))
@@ -538,28 +550,62 @@ fn ensure_open_lock_owned(file: &File, token: &str) -> RToolsResult<()> {
 }
 
 fn retire_reservation(path: &Path, token: &str) -> RToolsResult<()> {
-    retire_reservation_with_hook(path, token, |_| Ok(()))
+    retire_reservation_with_hooks(path, token, |_| Ok(()), |_| Ok(()))
 }
 
-fn retire_reservation_with_hook<F>(path: &Path, token: &str, after_claim: F) -> RToolsResult<()>
+fn retire_reservation_with_hooks<B, V>(
+    path: &Path,
+    token: &str,
+    before_claim: B,
+    after_verify: V,
+) -> RToolsResult<()>
 where
-    F: FnOnce(&Path) -> RToolsResult<()>,
+    B: FnOnce(&Path) -> RToolsResult<()>,
+    V: FnOnce(&Path) -> RToolsResult<()>,
 {
-    let retirement = sibling_path(path, &format!(".rtools-{token}.retired"))?;
-    if path_entry_exists(&retirement)? {
+    let preferred_retirement = sibling_path(path, &format!(".rtools-{token}.retired"))?;
+    if path_entry_exists(&preferred_retirement)? {
         return Err(RToolsError::path_policy_violation(format!(
             "reservation retirement path already exists: {}",
-            retirement.display()
+            preferred_retirement.display()
         )));
     }
+    before_claim(&preferred_retirement)?;
 
-    fs::rename(path, &retirement).map_err(|error| {
-        RToolsError::path_policy_violation(format!(
-            "unable to atomically claim output reservation {}: {error}",
-            path.display()
-        ))
-    })?;
-    after_claim(&retirement)?;
+    // Both transitions are create-only hard-link claims. They cannot replace a
+    // pathname another writer creates in either race window. The token check
+    // follows each claim, and cleanup unlinks only the second owner-specific
+    // claim after it has been verified; a replacement at the retired pathname
+    // is therefore moved, identified as foreign, and restored rather than
+    // deleted. The cleanup name adds two independently randomized hash words
+    // so it cannot be predicted from the visible reservation token before the
+    // claim.
+    let mut collision = None;
+    let retirement = match publish_no_replace(path, &preferred_retirement) {
+        Ok(()) => preferred_retirement,
+        Err(error @ RToolsError::OutputExists(_)) => {
+            collision = Some(error);
+            let mut claimed = None;
+            for suffix in 1..=MAX_UNIQUE_SUFFIX {
+                let candidate = sibling_path(path, &format!(".rtools-{token}-{suffix}.retired"))?;
+                match publish_no_replace(path, &candidate) {
+                    Ok(()) => {
+                        claimed = Some(candidate);
+                        break;
+                    }
+                    Err(RToolsError::OutputExists(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            claimed.ok_or_else(|| {
+                RToolsError::path_policy_violation(format!(
+                    "unable to claim an unused retirement path for {}",
+                    path.display()
+                ))
+            })?
+        }
+        Err(error) => return Err(error),
+    };
 
     if let Err(ownership_error) = ensure_lock_owned(&retirement, token) {
         match publish_no_replace(&retirement, path) {
@@ -582,8 +628,34 @@ where
         return Err(ownership_error);
     }
 
-    fs::remove_file(retirement)?;
-    Ok(())
+    after_verify(&retirement)?;
+    let cleanup = sibling_path(
+        path,
+        &format!(".rtools-{token}-{}.cleanup", cleanup_nonce(token)),
+    )?;
+    publish_no_replace(&retirement, &cleanup)?;
+    if let Err(ownership_error) = ensure_lock_owned(&cleanup, token) {
+        match publish_no_replace(&cleanup, &retirement) {
+            Ok(()) => {}
+            Err(RToolsError::OutputExists(_)) => {
+                return Err(RToolsError::path_policy_violation(format!(
+                    "foreign retirement claim remains preserved at {} because {} is occupied",
+                    cleanup.display(),
+                    retirement.display()
+                )));
+            }
+            Err(restore_error) => {
+                return Err(RToolsError::rollback_failed(format!(
+                    "foreign retirement claim at {} could not be restored to {}: {restore_error}",
+                    cleanup.display(),
+                    retirement.display()
+                )));
+            }
+        }
+        return Err(ownership_error);
+    }
+    fs::remove_file(cleanup)?;
+    collision.map_or(Ok(()), Err)
 }
 
 fn publish_no_replace(source: &Path, destination: &Path) -> RToolsResult<()> {
@@ -858,22 +930,55 @@ mod atomic_output_tests {
     }
 
     #[test]
-    fn retirement_claim_never_deletes_entry_swapped_after_atomic_move() {
+    fn retirement_claim_never_overwrites_a_foreign_destination_inserted_before_claim() {
+        let directory = tempfile::tempdir().unwrap();
+        let reservation = directory.path().join(".result.bin.rtools.lock");
+        let foreign_path = std::cell::RefCell::new(None);
+        fs::write(&reservation, b"owner-token").unwrap();
+
+        let error = super::retire_reservation_with_hooks(
+            &reservation,
+            "owner-token",
+            |retirement| {
+                foreign_path.replace(Some(retirement.to_owned()));
+                fs::write(retirement, b"foreign-owner")?;
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert!(!reservation.exists());
+        let foreign_path = foreign_path.into_inner().unwrap();
+        assert_eq!(fs::read(foreign_path).unwrap(), b"foreign-owner");
+    }
+
+    #[test]
+    fn retirement_cleanup_never_deletes_a_replacement_inserted_after_verification() {
         let directory = tempfile::tempdir().unwrap();
         let reservation = directory.path().join(".result.bin.rtools.lock");
         let saved_owner = directory.path().join("saved-owner.lock");
+        let foreign_path = std::cell::RefCell::new(None);
         fs::write(&reservation, b"owner-token").unwrap();
 
-        let error =
-            super::retire_reservation_with_hook(&reservation, "owner-token", |retirement| {
+        let error = super::retire_reservation_with_hooks(
+            &reservation,
+            "owner-token",
+            |_| Ok(()),
+            |retirement| {
+                foreign_path.replace(Some(retirement.to_owned()));
                 fs::rename(retirement, &saved_owner)?;
                 fs::write(retirement, b"foreign-owner")?;
                 Ok(())
-            })
-            .unwrap_err();
+            },
+        )
+        .unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
-        assert_eq!(fs::read(&reservation).unwrap(), b"foreign-owner");
+        assert!(!reservation.exists());
+        let foreign_path = foreign_path.into_inner().unwrap();
+        assert_eq!(fs::read(foreign_path).unwrap(), b"foreign-owner");
         assert_eq!(fs::read(saved_owner).unwrap(), b"owner-token");
     }
 

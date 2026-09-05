@@ -36,7 +36,7 @@ means processor failures include `code`, `message`, and `operation_id` in
 
 | Tool | Operation ID | State | Adapter contract |
 |---|---|---|---|
-| `compress_image` | `image.compress` | `available` | `quality=1..100 for JPEG input only`; omit for non-JPEG; `structured_errors=true` |
+| `compress_image` | `image.compress` | `available` | output extension must match input; `quality=1..100 for JPEG output only`; omit for non-JPEG; `structured_errors=true` |
 | `convert_image` | `image.convert` | `available` | `target_format=webp|png|jpg|jpeg|avif|tiff|tif|bmp|gif|hdr`; `quality=1..100 for jpg|jpeg only`; omit for other targets; `structured_errors=true` |
 | `resize_image` | `image.resize` | `available` | `width|height=1..32768`; fixed output quality 85; `structured_errors=true` |
 | `organize_photos` | `ai.organize.date` | `experimental` | `strategy=date`; prepared derived output directories required; `structured_errors=true` |
