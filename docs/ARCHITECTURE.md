@@ -46,8 +46,10 @@ graph LR
 - REST uploads live in request-owned temporary storage. Successful REST files
   are copied into a process-local artifact store backed by a private temporary
   directory and returned by opaque artifact ID. Batch publication tracks every
-  create-new path with a cancellation-safe cleanup guard and registers records
-  only after every copy is durable. There is no durable retention guarantee.
+  create-new path with a cleanup guard, registers records only after every copy
+  is durable, and makes bounded immediate cleanup attempts if its future is
+  cancelled. Persistent OS deletion failures defer cleanup to store shutdown.
+  There is no durable retention guarantee or startup scavenger.
 - MCP operates on server-local paths, but public results and errors do not
   expose host filesystem paths. It has no hosted-download contract.
 

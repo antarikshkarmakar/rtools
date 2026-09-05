@@ -41,11 +41,15 @@ temporary entry; there is no startup scavenger or retention guarantee. Public
 responses never contain host filesystem paths. Clients that need durable
 storage must download and store the bytes themselves.
 
-Multi-artifact publication is all-or-none. Every create-new destination is
-tracked before copying begins, and cancellation or a later copy, sync, or
-registration failure removes the entire unregistered batch. If owned paths
-cannot be removed, the request fails with `ROLLBACK_FAILED` instead of hiding
-the incomplete rollback.
+Multi-artifact records are published all-or-none. Every create-new destination
+is tracked before copying begins. A later copy, sync, or registration failure
+removes the unregistered batch; if an owned path cannot be removed, the request
+fails with `ROLLBACK_FAILED` instead of hiding the incomplete rollback.
+Cancellation has no response channel, so its Drop guard performs three
+immediate best-effort cleanup attempts without sleeping. A path under a
+persistent operating-system deletion failure can remain in the private store
+until graceful server/store shutdown retries directory cleanup. Abrupt process
+termination still has no cleanup guarantee, and there is no startup scavenger.
 
 ## Multipart rules
 

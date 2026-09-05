@@ -1781,6 +1781,64 @@ async fn artifact_publication_cancellation_removes_every_create_new_path() {
 }
 
 #[tokio::test]
+async fn artifact_cancellation_retries_a_transient_cleanup_failure() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.bin");
+    tokio::fs::write(&source, b"artifact").await.unwrap();
+    let store = Arc::new(ArtifactStore::new().unwrap());
+    store.fail_publication_delete_on(1);
+    let pause = store.pause_publication_at(handlers::artifact::ArtifactPublishStage::Copy, 1);
+    let task_store = Arc::clone(&store);
+    let task = tokio::spawn(async move {
+        task_store
+            .publish(
+                &source,
+                "source.bin".to_string(),
+                "application/octet-stream".to_string(),
+            )
+            .await
+    });
+
+    pause.wait_until_entered().await;
+    assert_eq!(std::fs::read_dir(store.root.path()).unwrap().count(), 1);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    assert_eq!(std::fs::read_dir(store.root.path()).unwrap().count(), 0);
+    assert!(store.records.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn artifact_cancellation_bounds_persistent_cleanup_until_store_drop() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.bin");
+    tokio::fs::write(&source, b"artifact").await.unwrap();
+    let store = Arc::new(ArtifactStore::new().unwrap());
+    let root = store.root.path().to_path_buf();
+    store.fail_publication_delete_attempts(usize::MAX);
+    let pause = store.pause_publication_at(handlers::artifact::ArtifactPublishStage::Copy, 1);
+    let task_store = Arc::clone(&store);
+    let task = tokio::spawn(async move {
+        task_store
+            .publish(
+                &source,
+                "source.bin".to_string(),
+                "application/octet-stream".to_string(),
+            )
+            .await
+    });
+
+    pause.wait_until_entered().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    assert!(store.records.read().await.is_empty());
+    drop(store);
+    assert!(!root.exists());
+}
+
+#[tokio::test]
 async fn artifact_publication_reports_cleanup_failure_as_rollback_failed() {
     let source_dir = tempfile::tempdir().unwrap();
     let first = source_dir.path().join("first.bin");

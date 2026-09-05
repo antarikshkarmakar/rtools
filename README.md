@@ -163,8 +163,10 @@ artifact.
   The REST adapter creates only derived directories below its private,
   server-owned request directory.
 - REST artifact batches register only after every private copy is durable.
-  Cancellation or a later copy/registration failure removes every owned
-  create-new path; a cleanup failure is reported as `ROLLBACK_FAILED`.
+  Ordinary copy/registration failures remove every owned create-new path or
+  report `ROLLBACK_FAILED`. Cancellation performs a small bounded series of
+  immediate best-effort removals; a path under a persistent operating-system
+  deletion failure can remain until artifact-store shutdown retries removal.
 - PDF compression currently accepts only `medium`. `light`, `heavy`, and
   metadata removal fail with `CAPABILITY_UNAVAILABLE`; complete Info, XMP,
   embedded-file, and post-write metadata verification is not implemented. PDF

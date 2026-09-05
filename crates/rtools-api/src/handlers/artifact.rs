@@ -77,6 +77,7 @@ struct ArtifactTestState {
     fail_copy_on: Option<usize>,
     delete_count: usize,
     fail_delete_on: Option<usize>,
+    fail_delete_attempts: usize,
 }
 
 #[cfg(test)]
@@ -172,12 +173,21 @@ impl ArtifactTestControl {
         let mut state = self.state.lock().expect("artifact test control lock");
         state.delete_count = 0;
         state.fail_delete_on = Some(occurrence);
+        state.fail_delete_attempts = 0;
+    }
+
+    fn fail_delete_attempts(&self, attempts: usize) {
+        let mut state = self.state.lock().expect("artifact test control lock");
+        state.delete_count = 0;
+        state.fail_delete_on = None;
+        state.fail_delete_attempts = attempts;
     }
 
     fn should_fail_delete(&self) -> bool {
         let mut state = self.state.lock().expect("artifact test control lock");
         state.delete_count += 1;
         state.fail_delete_on == Some(state.delete_count)
+            || state.delete_count <= state.fail_delete_attempts
     }
 }
 
@@ -187,6 +197,8 @@ struct ArtifactBatchCleanup {
     #[cfg(test)]
     test_control: Arc<ArtifactTestControl>,
 }
+
+const DROP_CLEANUP_ATTEMPTS: usize = 3;
 
 impl ArtifactBatchCleanup {
     #[cfg(not(test))]
@@ -252,8 +264,20 @@ impl ArtifactBatchCleanup {
 
 impl Drop for ArtifactBatchCleanup {
     fn drop(&mut self) {
-        if self.armed {
+        if !self.armed {
+            return;
+        }
+        for _ in 0..DROP_CLEANUP_ATTEMPTS {
+            if self.paths.is_empty() {
+                return;
+            }
             let _ = self.cleanup_once();
+        }
+        if !self.paths.is_empty() {
+            tracing::warn!(
+                remaining_paths = self.paths.len(),
+                "artifact cancellation cleanup incomplete after bounded retries"
+            );
         }
     }
 }
@@ -296,6 +320,11 @@ impl ArtifactStore {
     #[cfg(test)]
     pub(crate) fn fail_publication_delete_on(&self, occurrence: usize) {
         self.test_control.fail_delete_on(occurrence);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_publication_delete_attempts(&self, attempts: usize) {
+        self.test_control.fail_delete_attempts(attempts);
     }
 
     fn random_id() -> ApiResult<String> {
