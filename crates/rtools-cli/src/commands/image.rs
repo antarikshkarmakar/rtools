@@ -33,6 +33,7 @@ pub fn handle_image_command(
             preserve_metadata,
             strip_gps,
         } => {
+            let quality = quality.unwrap_or(config.image.default_quality);
             let processor = CompressProcessor;
             let processor_config = CompressConfig {
                 preset: rtools_image::compress::CompressionPreset::Custom(quality),
@@ -43,6 +44,8 @@ pub fn handle_image_command(
                 strip_gps,
                 limits: config.limits.clone(),
             };
+            processor.validate_config(&processor_config)?;
+            validate_cli_image_inputs(&input, config)?;
             let outcomes = process_each(&processor, input, processor_config);
             CommandResult::from_file_output_outcomes(
                 "image.compress",
@@ -57,6 +60,7 @@ pub fn handle_image_command(
             output,
             quality,
         } => {
+            let quality = quality.unwrap_or(config.image.default_quality);
             let processor = ConvertProcessor;
             let processor_config = ConvertConfig {
                 target_format: format.into_core(),
@@ -68,6 +72,8 @@ pub fn handle_image_command(
                 strip_gps: false,
                 limits: config.limits.clone(),
             };
+            processor.validate_config(&processor_config)?;
+            validate_cli_image_inputs(&input, config)?;
             let outcomes = process_each(&processor, input, processor_config);
             CommandResult::from_file_output_outcomes(
                 "image.convert",
@@ -83,6 +89,7 @@ pub fn handle_image_command(
             maintain_aspect,
             output,
         } => {
+            validate_requested_image_dimensions(width, height, config.image.max_dimension)?;
             let processor = ResizeProcessor;
             let processor_config = ResizeConfig {
                 width,
@@ -91,9 +98,11 @@ pub fn handle_image_command(
                 algorithm: rtools_image::resize::ResizeAlgorithm::default(),
                 output,
                 output_policy: rtools_core::OutputPolicy::default(),
-                quality: 85,
+                quality: config.image.default_quality,
                 limits: config.limits.clone(),
             };
+            processor.validate_config(&processor_config)?;
+            validate_cli_image_inputs(&input, config)?;
             let outcomes = process_each(&processor, input, processor_config);
             CommandResult::from_file_output_outcomes(
                 "image.resize",
@@ -116,9 +125,11 @@ pub fn handle_image_command(
                 region,
                 output,
                 output_policy: rtools_core::OutputPolicy::default(),
-                quality: 85,
+                quality: config.image.default_quality,
                 limits: config.limits.clone(),
             };
+            processor.validate_config(&processor_config)?;
+            validate_cli_image_inputs(&input, config)?;
             let outcomes = process_each(&processor, input, processor_config);
             CommandResult::from_file_output_outcomes(
                 "image.crop",
@@ -136,6 +147,9 @@ pub fn handle_image_command(
             output,
         } => {
             let processor = WatermarkProcessor;
+            if let Some(image_path) = image.as_ref() {
+                validate_cli_image_inputs(std::slice::from_ref(image_path), config)?;
+            }
             let watermark = match (text, image) {
                 (Some(text), None) => rtools_image::watermark::WatermarkType::Text {
                     text,
@@ -163,9 +177,11 @@ pub fn handle_image_command(
                 opacity,
                 output,
                 output_policy: rtools_core::OutputPolicy::default(),
-                quality: 85,
+                quality: config.image.default_quality,
                 limits: config.limits.clone(),
             };
+            processor.validate_config(&processor_config)?;
+            validate_cli_image_inputs(&input, config)?;
             let outcomes = process_each(&processor, input, processor_config);
             CommandResult::from_file_output_outcomes(
                 "image.watermark.image",
@@ -186,9 +202,11 @@ pub fn handle_image_command(
                 strength,
                 output,
                 output_policy: rtools_core::OutputPolicy::default(),
-                quality: 85,
+                quality: config.image.default_quality,
                 limits: config.limits.clone(),
             };
+            processor.validate_config(&processor_config)?;
+            validate_cli_image_inputs(&input, config)?;
             let outcomes = process_each(&processor, input, processor_config);
             CommandResult::from_file_output_outcomes(
                 "image.filter",
@@ -198,6 +216,7 @@ pub fn handle_image_command(
             )
         }
         ImageCommands::Exif { input, format } => {
+            validate_cli_image_inputs(&input, config)?;
             let processor = rtools_image::ExifProcessor;
             let processor_config = rtools_image::exif::ExifConfig::default();
             let mut results = Vec::new();
@@ -234,6 +253,47 @@ pub fn handle_image_command(
             "Configure a supported image OCR provider",
         )),
     }
+}
+
+fn validate_requested_image_dimensions(
+    width: Option<u32>,
+    height: Option<u32>,
+    max_dimension: u32,
+) -> RToolsResult<()> {
+    if let Some(actual) = [width, height]
+        .into_iter()
+        .flatten()
+        .find(|dimension| *dimension > max_dimension)
+    {
+        return Err(RToolsError::ResourceLimitExceeded {
+            resource: "image_dimension",
+            actual: u64::from(actual),
+            limit: u64::from(max_dimension),
+        });
+    }
+    Ok(())
+}
+
+fn validate_cli_image_inputs(paths: &[std::path::PathBuf], config: &AppConfig) -> RToolsResult<()> {
+    config
+        .limits
+        .check_batch_items(u64::try_from(paths.len()).unwrap_or(u64::MAX))?;
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let decoded = rtools_image::format::decode_bounded(path, &config.limits)?;
+        if decoded.image.width() > config.image.max_dimension
+            || decoded.image.height() > config.image.max_dimension
+        {
+            return Err(RToolsError::ResourceLimitExceeded {
+                resource: "image_dimension",
+                actual: u64::from(decoded.image.width().max(decoded.image.height())),
+                limit: u64::from(config.image.max_dimension),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn crop_region(

@@ -18,6 +18,7 @@ pub fn handle_ai_command(
         } => {
             let source_paths = collect_image_paths(&input)?;
             require_nonempty_inputs(&source_paths)?;
+            validate_ai_inputs(&source_paths, config)?;
             let processor = rtools_ai::OrganizeProcessor;
             let processor_config = rtools_ai::organize::OrganizeConfig {
                 output_dir: output,
@@ -55,6 +56,7 @@ pub fn handle_ai_command(
         } => {
             let source_paths = collect_image_paths(&input)?;
             require_nonempty_inputs(&source_paths)?;
+            validate_ai_inputs(&source_paths, config)?;
             let dry_run = global_dry_run || dry_run;
             let processor = rtools_ai::RenameProcessor;
             let processor_config = rtools_ai::rename::RenameConfig {
@@ -85,6 +87,7 @@ pub fn handle_ai_command(
             language,
             output: _,
         } => {
+            validate_ai_inputs(&input, config)?;
             let processor = rtools_ai::AltTextProcessor;
             let processor_config = rtools_ai::alt_text::AltTextConfig {
                 language,
@@ -119,6 +122,7 @@ pub fn handle_ai_command(
         } => {
             let source_paths = collect_image_paths(&input)?;
             require_nonempty_inputs(&source_paths)?;
+            validate_ai_inputs(&source_paths, config)?;
             let processor = rtools_ai::DuplicatesProcessor;
             let processor_config = rtools_ai::duplicates::DuplicatesConfig {
                 threshold,
@@ -139,6 +143,18 @@ pub fn handle_ai_command(
             CommandResult::from_serializable("ai.duplicates.report", result, Vec::new())
         }
     }
+}
+
+fn validate_ai_inputs(paths: &[PathBuf], config: &AppConfig) -> RToolsResult<()> {
+    config
+        .limits
+        .check_batch_items(u64::try_from(paths.len()).unwrap_or(u64::MAX))?;
+    for path in paths {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            config.limits.check_input_bytes(metadata.len())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]

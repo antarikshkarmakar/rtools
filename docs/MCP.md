@@ -43,7 +43,7 @@ means processor failures include `code`, `message`, and `operation_id` in
 | `rename_photos` | `ai.rename.deterministic` | `experimental` | deterministic tokens only; `structured_errors=true` |
 | `generate_alt_text` | `ai.alt_text` | `unavailable` | no provider; `structured_errors=true` |
 | `find_duplicates` | `ai.duplicates.report` | `experimental` | report only; `threshold=0..1` finite; `structured_errors=true` |
-| `compress_pdf` | `pdf.compress` | `experimental` | `level=medium`; light\|heavy unavailable; `structured_errors=true` |
+| `compress_pdf` | `pdf.compress` | `experimental` | `level=medium`; light\|heavy unavailable; `remove_metadata=false` only; `structured_errors=true` |
 | `merge_pdfs` | `pdf.merge` | `experimental` | input_paths minItems=2; `structured_errors=true` |
 | `extract_text` | `ai.ocr` | `unavailable` | no OCR provider; `structured_errors=true` |
 | `get_metadata` | `image.exif.json` | `available` | read-only EXIF and file information; `structured_errors=true` |
@@ -53,6 +53,10 @@ parameters. Recognized but unavailable values return
 `CAPABILITY_UNAVAILABLE`; they are never substituted with a supported value.
 Recognized unavailable organize strategies and `{subject}` rename patterns are
 validated before the input directory is accessed.
+
+`compress_pdf` accepts `remove_metadata` only as `false` (or omitted). `true`
+returns `CAPABILITY_UNAVAILABLE` for `pdf.compress.metadata`; complete Info,
+XMP, embedded-file, and post-write metadata verification is not implemented.
 Only PDF `medium` compression is implemented. The MCP server does not expose a
 PDF split tool in Milestone 1.
 

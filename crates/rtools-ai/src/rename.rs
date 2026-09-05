@@ -1,5 +1,6 @@
 use crate::destination::{
     destination_or_case_alias_exists, insert_unique_destination, move_no_replace,
+    portable_destination_key,
 };
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, Processor};
@@ -7,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static RENAME_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// AI rename configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,70 +53,7 @@ impl Processor for RenameProcessor {
         inputs: Vec<FileInput>,
         config: RenameConfig,
     ) -> RToolsResult<Vec<FileOutput>> {
-        if inputs.is_empty() {
-            return Err(RToolsError::invalid_input(
-                "Rename requires at least one input file",
-            ));
-        }
-        let input_paths =
-            inputs
-                .iter()
-                .map(|input| {
-                    input.source.as_path().cloned().ok_or_else(|| {
-                        RToolsError::invalid_input("Rename requires file path inputs")
-                    })
-                })
-                .collect::<RToolsResult<HashSet<_>>>()?;
-        let mut planned_destinations = HashSet::new();
-        let mut plans = Vec::with_capacity(inputs.len());
-
-        for (idx, input) in inputs.iter().enumerate() {
-            let path = input
-                .source
-                .as_path()
-                .ok_or_else(|| RToolsError::invalid_input("Rename requires file path inputs"))?;
-
-            let offset = u32::try_from(idx).map_err(|_| {
-                RToolsError::invalid_input("Rename sequence index exceeds the u32 range")
-            })?;
-            let index = config.start_number.checked_add(offset).ok_or_else(|| {
-                RToolsError::invalid_input("Rename sequence exceeds the u32 range")
-            })?;
-            let new_name = render_filename(&config.pattern, path, index)?;
-            let output_dir = config
-                .output_dir
-                .as_deref()
-                .unwrap_or_else(|| path.parent().unwrap_or_else(|| std::path::Path::new(".")));
-            let new_path = output_dir.join(&new_name);
-
-            if !insert_unique_destination(&mut planned_destinations, &new_path)?
-                || (new_path != *path
-                    && (destination_or_case_alias_exists(&new_path)?
-                        || input_paths.contains(&new_path)))
-            {
-                return Err(RToolsError::output_exists(new_path.display().to_string()));
-            }
-            plans.push((path.clone(), new_path));
-        }
-
-        let mut outputs = Vec::with_capacity(plans.len());
-        for (path, new_path) in plans {
-            if !config.dry_run && new_path != path {
-                move_no_replace(&path, &new_path)?;
-            }
-
-            outputs.push(FileOutput {
-                destination: rtools_core::output::OutputDestination::File(new_path.clone()),
-                name: new_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string()),
-                mime_type: None,
-                stats: None,
-                warnings: Vec::new(),
-            });
-        }
-
-        Ok(outputs)
+        rename_with_mover(&inputs, &config, &mut FilesystemRenameMover)
     }
 
     fn validate_config(&self, config: &RenameConfig) -> RToolsResult<()> {
@@ -132,6 +73,222 @@ impl Processor for RenameProcessor {
 
     fn name(&self) -> &'static str {
         "RenameProcessor"
+    }
+}
+
+trait RenameMover {
+    fn move_no_replace(&mut self, source: &Path, destination: &Path) -> RToolsResult<()>;
+}
+
+struct FilesystemRenameMover;
+
+impl RenameMover for FilesystemRenameMover {
+    fn move_no_replace(&mut self, source: &Path, destination: &Path) -> RToolsResult<()> {
+        move_no_replace(source, destination).map(|_| ())
+    }
+}
+
+#[derive(Debug)]
+struct RenamePlan {
+    source: PathBuf,
+    destination: PathBuf,
+    stage: Option<PathBuf>,
+}
+
+fn rename_with_mover(
+    inputs: &[FileInput],
+    config: &RenameConfig,
+    mover: &mut impl RenameMover,
+) -> RToolsResult<Vec<FileOutput>> {
+    if inputs.is_empty() {
+        return Err(RToolsError::invalid_input(
+            "Rename requires at least one input file",
+        ));
+    }
+    let input_paths = inputs
+        .iter()
+        .map(|input| {
+            input
+                .source
+                .as_path()
+                .cloned()
+                .ok_or_else(|| RToolsError::invalid_input("Rename requires file path inputs"))
+        })
+        .collect::<RToolsResult<Vec<_>>>()?;
+    let mut input_identities = HashSet::with_capacity(input_paths.len());
+    for path in &input_paths {
+        let canonical = std::fs::canonicalize(path)?;
+        if !std::fs::metadata(&canonical)?.is_file() {
+            return Err(RToolsError::invalid_input(format!(
+                "Rename source is not a regular file: {}",
+                path.display()
+            )));
+        }
+        if !input_identities.insert(portable_destination_key(&canonical)?) {
+            return Err(RToolsError::invalid_input(
+                "Rename input list contains duplicate portable source identities",
+            ));
+        }
+    }
+    let mut planned_destinations = HashSet::new();
+    let mut plans = Vec::with_capacity(inputs.len());
+
+    for (idx, path) in input_paths.iter().enumerate() {
+        let offset = u32::try_from(idx).map_err(|_| {
+            RToolsError::invalid_input("Rename sequence index exceeds the u32 range")
+        })?;
+        let index = config
+            .start_number
+            .checked_add(offset)
+            .ok_or_else(|| RToolsError::invalid_input("Rename sequence exceeds the u32 range"))?;
+        let new_name = render_filename(&config.pattern, path, index)?;
+        let output_dir = config
+            .output_dir
+            .as_deref()
+            .unwrap_or_else(|| path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+        if !config.dry_run && !std::fs::metadata(output_dir).is_ok_and(|metadata| metadata.is_dir())
+        {
+            return Err(RToolsError::OutputDirectoryNotFound(
+                output_dir.display().to_string(),
+            ));
+        }
+        let new_path = output_dir.join(&new_name);
+
+        if !insert_unique_destination(&mut planned_destinations, &new_path)?
+            || (new_path != *path
+                && (destination_or_case_alias_exists(&new_path)?
+                    || input_identities.contains(&portable_destination_key(&new_path)?)))
+        {
+            return Err(RToolsError::output_exists(new_path.display().to_string()));
+        }
+        plans.push(RenamePlan {
+            source: path.clone(),
+            destination: new_path,
+            stage: None,
+        });
+    }
+
+    if !config.dry_run {
+        execute_transaction(&mut plans, mover)?;
+    }
+
+    Ok(plans
+        .into_iter()
+        .map(|plan| FileOutput {
+            destination: rtools_core::output::OutputDestination::File(plan.destination.clone()),
+            name: plan
+                .destination
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string()),
+            mime_type: None,
+            stats: None,
+            warnings: Vec::new(),
+        })
+        .collect())
+}
+
+fn execute_transaction(plans: &mut [RenamePlan], mover: &mut impl RenameMover) -> RToolsResult<()> {
+    let stages = plans
+        .iter()
+        .enumerate()
+        .map(|(index, plan)| {
+            if plan.source == plan.destination {
+                Ok(None)
+            } else {
+                private_stage_path(&plan.source, index).map(Some)
+            }
+        })
+        .collect::<RToolsResult<Vec<_>>>()?;
+
+    for index in 0..plans.len() {
+        let Some(stage) = stages[index].as_ref() else {
+            continue;
+        };
+        if let Err(error) = mover.move_no_replace(&plans[index].source, stage) {
+            rollback_staged(plans, index, mover)?;
+            return Err(error);
+        }
+        plans[index].stage = Some(stage.clone());
+    }
+
+    for index in 0..plans.len() {
+        let Some(stage) = plans[index].stage.as_ref() else {
+            continue;
+        };
+        if let Err(error) = mover.move_no_replace(stage, &plans[index].destination) {
+            rollback_committed_and_staged(plans, index, mover)?;
+            return Err(error);
+        }
+        plans[index].stage = None;
+    }
+    Ok(())
+}
+
+fn private_stage_path(source: &Path, index: usize) -> RToolsResult<PathBuf> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| RToolsError::invalid_input("Rename source has no parent directory"))?;
+    for _ in 0..64 {
+        let sequence = RENAME_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".rtools-rename-stage-{}-{sequence}-{index}",
+            std::process::id()
+        ));
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(RToolsError::Internal(
+        "Unable to allocate a private rename staging path".to_string(),
+    ))
+}
+
+fn rollback_staged(
+    plans: &[RenamePlan],
+    before: usize,
+    mover: &mut impl RenameMover,
+) -> RToolsResult<()> {
+    let mut failures = Vec::new();
+    for plan in plans[..before].iter().rev() {
+        if let Some(stage) = &plan.stage {
+            if let Err(error) = mover.move_no_replace(stage, &plan.source) {
+                failures.push(format!("{}: {error}", plan.source.display()));
+            }
+        }
+    }
+    rollback_result(&failures)
+}
+
+fn rollback_committed_and_staged(
+    plans: &[RenamePlan],
+    failed_index: usize,
+    mover: &mut impl RenameMover,
+) -> RToolsResult<()> {
+    let mut failures = Vec::new();
+    for plan in plans[..failed_index].iter().rev() {
+        if plan.stage.is_none() && plan.source != plan.destination {
+            if let Err(error) = mover.move_no_replace(&plan.destination, &plan.source) {
+                failures.push(format!("{}: {error}", plan.source.display()));
+            }
+        }
+    }
+    for plan in plans[failed_index..].iter().rev() {
+        if let Some(stage) = &plan.stage {
+            if let Err(error) = mover.move_no_replace(stage, &plan.source) {
+                failures.push(format!("{}: {error}", plan.source.display()));
+            }
+        }
+    }
+    rollback_result(&failures)
+}
+
+fn rollback_result(failures: &[String]) -> RToolsResult<()> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(RToolsError::RollbackFailed(failures.join("; ")))
     }
 }
 
@@ -304,4 +461,102 @@ pub fn validate_unique_portable_filenames(filenames: &[String]) -> RToolsResult<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+    use rtools_core::ErrorCode;
+
+    struct FailOnMove {
+        call: usize,
+        fail_on: Vec<usize>,
+    }
+
+    impl RenameMover for FailOnMove {
+        fn move_no_replace(&mut self, source: &Path, destination: &Path) -> RToolsResult<()> {
+            self.call += 1;
+            if self.fail_on.contains(&self.call) {
+                return Err(std::io::Error::other("injected rename failure").into());
+            }
+            crate::destination::move_no_replace(source, destination).map(|_| ())
+        }
+    }
+
+    fn assert_restored_after_failure(fail_on: usize) {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.jpg");
+        let second = temp.path().join("second.jpg");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        let mut mover = FailOnMove {
+            call: 0,
+            fail_on: vec![fail_on],
+        };
+
+        let inputs = vec![
+            FileInput::from_path(first.clone()),
+            FileInput::from_path(second.clone()),
+        ];
+        let error = rename_with_mover(
+            &inputs,
+            &RenameConfig {
+                pattern: "renamed_{index}".to_string(),
+                output_dir: None,
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+            &mut mover,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+        assert_eq!(std::fs::read(first).unwrap(), b"first");
+        assert_eq!(std::fs::read(second).unwrap(), b"second");
+        let names = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 2, "partial or temporary artifacts: {names:?}");
+    }
+
+    #[test]
+    fn staging_failure_rolls_back_all_prior_stages() {
+        assert_restored_after_failure(2);
+    }
+
+    #[test]
+    fn later_commit_failure_rolls_back_committed_and_staged_files() {
+        assert_restored_after_failure(4);
+    }
+
+    #[test]
+    fn genuine_restoration_failure_is_reported_explicitly() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.jpg");
+        let second = temp.path().join("second.jpg");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        let mut mover = FailOnMove {
+            call: 0,
+            fail_on: vec![2, 3],
+        };
+
+        let inputs = vec![FileInput::from_path(first), FileInput::from_path(second)];
+        let error = rename_with_mover(
+            &inputs,
+            &RenameConfig {
+                pattern: "renamed_{index}".to_string(),
+                output_dir: None,
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+            &mut mover,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::RollbackFailed);
+    }
 }

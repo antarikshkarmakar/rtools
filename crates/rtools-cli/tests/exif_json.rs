@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::process::Command;
 use tempfile::tempdir;
 use {
-    anyhow as _, clap as _, clap_complete as _, rtools_ai as _, rtools_core as _,
+    anyhow as _, clap as _, clap_complete as _, lopdf as _, rtools_ai as _, rtools_core as _,
     rtools_image as _, rtools_pdf as _, serde as _, tokio as _, toml as _, tracing as _,
     tracing_subscriber as _, walkdir as _,
 };

@@ -84,19 +84,6 @@ impl Processor for PdfCompressProcessor {
         // Apply stream compression
         doc.compress();
 
-        // Safe metadata removal
-        if config.remove_metadata {
-            let info_opt = doc
-                .trailer
-                .get(b"Info")
-                .ok()
-                .and_then(|v| v.as_reference().ok());
-            if let Some(info_id) = info_opt {
-                doc.objects.remove(&info_id);
-            }
-            doc.trailer.remove(b"Info");
-        }
-
         let output = crate::output::save_pdf(&mut doc, &output, "compressed PDF")?;
 
         let elapsed = start.elapsed();
@@ -119,6 +106,13 @@ impl Processor for PdfCompressProcessor {
     }
 
     fn validate_config(&self, config: &PdfCompressConfig) -> RToolsResult<()> {
+        if config.remove_metadata {
+            return Err(RToolsError::capability_unavailable(
+                "pdf.compress.metadata",
+                "Complete PDF Info, XMP, and embedded metadata removal is not implemented",
+                "Use remove_metadata=false",
+            ));
+        }
         match config.level {
             PdfCompressionLevel::Medium => Ok(()),
             PdfCompressionLevel::Light | PdfCompressionLevel::Heavy => {

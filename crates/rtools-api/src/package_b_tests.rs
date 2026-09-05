@@ -962,6 +962,26 @@ async fn pdf_outputs_remain_downloadable_after_handler_return() {
 }
 
 #[tokio::test]
+async fn pdf_metadata_removal_is_unavailable_before_file_requirement() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    let (status, document) = json_response(
+        &app(),
+        multipart(
+            "/api/v1/pdf/compress",
+            vec![Part::Text {
+                field: "remove_metadata",
+                value: "true",
+            }],
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{document}");
+    assert_eq!(document["code"], "CAPABILITY_UNAVAILABLE");
+    assert_eq!(document["details"]["operation_id"], "pdf.compress.metadata");
+}
+
+#[tokio::test]
 async fn rename_pattern_cannot_select_a_path_outside_request_storage() {
     let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
     let sandbox = tempfile::tempdir().unwrap();
@@ -1736,7 +1756,7 @@ async fn graceful_server_shutdown_drops_the_artifact_store() {
 fn non_default_unenforceable_image_config_fails_closed_at_startup() {
     let mut configs = Vec::new();
     let mut config = rtools_core::AppConfig::default();
-    config.image.webp_lossless = true;
+    config.image.webp_lossless = false;
     configs.push(config);
     let mut config = rtools_core::AppConfig::default();
     config.image.avif_enabled = false;

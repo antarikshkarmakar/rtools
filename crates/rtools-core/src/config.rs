@@ -211,7 +211,7 @@ impl Default for ImageConfig {
     fn default() -> Self {
         Self {
             default_quality: 85,
-            webp_lossless: false,
+            webp_lossless: true,
             avif_enabled: true,
             max_dimension: 8192,
             jpeg_quality: 85,

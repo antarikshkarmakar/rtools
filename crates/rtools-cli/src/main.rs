@@ -13,6 +13,8 @@ use tracing as _;
 
 #[cfg(test)]
 use image as _;
+#[cfg(test)]
+use lopdf as _;
 
 mod capabilities;
 mod commands;
@@ -84,8 +86,8 @@ enum ImageCommands {
         input: Vec<PathBuf>,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(short, long, default_value = "85")]
-        quality: u8,
+        #[arg(short, long)]
+        quality: Option<u8>,
         #[arg(short, long, value_enum)]
         format: Option<ImageFormatArg>,
         #[arg(long)]
@@ -100,8 +102,8 @@ enum ImageCommands {
         format: ImageFormatArg,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(short, long, default_value = "85")]
-        quality: u8,
+        #[arg(short, long)]
+        quality: Option<u8>,
     },
     Resize {
         #[arg(short, long, num_args = 1..)]
@@ -180,8 +182,10 @@ enum PdfCommands {
         input: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(short, long, value_enum, default_value_t = PdfCompressionArg::Medium)]
-        level: PdfCompressionArg,
+        #[arg(short, long, value_enum)]
+        level: Option<PdfCompressionArg>,
+        #[arg(long)]
+        remove_metadata: bool,
     },
     Split {
         #[arg(short, long)]
@@ -190,6 +194,8 @@ enum PdfCommands {
         pages: Option<PageSelection>,
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(long, default_value = "page_{n}.pdf")]
+        filename_pattern: String,
     },
     Text {
         #[arg(short, long)]
@@ -737,7 +743,8 @@ async fn run(cli: Cli) -> RToolsResult<CliReport<Value>> {
     for operation_id in capabilities::required_operation_ids(&cli.command)? {
         registry.require_available(operation_id)?;
     }
-    let config = rtools_core::AppConfig::load(cli.config.as_ref())?;
+    let mut config = rtools_core::AppConfig::load(cli.config.as_ref())?;
+    apply_cli_behavioral_config(&cli.command, &mut config)?;
 
     let result = match cli.command {
         Commands::Image { command } => commands::image::handle_image_command(command, &config)?,
@@ -756,6 +763,73 @@ async fn run(cli: Cli) -> RToolsResult<CliReport<Value>> {
         }
     };
     Ok(CliReport::from_command_result(result))
+}
+
+fn apply_cli_behavioral_config(
+    command: &Commands,
+    config: &mut rtools_core::AppConfig,
+) -> RToolsResult<()> {
+    if !matches!(
+        command,
+        Commands::Image { .. }
+            | Commands::Pdf { .. }
+            | Commands::Ai { .. }
+            | Commands::Batch { .. }
+    ) {
+        return Ok(());
+    }
+    let defaults = rtools_core::AppConfig::default();
+    let unsupported = if config.general.parallel_jobs != defaults.general.parallel_jobs {
+        Some("general.parallel_jobs")
+    } else if config.general.temp_dir != defaults.general.temp_dir {
+        Some("general.temp_dir")
+    } else if config.general.log_level != defaults.general.log_level {
+        Some("general.log_level")
+    } else if config.general.verbose != defaults.general.verbose {
+        Some("general.verbose")
+    } else if config.image.webp_lossless != defaults.image.webp_lossless {
+        Some("image.webp_lossless")
+    } else if config.image.avif_enabled != defaults.image.avif_enabled {
+        Some("image.avif_enabled")
+    } else if config.image.jpeg_quality != defaults.image.jpeg_quality {
+        Some("image.jpeg_quality")
+    } else if config.image.png_compression != defaults.image.png_compression {
+        Some("image.png_compression")
+    } else if config.image.dither != defaults.image.dither {
+        Some("image.dither")
+    } else if !matches!(
+        config.pdf.compression_level,
+        rtools_core::config::PdfCompressionLevel::Medium
+    ) {
+        Some("pdf.compression_level")
+    } else if config.pdf.image_quality != defaults.pdf.image_quality {
+        Some("pdf.image_quality")
+    } else if config.pdf.ocr_language != defaults.pdf.ocr_language {
+        Some("pdf.ocr_language")
+    } else if config.pdf.ocr_dpi != defaults.pdf.ocr_dpi {
+        Some("pdf.ocr_dpi")
+    } else if config.limits.max_pdf_pages != defaults.limits.max_pdf_pages {
+        Some("limits.max_pdf_pages")
+    } else if config.limits.max_duration_ms != defaults.limits.max_duration_ms {
+        Some("limits.max_duration_ms")
+    } else {
+        None
+    };
+    if let Some(setting) = unsupported {
+        return Err(RToolsError::configuration_invalid(format!(
+            "{setting} is not honored by executable CLI operations; restore its default value"
+        )));
+    }
+
+    config.limits.max_input_bytes = config
+        .limits
+        .max_input_bytes
+        .min(config.general.max_file_size);
+    let configured_pixels = u64::from(config.image.max_dimension)
+        .checked_mul(u64::from(config.image.max_dimension))
+        .ok_or_else(|| RToolsError::configuration_invalid("image.max_dimension overflows"))?;
+    config.limits.max_decoded_pixels = config.limits.max_decoded_pixels.min(configured_pixels);
+    Ok(())
 }
 
 fn initialize_human_diagnostics(verbose: bool) -> RToolsResult<()> {
@@ -1052,6 +1126,10 @@ fn operation_id_hint(command: &Commands) -> &'static str {
         },
         Commands::Pdf { command } => match command {
             PdfCommands::Merge { .. } => "pdf.merge",
+            PdfCommands::Compress {
+                remove_metadata: true,
+                ..
+            } => "pdf.compress.metadata",
             PdfCommands::Compress { .. } => "pdf.compress",
             PdfCommands::Split { .. } => "pdf.split",
             PdfCommands::Text { .. } => "pdf.text",

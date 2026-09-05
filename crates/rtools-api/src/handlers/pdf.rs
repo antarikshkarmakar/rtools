@@ -113,6 +113,13 @@ pub async fn compress(
         form.optional_text("remove_metadata"),
         false,
     )?;
+    if remove_metadata {
+        return Err(ApiError::unavailable(
+            "pdf.compress.metadata",
+            "Complete PDF Info, XMP, and embedded metadata removal is not implemented",
+            "Use remove_metadata=false or omit the field",
+        ));
+    }
     let upload = form.one_file("file")?;
     let display_name = std::path::Path::new(&upload.client_name)
         .file_stem()

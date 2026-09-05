@@ -1,7 +1,9 @@
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::{FileInput, FileOutput, OutputPolicy, PendingOutput, Processor};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::path::{Component, Path};
 use std::time::Instant;
 
 /// Page range specification
@@ -82,18 +84,39 @@ impl Processor for PdfSplitProcessor {
                 "The requested page selection contains no pages in this PDF",
             ));
         }
-        let planned_outputs: Vec<_> = pages_to_extract
+        let canonical_output_dir = std::fs::canonicalize(&config.output_dir).map_err(|error| {
+            RToolsError::OutputDirectoryNotFound(format!(
+                "{}: {error}",
+                config.output_dir.display()
+            ))
+        })?;
+        let mut portable_names = HashSet::with_capacity(pages_to_extract.len());
+        let planned_outputs = pages_to_extract
             .iter()
-            .map(|&page_num| {
+            .map(|&page_num| -> RToolsResult<_> {
                 let filename = config
                     .filename_pattern
                     .replace("{n}", &page_num.to_string())
                     .replace("{total}", &page_count.to_string());
+                validate_portable_split_filename(&filename)?;
+                if !portable_names.insert(filename.to_lowercase()) {
+                    return Err(RToolsError::invalid_input(
+                        "PDF split filename pattern produces duplicate portable filenames",
+                    ));
+                }
                 let output_path = config.output_dir.join(&filename);
+                let parent = output_path.parent().ok_or_else(|| {
+                    RToolsError::invalid_input("PDF split output has no parent directory")
+                })?;
+                if std::fs::canonicalize(parent)? != canonical_output_dir {
+                    return Err(RToolsError::invalid_input(
+                        "PDF split output must remain in the selected output directory",
+                    ));
+                }
 
-                (page_num, filename, output_path)
+                Ok((page_num, filename, output_path))
             })
-            .collect();
+            .collect::<RToolsResult<Vec<_>>>()?;
         let mut pending_outputs = Vec::with_capacity(planned_outputs.len());
         for (page_num, filename, output_path) in planned_outputs {
             let pending = PendingOutput::new(&output_path, OutputPolicy::FailIfExists)?;
@@ -159,6 +182,41 @@ impl Processor for PdfSplitProcessor {
     fn name(&self) -> &'static str {
         "PdfSplitProcessor"
     }
+}
+
+fn validate_portable_split_filename(filename: &str) -> RToolsResult<()> {
+    let mut components = Path::new(filename).components();
+    if filename.is_empty()
+        || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+        || matches!(filename, "." | "..")
+        || filename.ends_with(['.', ' '])
+        || filename
+            .chars()
+            .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
+    {
+        return Err(RToolsError::invalid_input(
+            "PDF split result must be one portable filename",
+        ));
+    }
+    let stem = filename
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches([' ', '.']);
+    let reserved = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if reserved
+        .iter()
+        .any(|candidate| stem.eq_ignore_ascii_case(candidate))
+    {
+        return Err(RToolsError::invalid_input(
+            "PDF split result uses a reserved portable filename",
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve page range to actual page numbers

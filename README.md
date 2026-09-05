@@ -162,9 +162,11 @@ artifact.
   exist already. Dry-run can be used to obtain the exact planned paths first.
   The REST adapter creates only derived directories below its private,
   server-owned request directory.
-- PDF compression currently accepts only `medium`. `light` and `heavy` fail
-  with `CAPABILITY_UNAVAILABLE`. PDF split emits PDF pages only; image-output
-  settings other than the public defaults fail closed.
+- PDF compression currently accepts only `medium`. `light`, `heavy`, and
+  metadata removal fail with `CAPABILITY_UNAVAILABLE`; complete Info, XMP,
+  embedded-file, and post-write metadata verification is not implemented. PDF
+  split emits PDF pages only. Each rendered page name must be one portable
+  filename component and all names are preflighted before reservation.
 - Writing image operations use the verified drop-all metadata policy. Metadata
   preservation and GPS-only removal are unavailable and fail before output
   reservation. EXIF inspection is read-only. The public Rust `quality` fields
@@ -173,8 +175,10 @@ artifact.
   is unsupported and must remain `None`; use its explicit `output` field.
 - `ResourceLimits` defines byte, decoded-pixel, PDF-page, batch-item, and
   duration ceilings. Milestone 1 enforces input-byte and decoded-pixel limits
-  on image decode; the other typed ceilings must not be read as claims that an
-  unavailable batch or provider-backed operation exists.
+  on image decode. The CLI also intersects `general.max_file_size` with the
+  byte ceiling, applies `image.max_dimension`, and checks batch counts. The
+  other typed ceilings must not be read as claims that an unavailable batch or
+  provider-backed operation exists.
 - `--output-format json` emits exactly one report on stdout for success,
   partial failure, or failure. `--dry-run` is supported only for experimental
   date organization and deterministic rename; unsupported dry runs fail
@@ -223,8 +227,15 @@ cargo run --bin rtools-mcp
 import { RTools } from 'rtools-wasm';
 
 const rtools = new RTools();
-const compressed = await rtools.compress_image(imageData, 'photo.jpg', 85);
+const compressed = rtools.compress_image(imageData, 85);
 ```
+
+WASM accepts bounded, single-frame JPEG, PNG, and WebP inputs. Resize and crop
+retain those formats; conversion targets must be `jpeg`, `png`, or `webp`.
+WebP encoding is lossless-only and therefore requires quality `100`. Native
+host tests exercise the pure contract helpers. Browser/Node binding execution
+remains CI-bound when a wasm-bindgen runner is installed and is not claimed by
+the native test command.
 
 ## API Endpoints
 
@@ -272,10 +283,11 @@ Create `rtools.toml` in your project root:
 parallel_jobs = 4
 temp_dir = "/tmp/rtools"
 log_level = "info"
+max_file_size = 104857600
 
 [image]
 default_quality = 85
-webp_lossless = false
+webp_lossless = true
 avif_enabled = true
 max_dimension = 8192
 
@@ -300,6 +312,15 @@ host = "127.0.0.1"
 port = 8080
 max_upload_size = 104857600
 ```
+
+For executable CLI file operations, `default_quality`, `max_dimension`,
+`general.max_file_size`, and the shared byte/pixel/batch limits are effective;
+an explicit quality flag overrides `default_quality`. Non-default values for
+the remaining legacy general/image/PDF behavior knobs and unenforced PDF-page
+or duration limits are rejected with
+`CONFIGURATION_INVALID` until their implementations exist. `config show`,
+`config init`, and `config validate` may still inspect or validate the full
+schema without claiming those settings affect file processing.
 
 ## Development
 

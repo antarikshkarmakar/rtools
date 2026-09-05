@@ -166,7 +166,7 @@ fn rename_duplicate_input_fails_without_creating_an_artifact() {
         )
         .unwrap_err();
 
-    assert_eq!(error.code(), ErrorCode::OutputExists);
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
     assert_eq!(std::fs::read(source).unwrap(), b"source");
 }
 
@@ -696,4 +696,33 @@ fn rename_rejects_non_unicode_destination_names_without_lossy_normalization() {
 
     assert_eq!(error.code(), ErrorCode::PathPolicyViolation);
     assert_eq!(std::fs::read(source).unwrap(), b"source");
+}
+
+#[test]
+fn rename_rejects_duplicate_source_identity_before_any_move() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("photo.jpg");
+    std::fs::write(&source, b"source").unwrap();
+
+    let error = RenameProcessor
+        .process(
+            vec![
+                FileInput::from_path(source.clone()),
+                FileInput::from_path(source.clone()),
+            ],
+            RenameConfig {
+                pattern: "renamed_{index}".to_string(),
+                output_dir: None,
+                start_number: 1,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    assert!(!temp.path().join("renamed_1.jpg").exists());
+    assert!(!temp.path().join("renamed_2.jpg").exists());
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
 }

@@ -173,6 +173,12 @@ fn register_unavailable(registry: &mut CapabilityRegistry) -> RToolsResult<()> {
             None,
         ),
         (
+            "pdf.compress.metadata",
+            "Complete PDF Info, XMP, and embedded metadata removal is not implemented",
+            "Use remove_metadata=false",
+            None,
+        ),
+        (
             "pdf.merge.page_numbers",
             "PDF merge page numbering is not implemented",
             "Disable page numbering",
@@ -274,6 +280,10 @@ pub fn required_operation_ids(command: &Commands) -> RToolsResult<Vec<&'static s
         },
         Commands::Pdf { command } => match command {
             PdfCommands::Merge { .. } => vec!["pdf.merge"],
+            PdfCommands::Compress {
+                remove_metadata: true,
+                ..
+            } => vec!["pdf.compress", "pdf.compress.metadata"],
             PdfCommands::Compress { .. } => vec!["pdf.compress"],
             PdfCommands::Split { .. } => vec!["pdf.split"],
             PdfCommands::Text { .. } => vec!["pdf.text"],
@@ -371,6 +381,7 @@ mod tests {
                 ("image.watermark.text", CapabilityState::Unavailable),
                 ("pdf.compress", CapabilityState::Experimental),
                 ("pdf.compress.level", CapabilityState::Unavailable),
+                ("pdf.compress.metadata", CapabilityState::Unavailable),
                 ("pdf.merge", CapabilityState::Experimental),
                 ("pdf.merge.page_numbers", CapabilityState::Unavailable),
                 ("pdf.ocr", CapabilityState::Unavailable),
@@ -410,7 +421,7 @@ mod tests {
             command: ImageCommands::Compress {
                 input: vec!["input.png".into()],
                 output: None,
-                quality: 85,
+                quality: Some(85),
                 format: None,
                 preserve_metadata: true,
                 strip_gps: false,
@@ -425,7 +436,7 @@ mod tests {
             command: ImageCommands::Compress {
                 input: vec!["input.png".into()],
                 output: None,
-                quality: 85,
+                quality: Some(85),
                 format: None,
                 preserve_metadata: true,
                 strip_gps: true,

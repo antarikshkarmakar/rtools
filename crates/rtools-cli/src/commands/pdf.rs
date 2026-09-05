@@ -3,12 +3,13 @@ use crate::{PageSelection, PdfCommands};
 use rtools_core::{AppConfig, FileInput, Processor, RToolsError, RToolsResult};
 
 #[allow(clippy::too_many_lines)]
-pub fn handle_pdf_command(
-    command: PdfCommands,
-    _config: &AppConfig,
-) -> RToolsResult<CommandResult> {
+pub fn handle_pdf_command(command: PdfCommands, config: &AppConfig) -> RToolsResult<CommandResult> {
     match command {
         PdfCommands::Merge { input, output } => {
+            config
+                .limits
+                .check_batch_items(u64::try_from(input.len()).unwrap_or(u64::MAX))?;
+            validate_pdf_input_sizes(&input, config)?;
             let processor = rtools_pdf::PdfMergeProcessor;
             let processor_config = rtools_pdf::PdfMergeConfig {
                 inputs: Vec::new(),
@@ -23,13 +24,29 @@ pub fn handle_pdf_command(
             input,
             output,
             level,
+            remove_metadata,
         } => {
             let processor = rtools_pdf::PdfCompressProcessor;
             let processor_config = rtools_pdf::PdfCompressConfig {
-                level: level.into_pdf(),
+                level: level.map_or_else(
+                    || match config.pdf.compression_level {
+                        rtools_core::config::PdfCompressionLevel::Light => {
+                            rtools_pdf::compress::PdfCompressionLevel::Light
+                        }
+                        rtools_core::config::PdfCompressionLevel::Medium => {
+                            rtools_pdf::compress::PdfCompressionLevel::Medium
+                        }
+                        rtools_core::config::PdfCompressionLevel::Heavy => {
+                            rtools_pdf::compress::PdfCompressionLevel::Heavy
+                        }
+                    },
+                    crate::PdfCompressionArg::into_pdf,
+                ),
                 output,
-                remove_metadata: false,
+                remove_metadata,
             };
+            processor.validate_config(&processor_config)?;
+            validate_pdf_input_sizes(std::slice::from_ref(&input), config)?;
             let output = processor.process(FileInput::from_path(input), processor_config)?;
             CommandResult::from_file_outputs("pdf.compress", "Compressed PDF", vec![output])
         }
@@ -37,6 +54,7 @@ pub fn handle_pdf_command(
             input,
             pages,
             output,
+            filename_pattern,
         } => {
             let processor = rtools_pdf::PdfSplitProcessor;
             let processor_config = rtools_pdf::PdfSplitConfig {
@@ -44,11 +62,13 @@ pub fn handle_pdf_command(
                     range
                 }),
                 output_dir: output,
-                filename_pattern: "page_{n}.pdf".to_string(),
+                filename_pattern,
                 as_images: false,
                 image_format: Some("png".to_string()),
                 image_dpi: 300,
             };
+            processor.validate_config(&processor_config)?;
+            validate_pdf_input_sizes(std::slice::from_ref(&input), config)?;
             let outputs = processor.process(FileInput::from_path(input), processor_config)?;
             CommandResult::from_file_outputs(
                 "pdf.split",
@@ -67,6 +87,15 @@ pub fn handle_pdf_command(
             "Configure a supported PDF rendering provider",
         )),
     }
+}
+
+fn validate_pdf_input_sizes(paths: &[std::path::PathBuf], config: &AppConfig) -> RToolsResult<()> {
+    for path in paths {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            config.limits.check_input_bytes(metadata.len())?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

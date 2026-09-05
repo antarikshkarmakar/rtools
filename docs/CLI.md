@@ -290,6 +290,7 @@ rtools pdf compress [OPTIONS]
 | `--input` | `-i` | - | Input PDF file |
 | `--output` | `-o` | - | Output file |
 | `--level` | `-l` | medium | Only implemented level; light/heavy fail unavailable |
+| `--remove-metadata` | - | false | Unavailable until complete PDF metadata removal is verified |
 
 **Examples:**
 ```bash
@@ -311,6 +312,7 @@ rtools pdf split [OPTIONS]
 | `--input` | `-i` | Input PDF file |
 | `--pages` | `-p` | Page ranges |
 | `--output` | `-o` | Existing output directory |
+| `--filename-pattern` | - | `page_{n}.pdf` | One portable filename component; supports `{n}` and `{total}` |
 
 **Examples:**
 ```bash
@@ -465,6 +467,16 @@ Validate configuration file.
 ```bash
 rtools config validate -c rtools.toml
 ```
+
+Executable file operations honor `image.default_quality` when `--quality` is
+omitted, `image.max_dimension`, `general.max_file_size`, and the shared
+byte/pixel/batch limits. Explicit CLI arguments override supported defaults.
+Non-default legacy behavior settings that are not implemented
+(`parallel_jobs`, temporary-directory/logging/verbose behavior, WebP/AVIF
+toggles, JPEG/PNG tuning, dithering, PDF OCR/image/alternate compression
+defaults, and PDF-page/duration limits) fail
+`CONFIGURATION_INVALID` before file access. Configuration inspection and
+validation remain available for the complete schema.
 
 ### Shell Completions
 

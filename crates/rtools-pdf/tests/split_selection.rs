@@ -52,6 +52,64 @@ fn mixed_range_extracts_in_range_pages_and_valid_selection_still_works() {
     assert!(output.join("page_1.pdf").exists());
 }
 
+#[test]
+fn rendered_split_names_must_be_one_portable_component() {
+    for pattern in [
+        "../escaped_{n}.pdf",
+        "/absolute_{n}.pdf",
+        r"C:\absolute_{n}.pdf",
+        "CON.pdf",
+        ".",
+        "..",
+    ] {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("two-pages.pdf");
+        write_pdf(&input, 2);
+        let input_bytes = std::fs::read(&input).unwrap();
+        let output = temp.path().join("out");
+        std::fs::create_dir(&output).unwrap();
+
+        let error = PdfSplitProcessor
+            .process(
+                FileInput::from_path(input.clone()),
+                PdfSplitConfig {
+                    output_dir: output.clone(),
+                    filename_pattern: pattern.to_string(),
+                    ..PdfSplitConfig::default()
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{pattern}: {error}");
+        assert_eq!(std::fs::read(&input).unwrap(), input_bytes);
+        assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
+        assert!(!temp.path().join("escaped_1.pdf").exists());
+    }
+}
+
+#[test]
+fn duplicate_rendered_split_names_are_rejected_before_reservation() {
+    let temp = tempdir().unwrap();
+    let input = temp.path().join("two-pages.pdf");
+    write_pdf(&input, 2);
+    let output = temp.path().join("out");
+    std::fs::create_dir(&output).unwrap();
+
+    let error = PdfSplitProcessor
+        .process(
+            FileInput::from_path(input),
+            PdfSplitConfig {
+                output_dir: output.clone(),
+                filename_pattern: "same.pdf".to_string(),
+                ..PdfSplitConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
+}
+
 fn write_pdf(path: &std::path::Path, page_count: u32) {
     let mut document = Document::with_version("1.5");
     let pages_id = document.new_object_id();

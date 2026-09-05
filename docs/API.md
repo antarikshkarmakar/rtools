@@ -151,10 +151,12 @@ The response artifact is a downloadable PDF named `merged.pdf`.
 |---|---|---:|---|---|
 | `file` | file | yes | - | PDF |
 | `level` | string | no | `pdf.compression_level` (`medium` by default) | Only `medium` is effective in Milestone 1 |
-| `remove_metadata` | boolean | no | `false` | `true` or `false` |
+| `remove_metadata` | boolean | no | `false` | `false`; `true` is unavailable |
 
-`light` and `heavy` return `CAPABILITY_UNAVAILABLE` rather than pretending to
-change behavior. The response artifact is a downloadable PDF.
+`light`, `heavy`, and `remove_metadata=true` return
+`CAPABILITY_UNAVAILABLE` rather than pretending to change behavior. Complete
+Info, XMP, embedded-file, and post-write metadata verification is not yet
+implemented. The response artifact is a downloadable PDF.
 
 ## Available AI endpoints
 

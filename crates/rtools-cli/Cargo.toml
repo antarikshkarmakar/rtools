@@ -33,6 +33,7 @@ serde = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 image = { workspace = true }
+lopdf = { workspace = true }
 
 [lints]
 workspace = true

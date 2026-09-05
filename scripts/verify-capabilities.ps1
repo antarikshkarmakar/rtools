@@ -15,6 +15,24 @@ $McpDoc = if ($env:RTOOLS_MCP_DOC) {
 }
 $DoctorJson = [System.IO.Path]::GetTempFileName()
 $McpContractJson = [System.IO.Path]::GetTempFileName()
+$NativeCargo = Get-Command cargo -ErrorAction SilentlyContinue
+$WslExecutable = Get-Command wsl.exe -ErrorAction SilentlyContinue
+$LastCargoExitCode = 0
+
+function Invoke-Cargo {
+    param([Parameter(Mandatory)][string[]]$CargoArguments)
+
+    if ($NativeCargo) {
+        & $NativeCargo.Source @CargoArguments
+    }
+    elseif ($WslExecutable) {
+        & $WslExecutable.Source -e bash -lc 'cargo "$@"' cargo @CargoArguments
+    }
+    else {
+        throw 'cargo is unavailable both natively and through WSL'
+    }
+    $script:LastCargoExitCode = $LASTEXITCODE
+}
 
 function Fail-CapabilityVerification {
     param([Parameter(Mandatory)][string]$Message)
@@ -25,13 +43,13 @@ function Fail-CapabilityVerification {
 try {
     Push-Location -LiteralPath $RepoRoot
     try {
-        & cargo run --locked --quiet -p rtools-cli -- --output-format json doctor > $DoctorJson
-        if ($LASTEXITCODE -ne 0) {
-            Fail-CapabilityVerification "doctor exited with status $LASTEXITCODE"
+        Invoke-Cargo -CargoArguments @('run', '--locked', '--quiet', '-p', 'rtools-cli', '--', '--output-format', 'json', 'doctor') > $DoctorJson
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "doctor exited with status $LastCargoExitCode"
         }
-        & cargo run --locked --quiet -p rtools-mcp -- --print-contracts > $McpContractJson
-        if ($LASTEXITCODE -ne 0) {
-            Fail-CapabilityVerification "MCP contract export exited with status $LASTEXITCODE"
+        Invoke-Cargo -CargoArguments @('run', '--locked', '--quiet', '-p', 'rtools-mcp', '--', '--print-contracts') > $McpContractJson
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "MCP contract export exited with status $LastCargoExitCode"
         }
     }
     finally {
@@ -208,13 +226,13 @@ try {
 
     Push-Location -LiteralPath $RepoRoot
     try {
-        & cargo test --locked -p rtools-mcp mcp_contract
-        if ($LASTEXITCODE -ne 0) {
-            Fail-CapabilityVerification "MCP adapter contract tests exited with status $LASTEXITCODE"
+        Invoke-Cargo -CargoArguments @('test', '--locked', '-p', 'rtools-mcp', 'mcp_contract')
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "MCP adapter contract tests exited with status $LastCargoExitCode"
         }
-        & cargo test --locked -p rtools-api recognized_but_unavailable_options_return_structured_501
-        if ($LASTEXITCODE -ne 0) {
-            Fail-CapabilityVerification "REST adapter contract test exited with status $LASTEXITCODE"
+        Invoke-Cargo -CargoArguments @('test', '--locked', '-p', 'rtools-api', 'recognized_but_unavailable_options_return_structured_501')
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "REST adapter contract test exited with status $LastCargoExitCode"
         }
     }
     finally {

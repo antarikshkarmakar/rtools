@@ -119,6 +119,7 @@ struct PdfCompressInput {
     input_path: String,
     output_path: Option<String>,
     level: Option<PdfCompressionLevelInput>,
+    remove_metadata: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -268,7 +269,7 @@ const MCP_TOOL_CONTRACTS: &[McpToolContract] = &[
         operation_id: "pdf.compress",
         state: "experimental",
         description: "Experimentally compress a PDF using the medium level only",
-        adapter_contract: "level=medium; light|heavy unavailable",
+        adapter_contract: "level=medium; light|heavy unavailable; remove_metadata=false only",
         structured_errors: true,
     },
     McpToolContract {
@@ -615,7 +616,7 @@ impl RToolsServer {
                         }
                     },
                     output: input.output_path.map(PathBuf::from),
-                    remove_metadata: false,
+                    remove_metadata: input.remove_metadata.unwrap_or(false),
                 };
                 let processor = rtools_pdf::PdfCompressProcessor;
                 match processor.process(file_input, config) {
@@ -1603,6 +1604,27 @@ mod tests {
         assert_eq!(
             serialized["structuredContent"]["operation_id"],
             "pdf.compress.level"
+        );
+
+        let metadata = RToolsServer
+            .handle_tool(
+                "compress_pdf",
+                serde_json::json!({
+                    "input_path": "missing-with-xmp.pdf",
+                    "remove_metadata": true,
+                }),
+            )
+            .await
+            .expect("metadata option must reach fail-closed validation");
+        let serialized = serde_json::to_value(&metadata).unwrap();
+        assert!(is_error(&metadata), "{metadata:?}");
+        assert_eq!(
+            serialized["structuredContent"]["code"],
+            "CAPABILITY_UNAVAILABLE"
+        );
+        assert_eq!(
+            serialized["structuredContent"]["operation_id"],
+            "pdf.compress.metadata"
         );
     }
 

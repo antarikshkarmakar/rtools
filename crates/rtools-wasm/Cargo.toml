@@ -15,12 +15,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 image = { workspace = true }
+rtools-core = { path = "../rtools-core", version = "0.1.0" }
 wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3"
+base64 = "0.22"
 
 [lints]
 workspace = true

@@ -126,9 +126,18 @@ fn destination_or_case_alias_exists_with_base(path: &Path, base: &Path) -> RTool
 ///
 /// Regular files on filesystems that support hard links preserve rename
 /// semantics. Unsupported filesystems/types fail before source deletion. A
-/// source-unlink failure leaves a safe duplicate and returns an error rather
-/// than risking source loss.
+/// A source-unlink failure removes the newly created link before returning an
+/// error. If that cleanup also fails, the incomplete rollback is explicit.
 pub fn move_no_replace(source: &Path, destination: &Path) -> RToolsResult<PathBuf> {
+    move_no_replace_with(source, destination, |path| std::fs::remove_file(path))?;
+    Ok(destination.to_path_buf())
+}
+
+fn move_no_replace_with(
+    source: &Path,
+    destination: &Path,
+    mut remove_file: impl FnMut(&Path) -> std::io::Result<()>,
+) -> RToolsResult<()> {
     match std::fs::hard_link(source, destination) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -138,8 +147,15 @@ pub fn move_no_replace(source: &Path, destination: &Path) -> RToolsResult<PathBu
         }
         Err(error) => return Err(error.into()),
     }
-    std::fs::remove_file(source)?;
-    Ok(destination.to_path_buf())
+    if let Err(source_error) = remove_file(source) {
+        if let Err(cleanup_error) = remove_file(destination) {
+            return Err(RToolsError::RollbackFailed(format!(
+                "failed to remove source after linking ({source_error}); failed to remove the created destination during rollback ({cleanup_error})"
+            )));
+        }
+        return Err(source_error.into());
+    }
+    Ok(())
 }
 
 pub fn insert_unique_destination(
@@ -190,7 +206,8 @@ fn path_entry_exists(path: &Path) -> RToolsResult<bool> {
 mod tests {
     use super::{
         destination_or_case_alias_exists, destination_or_case_alias_exists_with_base,
-        normalized_component, portable_destination_key_with_base, OsStr, Path,
+        move_no_replace_with, normalized_component, portable_destination_key_with_base, OsStr,
+        Path,
     };
     use rtools_core::ErrorCode;
 
@@ -272,5 +289,43 @@ mod tests {
 
         assert_eq!(key_error.code(), ErrorCode::PathPolicyViolation);
         assert_eq!(scan_error.code(), ErrorCode::PathPolicyViolation);
+    }
+
+    #[test]
+    fn source_unlink_failure_removes_the_created_transaction_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.jpg");
+        let destination = temp.path().join("stage");
+        std::fs::write(&source, b"source").unwrap();
+
+        let error = move_no_replace_with(&source, &destination, |path| {
+            if path == source {
+                Err(std::io::Error::other("injected source unlink failure"))
+            } else {
+                std::fs::remove_file(path)
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::ProcessingFailed);
+        assert_eq!(std::fs::read(&source).unwrap(), b"source");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn failed_transaction_link_cleanup_is_explicit_rollback_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.jpg");
+        let destination = temp.path().join("stage");
+        std::fs::write(&source, b"source").unwrap();
+
+        let error = move_no_replace_with(&source, &destination, |_| {
+            Err(std::io::Error::other("injected unlink failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::RollbackFailed);
+        assert!(source.exists());
+        assert!(destination.exists());
     }
 }

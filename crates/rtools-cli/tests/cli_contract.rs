@@ -36,6 +36,35 @@ fn create_png(path: &Path, width: u32, height: u32) {
         .unwrap();
 }
 
+fn create_pdf(path: &Path, page_count: u32) {
+    use lopdf::{dictionary, Document, Object, Stream};
+    let mut document = Document::with_version("1.5");
+    let pages_id = document.new_object_id();
+    let catalog_id = document.new_object_id();
+    let mut kids = Vec::new();
+    for _ in 0..page_count {
+        let content_id = document.add_object(Stream::new(dictionary! {}, Vec::new()));
+        let page_object_id = document.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Contents" => content_id,
+        });
+        kids.push(Object::Reference(page_object_id));
+    }
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(
+            dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => page_count },
+        ),
+    );
+    document.objects.insert(
+        catalog_id,
+        Object::Dictionary(dictionary! { "Type" => "Catalog", "Pages" => pages_id }),
+    );
+    document.trailer.set("Root", catalog_id);
+    document.save(path).unwrap();
+}
+
 #[test]
 fn unavailable_pdf_text_returns_capability_exit_without_success_output() {
     let temp = tempfile::tempdir().unwrap();
@@ -46,6 +75,51 @@ fn unavailable_pdf_text_returns_capability_exit_without_success_output() {
 
     assert_exit(&output, 3);
     assert!(!String::from_utf8_lossy(&output.stdout).contains('✓'));
+}
+
+#[test]
+fn pdf_metadata_removal_cli_fails_before_missing_input_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = command(temp.path())
+        .args([
+            "--output-format",
+            "json",
+            "pdf",
+            "compress",
+            "--input",
+            "missing-with-xmp.pdf",
+            "--remove-metadata",
+        ])
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 3);
+    let report = stdout_json(&output);
+    assert_eq!(report["failures"][0]["code"], "CAPABILITY_UNAVAILABLE");
+    assert_eq!(report["operation_id"], "pdf.compress.metadata");
+}
+
+#[test]
+fn pdf_split_cli_rejects_escaping_filename_pattern_without_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.pdf");
+    let output_dir = temp.path().join("out");
+    create_pdf(&input, 2);
+    std::fs::create_dir(&output_dir).unwrap();
+
+    let output = command(temp.path())
+        .args(["--output-format", "json", "pdf", "split", "--input"])
+        .arg(&input)
+        .arg("--output")
+        .arg(&output_dir)
+        .args(["--filename-pattern", "../escaped_{n}.pdf"])
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+    assert_eq!(stdout_json(&output)["failures"][0]["code"], "INVALID_INPUT");
+    assert_eq!(std::fs::read_dir(&output_dir).unwrap().count(), 0);
+    assert!(!temp.path().join("escaped_1.pdf").exists());
 }
 
 #[test]
@@ -348,6 +422,124 @@ fn duplicate_cli_uses_configured_decoded_pixel_limit() {
 }
 
 #[test]
+fn omitted_jpeg_quality_uses_image_default_quality_and_explicit_value_overrides_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.png");
+    let configured = temp.path().join("configured.jpg");
+    let explicit = temp.path().join("explicit.jpg");
+    create_png(&input, 32, 32);
+
+    let configured_run = command(temp.path())
+        .env("RTOOLS_IMAGE__DEFAULT_QUALITY", "1")
+        .args(["image", "compress", "--input"])
+        .arg(&input)
+        .args(["--format", "jpg", "--output"])
+        .arg(&configured)
+        .output()
+        .unwrap();
+    assert_exit(&configured_run, 0);
+
+    let explicit_run = command(temp.path())
+        .env("RTOOLS_IMAGE__DEFAULT_QUALITY", "1")
+        .args(["image", "compress", "--input"])
+        .arg(&input)
+        .args(["--format", "jpg", "--quality", "85", "--output"])
+        .arg(&explicit)
+        .output()
+        .unwrap();
+    assert_exit(&explicit_run, 0);
+    assert_ne!(
+        std::fs::read(configured).unwrap(),
+        std::fs::read(explicit).unwrap()
+    );
+}
+
+#[test]
+fn cli_applies_general_file_size_and_image_dimension_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.png");
+    create_png(&input, 2, 1);
+
+    for (key, value) in [
+        ("RTOOLS_GENERAL__MAX_FILE_SIZE", "1"),
+        ("RTOOLS_IMAGE__MAX_DIMENSION", "1"),
+    ] {
+        let output_path = temp.path().join(format!("{value}-{key}.png"));
+        let output = command(temp.path())
+            .env(key, value)
+            .args(["--output-format", "json", "image", "resize", "--input"])
+            .arg(&input)
+            .args(["--width", "1", "--height", "1", "--output"])
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert_exit(&output, 4);
+        assert_eq!(
+            stdout_json(&output)["failures"][0]["code"],
+            "RESOURCE_LIMIT_EXCEEDED"
+        );
+        assert!(!output_path.exists());
+    }
+}
+
+#[test]
+fn cli_rejects_requested_resize_dimension_above_configured_maximum() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.png");
+    let output_path = temp.path().join("oversized-output.png");
+    create_png(&input, 1, 1);
+
+    let output = command(temp.path())
+        .env("RTOOLS_IMAGE__MAX_DIMENSION", "1")
+        .args(["--output-format", "json", "image", "resize", "--input"])
+        .arg(&input)
+        .args(["--width", "2", "--height", "1", "--output"])
+        .arg(&output_path)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 4);
+    assert_eq!(
+        stdout_json(&output)["failures"][0]["code"],
+        "RESOURCE_LIMIT_EXCEEDED"
+    );
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn unsupported_behavioral_config_fails_before_file_access() {
+    let temp = tempfile::tempdir().unwrap();
+    for (key, value) in [
+        ("RTOOLS_IMAGE__JPEG_QUALITY", "1"),
+        ("RTOOLS_GENERAL__TEMP_DIR", "configured-temp"),
+        ("RTOOLS_LIMITS__MAX_PDF_PAGES", "1"),
+        ("RTOOLS_LIMITS__MAX_DURATION_MS", "1"),
+    ] {
+        let output = command(temp.path())
+            .env(key, value)
+            .args([
+                "--output-format",
+                "json",
+                "image",
+                "resize",
+                "--input",
+                "missing.png",
+                "--width",
+                "1",
+            ])
+            .output()
+            .unwrap();
+
+        assert_exit(&output, 3);
+        assert_eq!(
+            stdout_json(&output)["failures"][0]["code"],
+            "CONFIGURATION_INVALID",
+            "{key}"
+        );
+    }
+}
+
+#[test]
 fn json_typed_parse_failure_is_one_invalid_input_report() {
     let temp = tempfile::tempdir().unwrap();
     let output = command(temp.path())
@@ -526,6 +718,7 @@ fn doctor_json_is_one_report_and_matches_the_sorted_shared_registry() {
             ("image.watermark.text", "unavailable"),
             ("pdf.compress", "experimental"),
             ("pdf.compress.level", "unavailable"),
+            ("pdf.compress.metadata", "unavailable"),
             ("pdf.merge", "experimental"),
             ("pdf.merge.page_numbers", "unavailable"),
             ("pdf.ocr", "unavailable"),

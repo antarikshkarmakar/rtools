@@ -29,6 +29,52 @@ fn unsupported_pdf_compression_levels_fail_before_input_or_output_access() {
 }
 
 #[test]
+fn pdf_metadata_removal_fails_closed_before_input_or_output_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("removed.pdf");
+    let error = PdfCompressProcessor
+        .process(
+            FileInput::from_path(temp.path().join("missing-with-xmp.pdf")),
+            PdfCompressConfig {
+                level: PdfCompressionLevel::Medium,
+                output: Some(output.clone()),
+                remove_metadata: true,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+    assert!(matches!(
+        error,
+        rtools_core::RToolsError::CapabilityUnavailable { operation_id, .. }
+            if operation_id == "pdf.compress.metadata"
+    ));
+    assert!(!output.exists());
+    assert_no_rtools_artifacts(temp.path());
+
+    let xmp_input = temp.path().join("with-xmp.pdf");
+    write_pdf_with_xmp(&xmp_input, b"PRIVATE-XMP-CANARY");
+    let original = std::fs::read(&xmp_input).unwrap();
+    assert!(original
+        .windows(b"PRIVATE-XMP-CANARY".len())
+        .any(|window| window == b"PRIVATE-XMP-CANARY"));
+    let error = PdfCompressProcessor
+        .process(
+            FileInput::from_path(xmp_input.clone()),
+            PdfCompressConfig {
+                level: PdfCompressionLevel::Medium,
+                output: Some(output.clone()),
+                remove_metadata: true,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+    assert_eq!(std::fs::read(xmp_input).unwrap(), original);
+    assert!(!output.exists());
+    assert_no_rtools_artifacts(temp.path());
+}
+
+#[test]
 fn pdf_split_image_options_fail_before_input_or_output_access() {
     let temp = tempfile::tempdir().unwrap();
     let cases = [
@@ -463,5 +509,27 @@ fn write_pdf(path: &Path, page_count: u32) {
         }),
     );
     document.trailer.set("Root", catalog_id);
+    document.save(path).unwrap();
+}
+
+fn write_pdf_with_xmp(path: &Path, xmp: &[u8]) {
+    write_pdf(path, 1);
+    let mut document = Document::load(path).unwrap();
+    let metadata_id = document.add_object(Stream::new(
+        dictionary! { "Type" => "Metadata", "Subtype" => "XML" },
+        xmp.to_vec(),
+    ));
+    let catalog_id = document
+        .trailer
+        .get(b"Root")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    document
+        .get_object_mut(catalog_id)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Metadata", metadata_id);
     document.save(path).unwrap();
 }
