@@ -22,7 +22,7 @@ operation-ID order. The checked-in projection and its CI verifier live in
 |---|---|
 | Available | Image compress, convert, crop, resize, filter, image watermark, EXIF human/JSON inspection; configuration commands; completions; doctor |
 | Experimental | PDF merge/compress/split; report-only duplicate detection; date organization; deterministic rename |
-| Unavailable | OCR, alt text, AI classification/naming/sorting, PDF rendering/text/OCR, light/heavy PDF compression, PDF split-to-image, text watermarking, metadata preservation or GPS-only removal, destructive duplicate modes, batch recipes |
+| Unavailable | OCR, alt text, AI classification/naming/sorting, PDF rendering/text/OCR, merge page numbering, light/heavy PDF compression, PDF split-to-image, text watermarking, metadata preservation or GPS-only removal, destructive duplicate modes, batch recipes |
 
 Unavailable operations return a structured `CAPABILITY_UNAVAILABLE` error and
 a nonzero process status. Provider discovery never enables an operation without
@@ -46,7 +46,9 @@ rendering, ONNX inference, or fabricated batch execution.
 - Live date organization likewise requires its derived year/month directory to
   exist before processing. The public sort processor is unavailable and fails
   before reading inputs or creating an output directory.
-- PDF compression accepts only the implemented `medium` level. PDF split emits
+- PDF merge takes its ordered `Processor::Input` list as the only authoritative
+  source; the legacy config list and page numbering option fail closed. PDF
+  compression accepts only the implemented `medium` level. PDF split emits
   PDF pages only; its image-output fields remain public for compatibility but
   non-default values fail with `CAPABILITY_UNAVAILABLE`.
 - Writing image operations re-encode with a verified drop-all metadata policy.
@@ -306,46 +308,17 @@ GET    /health
 
 ### MCP Interface (rtools-mcp)
 
-The schema fragment below is illustrative. Tool presence is not a capability
-guarantee: each call is gated by the same operation states, and unavailable
-modes return structured errors.
+Tool presence is not a capability guarantee: each call is gated by the same
+operation states, and unavailable modes return structured errors. The exact
+tool-to-operation contract and live schema come from the running server rather
+than a copied schema fragment:
 
-```json
-{
-  "name": "rtools",
-  "version": "1.0.0",
-  "tools": [
-    {
-      "name": "compress_image",
-      "description": "Compress image with quality preservation",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "input_path": {"type": "string"},
-          "output_path": {"type": "string"},
-          "quality": {"type": "integer", "minimum": 1, "maximum": 100}
-        },
-        "required": ["input_path", "output_path"]
-      }
-    },
-    {
-      "name": "convert_to_webp",
-      "description": "Convert JPG/PNG to WebP",
-      "inputSchema": {...}
-    },
-    {
-      "name": "organize_photos",
-      "description": "Organize photos by deterministic date into prepared folders",
-      "inputSchema": {...}
-    },
-    {
-      "name": "merge_pdfs",
-      "description": "Merge multiple PDFs",
-      "inputSchema": {...}
-    }
-  ]
-}
+```bash
+rtools-mcp --print-contracts
 ```
+
+The exported contract drives MCP `tools/list`; CI compares it with
+[docs/MCP.md](docs/MCP.md) and the runtime capability registry.
 
 ---
 

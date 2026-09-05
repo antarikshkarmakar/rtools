@@ -17,7 +17,7 @@ source of truth. The complete, verifier-controlled table is in
 |---|---|
 | Available | Image compress, convert, resize, crop, filter, image watermark, EXIF human/JSON inspection; config init/show/validate; shell completions; doctor |
 | Experimental | PDF merge/compress/split; report-only duplicate detection; date organization; deterministic rename |
-| Unavailable | OCR, alt text, AI classification/naming/sorting, PDF rendering/text/OCR, light/heavy PDF compression, PDF split-to-image, text watermarks, selective metadata preservation/GPS removal, destructive duplicate actions, batch recipes |
+| Unavailable | OCR, alt text, AI classification/naming/sorting, PDF rendering/text/OCR, merge page numbering, light/heavy PDF compression, PDF split-to-image, text watermarks, selective metadata preservation/GPS removal, destructive duplicate actions, batch recipes |
 
 Available means supported for the current release. Experimental operations run
 but carry the limitation reported by doctor. Unavailable operations fail with

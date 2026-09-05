@@ -2453,6 +2453,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "image",
+ "lopdf",
  "rmcp",
  "rtools-ai",
  "rtools-core",
@@ -2463,6 +2464,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "walkdir",
 ]

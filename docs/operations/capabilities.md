@@ -54,6 +54,7 @@ rows.
 | `pdf.compress` | `experimental` | Collision-safe publication requires an existing validated parent; PDF structure preservation is only partially verified. |
 | `pdf.compress.level` | `unavailable` | Light and heavy levels are not implemented; medium is the only accepted level. |
 | `pdf.merge` | `experimental` | Collision-safe publication requires an existing validated parent; PDF structure preservation is only partially verified. |
+| `pdf.merge.page_numbers` | `unavailable` | Merge page numbering is not implemented and fails before filesystem access. |
 | `pdf.ocr` | `unavailable` | No verified searchable-PDF OCR adapter. |
 | `pdf.split` | `experimental` | The output directory must exist and validate before all page destinations are reserved; PDF structure preservation is only partially verified. |
 | `pdf.split.images` | `unavailable` | Image output and non-default image options are not implemented. |

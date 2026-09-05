@@ -1,300 +1,146 @@
-# Architecture
+# Milestone 1 architecture
 
-## System Overview
+This document describes the current executable build. Roadmap components are
+kept in [SPEC.md](../SPEC.md) and are not part of this architecture until a
+verified adapter is registered in the runtime capability registry.
+
+## Runtime boundaries
 
 ```mermaid
 graph LR
-    subgraph "Client Layer"
-        C[CLI]
-        A[REST API]
-        M[MCP Server]
-        W[WASM]
+    subgraph Adapters
+        CLI[rtools-cli]
+        API[rtools-api]
+        MCP[rtools-mcp]
+        WASM[rtools-wasm]
     end
 
-    subgraph "Processing Layer"
-        IC[Image Core]
-        PC[PDF Core]
-        AC[AI Core]
+    subgraph Processors
+        CORE[rtools-core<br/>contracts, limits, output policy]
+        IMG[rtools-image<br/>bounded image operations]
+        PDF[rtools-pdf<br/>experimental structural operations]
+        AI[rtools-ai<br/>deterministic/report-only operations]
     end
 
-    subgraph "Storage Layer"
-        FS[Local Filesystem]
-        TM[Temp Directory]
-        MD[Model Cache]
-    end
+    FS[Local filesystem]
+    ART[REST in-memory artifact store]
 
-    C --> IC
-    C --> PC
-    C --> AC
-    A --> IC
-    A --> PC
-    A --> AC
-    M --> IC
-    M --> PC
-    M --> AC
-    W --> IC
-
-    IC --> FS
-    IC --> TM
-    PC --> FS
-    PC --> TM
-    AC --> FS
-    AC --> MD
+    CLI --> CORE
+    API --> CORE
+    MCP --> CORE
+    WASM --> CORE
+    CORE --> IMG
+    CORE --> PDF
+    CORE --> AI
+    IMG --> FS
+    PDF --> FS
+    AI --> FS
+    API --> ART
 ```
 
-## Image Processing Pipeline
+- `rtools-core` defines processor contracts, stable errors, resource limits,
+  configuration, path validation, collision policy, temporary reservations,
+  and atomic publication.
+- CLI, REST, and MCP translate public parameters into those processor types.
+  They do not enable unavailable behavior by silently changing an option.
+- REST uploads live in request-owned temporary storage. Successful REST files
+  are copied into an in-memory artifact store and returned by opaque artifact
+  ID. There is no durable retention guarantee.
+- MCP operates on server-local paths, but public results and errors do not
+  expose host filesystem paths. It has no hosted-download contract.
+
+## Image write path
 
 ```mermaid
 flowchart TD
-    Start([Start]) --> Validate{Validate Input}
-    Validate -->|Invalid| Error[Return Error]
-    Validate -->|Valid| Load[Load Image]
-    
-    Load --> Detect{Detect Format}
-    Detect -->|JPEG| JPEG[Process JPEG]
-    Detect -->|PNG| PNG[Process PNG]
-    Detect -->|WebP| WEBP[Process WebP]
-    Detect -->|HEIC| HEIC[Process HEIC]
-    Detect -->|Other| OTHER[Process Generic]
-    
-    JPEG --> Apply{Apply Operation}
-    PNG --> Apply
-    WEBP --> Apply
-    HEIC --> Apply
-    OTHER --> Apply
-    
-    Apply -->|Compress| Compress[Compress Image]
-    Apply -->|Convert| Convert[Convert Format]
-    Apply -->|Resize| Resize[Resize Image]
-    Apply -->|Crop| Crop[Crop Image]
-    Apply -->|Filter| Filter[Apply Filter]
-    Apply -->|Watermark| Watermark[Add Watermark]
-    
-    Compress --> Save[Save Output]
-    Convert --> Save
-    Resize --> Save
-    Crop --> Save
-    Filter --> Save
-    Watermark --> Save
-    
-    Save --> Stats[Calculate Stats]
-    Stats --> End([Return Result])
+    Request --> Capability[Validate capability and options]
+    Capability --> Input[Validate input and bounded decode]
+    Input --> Plan[Resolve and validate output]
+    Plan --> Reserve[Reserve destination and sibling temporary file]
+    Reserve --> Encode[Encode with drop-all metadata policy]
+    Encode --> Verify[Verify artifact]
+    Verify --> Publish[Atomic publication]
+    Publish --> Result[Return stats, MIME type, and warnings]
 ```
 
-## PDF Processing Pipeline
+Executable image operations are compress, convert, resize, crop, supported
+filters, image watermarking, and read-only EXIF inspection. JPEG quality is
+1 through 100. Text watermarking, OCR, metadata preservation, and selective
+GPS removal fail closed before output reservation.
+
+## PDF write path
 
 ```mermaid
 flowchart TD
-    Start([Start]) --> Validate{Validate PDF}
-    Validate -->|Invalid| Error[Return Error]
-    Validate -->|Valid| Load[Load PDF with lopdf]
-    
-    Load --> Type{Operation Type}
-    
-    Type -->|Merge| Merge[Merge Documents]
-    Type -->|Split| Split[Split Document]
-    Type -->|Compress| Compress[Compress Document]
-    Type -->|OCR| OCR[Extract Text]
-    Type -->|ToImage| ToImage[Render Pages]
-    
-    Merge --> Iterate[Iterate Source PDFs]
-    Iterate --> CopyPages[Copy Pages]
-    CopyPages --> Combine[Combine Documents]
-    Combine --> SavePDF[Save Output PDF]
-    
-    Split --> Select[Select Pages]
-    Select --> Extract[Extract Pages]
-    Extract --> SavePDF
-    
-    Compress --> Optimize[Optimize Objects]
-    Optimize --> RemoveDup[Remove Duplicates]
-    RemoveDup --> Deflate[Deflate Streams]
-    Deflate --> SavePDF
-    
-    OCR --> Render[Render to Image]
-    Render --> Tesseract[Tesseract OCR]
-    Tesseract --> TextLayer[Add Text Layer]
-    TextLayer --> SavePDF
-    
-    ToImage --> RenderPage[Render Each Page]
-    RenderPage --> SaveImage[Save as Image]
-    
-    SavePDF --> End([Return Result])
-    SaveImage --> End
+    Request --> Options[Reject unsupported options]
+    Options --> Inputs[Validate every ordered path input]
+    Inputs --> Limits[Read metadata and enforce validation]
+    Limits --> Load[Load PDFs with lopdf]
+    Load --> Operation{Merge, medium compress, or PDF split}
+    Operation --> Reserve[Reserve every final destination]
+    Reserve --> Stage[Write and validate temporary artifacts]
+    Stage --> Publish[Publish atomically]
 ```
 
-## AI Processing Pipeline
+PDF merge, medium compression, and PDF-page splitting are experimental because
+structural fidelity has not been fully verified. Output parents must already
+exist and cannot traverse symlink ancestors. Merge page numbering, light/heavy
+compression, PDF-to-image, text extraction, and PDF OCR are unavailable.
+
+## Deterministic organization and duplicate reporting
 
 ```mermaid
 flowchart TD
-    Start([Start]) --> Collect[Collect Input Files]
-    
-    Collect --> Strategy{Organization Strategy}
-    
-    Strategy -->|ByDate| DateSort[Sort by Date]
-    Strategy -->|BySubject| SubjectClass[Classify Subject]
-    Strategy -->|ByLocation| LocationSort[Sort by GPS]
-    
-    DateSort --> CreateFolders[Create Date Folders]
-    SubjectClass --> AIModel[Run AI Model]
-    LocationSort --> GPSLookup[Lookup Location]
-    
-    AIModel --> CLIP[CLIP Classification]
-    CLIP --> Categories[Assign Categories]
-    Categories --> CreateFolders
-    
-    GPSLookup --> CreateFolders
-    
-    CreateFolders --> Move[Move Files]
-    Move --> Rename[Optional Rename]
-    Rename --> End([Return Results])
-    
-    subgraph "AI Models"
-        CLIP
-        BLIP[BLIP Captioning]
-        OCR[OCR Engine]
-    end
-    
-    subgraph "Duplicate Detection"
-        Hash[Perceptual Hash]
-        Compare[Compare Hashes]
-        Group[Group Duplicates]
-    end
+    Request --> Gate[Validate strategy, pattern, or action]
+    Gate --> Collect[Walk existing readable directory]
+    Collect --> Sort[Sort paths deterministically]
+    Sort --> Mode{Operation}
+    Mode -->|Date organize| Dates[Plan year/month copies]
+    Mode -->|Deterministic rename| Names[Preflight every final name]
+    Mode -->|Duplicate report| Hash[Compute bounded perceptual hashes]
+    Dates --> Commit[Transactional publication or dry-run plan]
+    Names --> Commit
+    Hash --> Report[Return report only]
 ```
 
-## Data Flow Diagram
+Only date organization, deterministic rename tokens, and report-only duplicate
+detection execute. Subject/location/camera/custom organization, AI-derived
+rename tokens, alt text, OCR, sorting, and destructive duplicate actions are
+unavailable. No model cache, model download, CLIP, BLIP, Tesseract, ONNX, or
+geocoding pipeline exists in Milestone 1.
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant CLI as CLI
-    participant Core as Core
-    participant Img as Image Processor
-    participant PDF as PDF Processor
-    participant AI as AI Processor
-    participant FS as FileSystem
+## Capability and adapter verification
 
-    Note over U,FS: Image Compression Flow
-    U->>CLI: rtools image compress --input photo.jpg
-    CLI->>Core: Validate request
-    Core->>Img: CompressProcessor.process()
-    Img->>FS: Read photo.jpg
-    FS-->>Img: File data
-    Img->>Img: Apply compression
-    Img->>FS: Write photo_compressed.jpg
-    FS-->>Img: Write success
-    Img-->>Core: ProcessResult
-    Core-->>CLI: Output path + stats
-    CLI-->>U: "Compressed: photo_compressed.jpg (45% smaller)"
+`rtools --output-format json doctor` exports the operation registry.
+`rtools-mcp --print-contracts` exports the MCP tool-to-operation contract that
+also drives live `tools/list`. The Bash and PowerShell verification scripts
+compare both runtime exports with their checked-in documentation, reject
+duplicates, and run the structured adapter behavior matrix.
 
-    Note over U,FS: PDF Merge Flow
-    U->>CLI: rtools pdf merge --input a.pdf b.pdf --output merged.pdf
-    CLI->>Core: Validate request
-    Core->>PDF: PdfMergeProcessor.process()
-    PDF->>FS: Read a.pdf
-    PDF->>FS: Read b.pdf
-    FS-->>PDF: PDF data
-    PDF->>PDF: Merge pages
-    PDF->>FS: Write merged.pdf
-    FS-->>PDF: Write success
-    PDF-->>Core: ProcessResult
-    Core-->>CLI: Output path
-    CLI-->>U: "Merged: merged.pdf"
-
-    Note over U,FS: Experimental Date Organize Flow
-    U->>CLI: rtools --dry-run ai organize --input ~/Photos --output ~/Organized
-    CLI->>Core: Validate request
-    Core->>AI: OrganizeProcessor.process()
-    AI->>FS: Read image modification times
-    FS-->>AI: File list
-    AI->>AI: Plan deterministic year/month destinations
-    AI-->>Core: Exact no-write plan
-    Core-->>CLI: Source/destination pairs
-    CLI-->>U: "Planned 150 file operations"
-```
-
-## Error Handling Flow
-
-```mermaid
-flowchart TD
-    Start([Operation]) --> Try[Execute Operation]
-    
-    Try -->|Success| Success[Return Success]
-    
-    Try -->|IO Error| IOError[Handle IO Error]
-    Try -->|Format Error| FormatError[Handle Format Error]
-    Try -->|Config Error| ConfigError[Handle Config Error]
-    Try -->|Timeout| Timeout[Handle Timeout]
-    
-    IOError --> Log[Log Error]
-    FormatError --> Log
-    ConfigError --> Log
-    Timeout --> Log
-    
-    Log --> Retry{Retry?}
-    Retry -->|Yes| Try
-    Retry -->|No| Return[Return Error]
-    
-    Success --> Stats[Collect Stats]
-    Stats --> End([Done])
-    Return --> End
-```
-
-## Configuration Flow
-
-```mermaid
-sequenceDiagram
-    participant App as Application
-    participant Config as Config Manager
-    participant File as Config File
-    participant Env as Environment
-
-    App->>Config: Load configuration
-    Config->>Env: Check environment variables
-    Env-->>Config: Override values
-    Config->>File: Check rtools.toml
-    alt File exists
-        File-->>Config: File values
-    else File missing
-        Config->>Config: Use defaults
-    end
-    Config->>Config: Merge all sources
-    Config-->>App: AppConfig
-```
-
-## Module Dependencies
+## Module dependencies
 
 ```mermaid
 graph TD
     CLI[rtools-cli] --> Core[rtools-core]
+    API[rtools-api] --> Core
+    MCP[rtools-mcp] --> Core
+    WASM[rtools-wasm] --> Core
     CLI --> Img[rtools-image]
     CLI --> PDF[rtools-pdf]
     CLI --> AI[rtools-ai]
-
-    API[rtools-api] --> Core
     API --> Img
     API --> PDF
     API --> AI
-
-    MCP[rtools-mcp] --> Core
     MCP --> Img
     MCP --> PDF
     MCP --> AI
-
-    WASM[rtools-wasm] --> Core
     WASM --> Img
-
     Img --> Core
     PDF --> Core
     AI --> Core
     AI --> Img
-
-    style Core fill:#e1f5fe
-    style Img fill:#f3e5f5
-    style PDF fill:#e8f5e9
-    style AI fill:#fff3e0
-    style CLI fill:#fce4ec
-    style API fill:#e0f2f1
-    style MCP fill:#f1f8e9
-    style WASM fill:#fff8e1
 ```
+
+Authentication, TLS termination, background jobs, batch execution, provider
+model management, and durable artifact retention are outside the current
+runtime boundary.

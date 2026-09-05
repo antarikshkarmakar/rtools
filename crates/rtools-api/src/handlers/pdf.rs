@@ -47,7 +47,7 @@ pub async fn merge(
     let output = rtools_pdf::PdfMergeProcessor.process(
         inputs,
         rtools_pdf::PdfMergeConfig {
-            inputs: paths,
+            inputs: Vec::new(),
             output: output_path,
             add_page_numbers: false,
         },

@@ -173,6 +173,12 @@ fn register_unavailable(registry: &mut CapabilityRegistry) -> RToolsResult<()> {
             None,
         ),
         (
+            "pdf.merge.page_numbers",
+            "PDF merge page numbering is not implemented",
+            "Disable page numbering",
+            None,
+        ),
+        (
             "pdf.ocr",
             "No searchable PDF OCR provider is configured",
             "Configure a supported searchable PDF OCR provider",
@@ -366,6 +372,7 @@ mod tests {
                 ("pdf.compress", CapabilityState::Experimental),
                 ("pdf.compress.level", CapabilityState::Unavailable),
                 ("pdf.merge", CapabilityState::Experimental),
+                ("pdf.merge.page_numbers", CapabilityState::Unavailable),
                 ("pdf.ocr", CapabilityState::Unavailable),
                 ("pdf.split", CapabilityState::Experimental),
                 ("pdf.split.images", CapabilityState::Unavailable),

@@ -24,7 +24,7 @@ pub enum CompressionPreset {
 }
 
 impl CompressionPreset {
-    /// Get quality value (0-100)
+    /// Get quality value (1-100)
     pub const fn quality(&self) -> u8 {
         match self {
             CompressionPreset::Web => 60,
@@ -249,9 +249,9 @@ impl Processor for CompressProcessor {
     fn validate_config(&self, config: &CompressConfig) -> RToolsResult<()> {
         crate::metadata::MetadataPolicy::from_flags(config.preserve_metadata, config.strip_gps)?;
         if let CompressionPreset::Custom(q) = config.preset {
-            if q > 100 {
+            if !(1..=100).contains(&q) {
                 return Err(RToolsError::invalid_input(
-                    "Quality must be between 0 and 100",
+                    "Quality must be between 1 and 100",
                 ));
             }
         }

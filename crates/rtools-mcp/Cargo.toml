@@ -28,6 +28,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 walkdir = { workspace = true }
 
@@ -35,6 +36,7 @@ walkdir = { workspace = true }
 image = { workspace = true }
 tempfile = "3.8"
 base64 = "0.22"
+lopdf = { workspace = true }
 
 [lints]
 workspace = true

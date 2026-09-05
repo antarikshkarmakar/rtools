@@ -18,7 +18,7 @@ pub struct ConvertConfig {
     pub output_policy: OutputPolicy,
     /// Legacy batch output directory; currently unsupported and must be None.
     pub output_dir: Option<PathBuf>,
-    /// Quality for lossy formats (0-100)
+    /// Quality for lossy formats (1-100)
     pub quality: u8,
     /// Preserve EXIF metadata
     pub preserve_metadata: bool,
@@ -229,9 +229,9 @@ impl Processor for ConvertProcessor {
                 "Convert output_dir is unsupported; specify output instead",
             ));
         }
-        if config.quality > 100 {
+        if !(1..=100).contains(&config.quality) {
             return Err(RToolsError::invalid_input(
-                "Quality must be between 0 and 100",
+                "Quality must be between 1 and 100",
             ));
         }
         Ok(())

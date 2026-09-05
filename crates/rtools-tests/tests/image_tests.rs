@@ -1835,6 +1835,41 @@ fn test_compress_custom_quality() {
 }
 
 #[test]
+fn image_processors_reject_zero_quality_before_input_or_output_access() {
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("missing.jpg");
+
+    let compressed = tmp.path().join("compressed.jpg");
+    let compress_error = CompressProcessor
+        .process(
+            FileInput::from_path(missing.clone()),
+            CompressConfig {
+                preset: rtools_image::compress::CompressionPreset::Custom(0),
+                output: Some(compressed.clone()),
+                ..CompressConfig::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(compress_error.code(), ErrorCode::InvalidInput);
+    assert!(!compressed.exists());
+
+    let converted = tmp.path().join("converted.jpg");
+    let convert_error = ConvertProcessor
+        .process(
+            FileInput::from_path(missing),
+            ConvertConfig {
+                target_format: rtools_core::ImageFormat::Jpeg,
+                output: Some(converted.clone()),
+                quality: 0,
+                ..ConvertConfig::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(convert_error.code(), ErrorCode::InvalidInput);
+    assert!(!converted.exists());
+}
+
+#[test]
 fn missing_image_output_parent_is_rejected_without_creation() {
     let tmp = TempDir::new().unwrap();
     let input = create_test_image(tmp.path(), "create.png", 50, 50);

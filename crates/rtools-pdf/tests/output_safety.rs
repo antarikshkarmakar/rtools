@@ -58,6 +58,116 @@ fn pdf_split_image_options_fail_before_input_or_output_access() {
     }
 }
 
+#[test]
+fn merge_page_numbering_fails_before_input_or_output_access() {
+    let temp = tempdir().unwrap();
+    let output_parent = temp.path().join("missing-output");
+    let output = output_parent.join("numbered.pdf");
+
+    let error = PdfMergeProcessor
+        .process(
+            vec![
+                FileInput::from_path(temp.path().join("missing-first.pdf")),
+                FileInput::from_path(temp.path().join("missing-second.pdf")),
+            ],
+            PdfMergeConfig {
+                output: output.clone(),
+                add_page_numbers: true,
+                ..PdfMergeConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+    assert!(matches!(
+        error,
+        rtools_core::RToolsError::CapabilityUnavailable { operation_id, .. }
+            if operation_id == "pdf.merge.page_numbers"
+    ));
+    assert!(!output_parent.exists());
+    assert!(!output.exists());
+}
+
+#[test]
+fn merge_rejects_legacy_config_inputs_before_filesystem_access() {
+    let temp = tempdir().unwrap();
+    let first = temp.path().join("first.pdf");
+    let second = temp.path().join("second.pdf");
+    let legacy = temp.path().join("legacy.pdf");
+    write_pdf(&first, 1);
+    write_pdf(&second, 1);
+    write_pdf(&legacy, 1);
+    let output = temp.path().join("merged.pdf");
+
+    let error = PdfMergeProcessor
+        .process(
+            vec![FileInput::from_path(first), FileInput::from_path(second)],
+            PdfMergeConfig {
+                inputs: vec![legacy],
+                output: output.clone(),
+                add_page_numbers: false,
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(!output.exists());
+    assert_no_rtools_artifacts(temp.path());
+}
+
+#[test]
+fn merge_rejects_mixed_path_and_memory_inputs_without_output_artifacts() {
+    let temp = tempdir().unwrap();
+    let first = temp.path().join("first.pdf");
+    write_pdf(&first, 1);
+    let output = temp.path().join("merged.pdf");
+
+    let error = PdfMergeProcessor
+        .process(
+            vec![
+                FileInput::from_path(first),
+                FileInput::from_bytes(b"not a path".to_vec(), "second.pdf"),
+            ],
+            PdfMergeConfig {
+                output: output.clone(),
+                ..PdfMergeConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(!output.exists());
+    assert_no_rtools_artifacts(temp.path());
+}
+
+#[test]
+fn merge_uses_processor_inputs_and_preserves_valid_merge_behavior() {
+    let temp = tempdir().unwrap();
+    let first = temp.path().join("first.pdf");
+    let second = temp.path().join("second.pdf");
+    write_pdf(&first, 1);
+    write_pdf(&second, 2);
+    let output = temp.path().join("merged.pdf");
+
+    let result = PdfMergeProcessor
+        .process(
+            vec![FileInput::from_path(first), FileInput::from_path(second)],
+            PdfMergeConfig {
+                output: output.clone(),
+                ..PdfMergeConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(result.destination.as_path(), Some(&output));
+    rtools_pdf::validate_pdf_artifact(&output).unwrap();
+    assert!(result
+        .stats
+        .as_ref()
+        .is_some_and(|stats| stats.input_size > 0));
+    assert_no_rtools_artifacts(temp.path());
+}
+
 #[cfg(unix)]
 fn create_directory_symlink(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap_or_else(|error| {

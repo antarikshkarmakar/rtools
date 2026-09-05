@@ -11,7 +11,7 @@ pub fn handle_pdf_command(
         PdfCommands::Merge { input, output } => {
             let processor = rtools_pdf::PdfMergeProcessor;
             let processor_config = rtools_pdf::PdfMergeConfig {
-                inputs: input.clone(),
+                inputs: Vec::new(),
                 output,
                 add_page_numbers: false,
             };

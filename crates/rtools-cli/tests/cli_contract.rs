@@ -210,6 +210,37 @@ fn nonfinite_duplicate_threshold_exits_invalid() {
 }
 
 #[test]
+fn zero_image_quality_exits_invalid_without_publishing_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.png");
+    create_png(&input, 4, 4);
+
+    for (operation, extra, destination) in [
+        (
+            "compress",
+            Vec::<&str>::new(),
+            temp.path().join("compressed.png"),
+        ),
+        (
+            "convert",
+            vec!["--format", "jpg"],
+            temp.path().join("converted.jpg"),
+        ),
+    ] {
+        let mut invocation = command(temp.path());
+        invocation
+            .args(["image", operation, "--input"])
+            .arg(&input)
+            .args(extra)
+            .args(["--quality", "0", "--output"])
+            .arg(&destination);
+        let output = invocation.output().unwrap();
+        assert_exit(&output, 2);
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
 fn compress_format_extension_mismatch_is_invalid_without_output_artifacts() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("compress-input.png");
@@ -496,6 +527,7 @@ fn doctor_json_is_one_report_and_matches_the_sorted_shared_registry() {
             ("pdf.compress", "experimental"),
             ("pdf.compress.level", "unavailable"),
             ("pdf.merge", "experimental"),
+            ("pdf.merge.page_numbers", "unavailable"),
             ("pdf.ocr", "unavailable"),
             ("pdf.split", "experimental"),
             ("pdf.split.images", "unavailable"),

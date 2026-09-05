@@ -1295,6 +1295,42 @@ async fn unsupported_conversion_targets_and_ineffective_quality_fail_closed() {
 }
 
 #[tokio::test]
+async fn zero_image_quality_is_invalid_before_request_storage() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    for (path, format) in [
+        ("/api/v1/image/compress", None),
+        ("/api/v1/image/convert", Some("jpeg")),
+    ] {
+        let mut parts = vec![
+            Part::Text {
+                field: "quality",
+                value: "0",
+            },
+            Part::File {
+                field: "file",
+                name: "input.png",
+                content_type: "image/png",
+                bytes: png_bytes(2, 2),
+            },
+        ];
+        if let Some(format) = format {
+            parts.insert(
+                0,
+                Part::Text {
+                    field: "format",
+                    value: format,
+                },
+            );
+        }
+        let before = request_directories();
+        let (status, document) = json_response(&app(), multipart(path, parts)).await;
+        assert_structured(status, &document, StatusCode::BAD_REQUEST);
+        assert_eq!(document["code"], "INVALID_INPUT");
+        assert_eq!(request_directories(), before);
+    }
+}
+
+#[tokio::test]
 async fn conversion_format_matrix_is_truthful_and_jpeg_quality_is_effective() {
     let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
     let app = app();

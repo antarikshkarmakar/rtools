@@ -6,7 +6,7 @@ use rmcp::{
     transport::io::stdio,
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
-use rtools_core::{Processor, RToolsError, RToolsResult};
+use rtools_core::{ErrorCode, Processor, RToolsError, RToolsResult};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -17,21 +17,57 @@ struct RToolsServer;
 struct CompressInput {
     input_path: String,
     output_path: Option<String>,
+    #[schemars(range(min = 1, max = 100))]
     quality: Option<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ConvertInput {
     input_path: String,
-    target_format: String,
+    target_format: TargetFormatInput,
     output_path: Option<String>,
+    #[schemars(range(min = 1, max = 100))]
     quality: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum TargetFormatInput {
+    Webp,
+    Png,
+    Jpg,
+    Jpeg,
+    Avif,
+    Tiff,
+    Tif,
+    Bmp,
+    Gif,
+    Hdr,
+}
+
+impl TargetFormatInput {
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Webp => "webp",
+            Self::Png => "png",
+            Self::Jpg => "jpg",
+            Self::Jpeg => "jpeg",
+            Self::Avif => "avif",
+            Self::Tiff => "tiff",
+            Self::Tif => "tif",
+            Self::Bmp => "bmp",
+            Self::Gif => "gif",
+            Self::Hdr => "hdr",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ResizeInput {
     input_path: String,
+    #[schemars(range(min = 1, max = 32768))]
     width: Option<u32>,
+    #[schemars(range(min = 1, max = 32768))]
     height: Option<u32>,
     maintain_aspect: Option<bool>,
 }
@@ -40,7 +76,17 @@ struct ResizeInput {
 struct OrganizeInput {
     input_dir: String,
     output_dir: String,
-    strategy: Option<String>,
+    strategy: Option<OrganizeStrategyInput>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum OrganizeStrategyInput {
+    Date,
+    Subject,
+    Location,
+    Camera,
+    Custom,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -59,6 +105,7 @@ struct AltTextInput {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct DuplicatesInput {
     input_dir: String,
+    #[schemars(range(min = 0.0, max = 1.0))]
     threshold: Option<f64>,
 }
 
@@ -66,11 +113,20 @@ struct DuplicatesInput {
 struct PdfCompressInput {
     input_path: String,
     output_path: Option<String>,
-    level: Option<String>,
+    level: Option<PdfCompressionLevelInput>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum PdfCompressionLevelInput {
+    Light,
+    Medium,
+    Heavy,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct PdfMergeInput {
+    #[schemars(length(min = 2))]
     input_paths: Vec<String>,
     output_path: String,
 }
@@ -87,129 +143,193 @@ struct MetadataInput {
 }
 
 fn file_output_content(output: &rtools_core::FileOutput) -> Result<ContentBlock, McpError> {
-    serde_json::to_string(output)
-        .map(ContentBlock::text)
-        .map_err(|error| McpError::internal_error(error.to_string(), None))
+    serde_json::to_string(&serde_json::json!({
+        "name": output.name,
+        "mime_type": output.mime_type,
+        "stats": output.stats,
+        "warnings": output.warnings,
+    }))
+    .map(ContentBlock::text)
+    .map_err(|error| McpError::internal_error(error.to_string(), None))
 }
 
-fn tool_error(error: &RToolsError) -> CallToolResult {
+const fn sanitized_error_message(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::InvalidInput => "The tool input is invalid.",
+        ErrorCode::CapabilityUnavailable => "The requested capability is unavailable.",
+        ErrorCode::UnsupportedFormat => "The requested format is unsupported.",
+        ErrorCode::ResourceLimitExceeded => "A configured resource limit was exceeded.",
+        ErrorCode::OutputExists => "The output already exists.",
+        ErrorCode::PathPolicyViolation => "The requested path is not permitted.",
+        ErrorCode::ProcessingFailed => "The tool could not process the input.",
+        ErrorCode::PartialFailure => "The tool completed only part of the request.",
+        ErrorCode::AuthenticationRequired => "Authentication is required.",
+        ErrorCode::ConfigurationInvalid => "The server configuration is invalid.",
+        ErrorCode::Cancelled => "The tool operation was cancelled.",
+        ErrorCode::RollbackFailed => "The tool could not safely roll back its changes.",
+    }
+}
+
+fn tool_error(default_operation_id: &'static str, error: &RToolsError) -> CallToolResult {
     let operation_id = match error {
-        RToolsError::CapabilityUnavailable { operation_id, .. } => Some(operation_id.as_str()),
-        _ => None,
+        RToolsError::CapabilityUnavailable { operation_id, .. } => operation_id.as_str(),
+        _ => default_operation_id,
     };
-    let mut result = CallToolResult::error(vec![ContentBlock::text(error.to_string())]);
+    tracing::warn!(
+        operation_id,
+        code = error.code().as_str(),
+        error = %error,
+        "MCP tool processing failed"
+    );
+    let message = sanitized_error_message(error.code());
+    let mut result = CallToolResult::error(vec![ContentBlock::text(message)]);
     result.structured_content = Some(serde_json::json!({
         "code": error.code().as_str(),
-        "message": error.to_string(),
+        "message": message,
         "operation_id": operation_id,
     }));
     result
 }
 
+#[derive(Debug, Serialize)]
+struct McpToolContract {
+    tool: &'static str,
+    operation_id: &'static str,
+    state: &'static str,
+    description: &'static str,
+    adapter_contract: &'static str,
+    structured_errors: bool,
+}
+
+const MCP_TOOL_CONTRACTS: &[McpToolContract] = &[
+    McpToolContract {
+        tool: "compress_image",
+        operation_id: "image.compress",
+        state: "available",
+        description: "Compress an image with quality preservation",
+        adapter_contract: "quality=1..100",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "convert_image",
+        operation_id: "image.convert",
+        state: "available",
+        description: "Convert an image to an explicitly selected format",
+        adapter_contract:
+            "target_format=webp|png|jpg|jpeg|avif|tiff|tif|bmp|gif|hdr; quality=1..100",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "resize_image",
+        operation_id: "image.resize",
+        state: "available",
+        description: "Resize an image by dimensions",
+        adapter_contract: "width|height=1..32768; fixed output quality 85",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "organize_photos",
+        operation_id: "ai.organize.date",
+        state: "experimental",
+        description: "Organize photos by deterministic date into prepared year/month folders",
+        adapter_contract: "strategy=date; prepared derived output directories required",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "rename_photos",
+        operation_id: "ai.rename.deterministic",
+        state: "experimental",
+        description: "Rename photos with deterministic filename tokens",
+        adapter_contract: "deterministic tokens only",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "generate_alt_text",
+        operation_id: "ai.alt_text",
+        state: "unavailable",
+        description: "Unavailable: no verified image captioning provider is configured",
+        adapter_contract: "no provider",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "find_duplicates",
+        operation_id: "ai.duplicates.report",
+        state: "experimental",
+        description: "Find duplicate images by visual similarity",
+        adapter_contract: "report only; threshold=0..1 finite",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "compress_pdf",
+        operation_id: "pdf.compress",
+        state: "experimental",
+        description: "Experimentally compress a PDF using the medium level only",
+        adapter_contract: "level=medium; light|heavy unavailable",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "merge_pdfs",
+        operation_id: "pdf.merge",
+        state: "experimental",
+        description: "Merge two or more PDF files into one",
+        adapter_contract: "input_paths minItems=2",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "extract_text",
+        operation_id: "ai.ocr",
+        state: "unavailable",
+        description: "Unavailable: no verified OCR provider is configured",
+        adapter_contract: "no OCR provider",
+        structured_errors: true,
+    },
+    McpToolContract {
+        tool: "get_metadata",
+        operation_id: "image.exif.json",
+        state: "available",
+        description: "Get image metadata including EXIF data",
+        adapter_contract: "read-only EXIF and file information",
+        structured_errors: true,
+    },
+];
+
+fn input_schema<T: JsonSchema>() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::to_value(rmcp::schemars::schema_for!(T))
+        .unwrap_or_default()
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn runtime_contract_json() -> serde_json::Result<String> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "tools": MCP_TOOL_CONTRACTS,
+    }))
+}
+
 impl RToolsServer {
-    #[allow(clippy::too_many_lines)] // Task 7 will group tool schemas by domain.
     fn tools() -> Vec<Tool> {
-        vec![
-            Tool::new(
-                "compress_image",
-                "Compress an image with quality preservation",
-                serde_json::to_value(rmcp::schemars::schema_for!(CompressInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "convert_image",
-                "Convert image to different format (WebP, PNG, JPG, AVIF)",
-                serde_json::to_value(rmcp::schemars::schema_for!(ConvertInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "resize_image",
-                "Resize image by dimensions",
-                serde_json::to_value(rmcp::schemars::schema_for!(ResizeInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "organize_photos",
-                "Organize photos by deterministic date into prepared year/month folders",
-                serde_json::to_value(rmcp::schemars::schema_for!(OrganizeInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "rename_photos",
-                "Rename photos with deterministic filename tokens",
-                serde_json::to_value(rmcp::schemars::schema_for!(RenameInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "generate_alt_text",
-                "Unavailable: no verified image captioning provider is configured",
-                serde_json::to_value(rmcp::schemars::schema_for!(AltTextInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "find_duplicates",
-                "Find duplicate images by visual similarity",
-                serde_json::to_value(rmcp::schemars::schema_for!(DuplicatesInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "compress_pdf",
-                "Experimentally compress a PDF using the medium level only",
-                serde_json::to_value(rmcp::schemars::schema_for!(PdfCompressInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "merge_pdfs",
-                "Merge multiple PDF files into one",
-                serde_json::to_value(rmcp::schemars::schema_for!(PdfMergeInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "extract_text",
-                "Unavailable: no verified OCR provider is configured",
-                serde_json::to_value(rmcp::schemars::schema_for!(OcrInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            Tool::new(
-                "get_metadata",
-                "Get image metadata including EXIF data",
-                serde_json::to_value(rmcp::schemars::schema_for!(MetadataInput))
-                    .unwrap_or_default()
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-        ]
+        MCP_TOOL_CONTRACTS
+            .iter()
+            .map(|contract| {
+                let schema = match contract.tool {
+                    "compress_image" => input_schema::<CompressInput>(),
+                    "convert_image" => input_schema::<ConvertInput>(),
+                    "resize_image" => input_schema::<ResizeInput>(),
+                    "organize_photos" => input_schema::<OrganizeInput>(),
+                    "rename_photos" => input_schema::<RenameInput>(),
+                    "generate_alt_text" => input_schema::<AltTextInput>(),
+                    "find_duplicates" => input_schema::<DuplicatesInput>(),
+                    "compress_pdf" => input_schema::<PdfCompressInput>(),
+                    "merge_pdfs" => input_schema::<PdfMergeInput>(),
+                    "extract_text" => input_schema::<OcrInput>(),
+                    "get_metadata" => input_schema::<MetadataInput>(),
+                    _ => unreachable!("runtime MCP contract has no schema"),
+                };
+                Tool::new(contract.tool, contract.description, schema)
+            })
+            .collect()
     }
 
     #[allow(clippy::too_many_lines)] // Task 7 will split MCP tool dispatch by operation.
@@ -251,7 +371,7 @@ impl RToolsServer {
                             file_output_content(&output)?,
                         ]))
                     }
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("image.compress", &error)),
                 }
             }
 
@@ -260,13 +380,11 @@ impl RToolsServer {
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let file_input =
                     rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
-                let target_format = rtools_core::ImageFormat::from_extension(&input.target_format)
-                    .ok_or_else(|| {
-                        McpError::invalid_params(
-                            format!("Unsupported format: {}", input.target_format),
-                            None,
-                        )
-                    })?;
+                let target_format =
+                    rtools_core::ImageFormat::from_extension(input.target_format.extension())
+                        .ok_or_else(|| {
+                            McpError::invalid_params("Unsupported target format", None)
+                        })?;
                 let config = rtools_image::ConvertConfig {
                     target_format,
                     output: input.output_path.map(PathBuf::from),
@@ -280,10 +398,13 @@ impl RToolsServer {
                 let processor = rtools_image::ConvertProcessor;
                 match processor.process(file_input, config) {
                     Ok(output) => Ok(CallToolResult::success(vec![
-                        ContentBlock::text(format!("Converted to {}", input.target_format)),
+                        ContentBlock::text(format!(
+                            "Converted to {}",
+                            input.target_format.extension()
+                        )),
                         file_output_content(&output)?,
                     ])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("image.convert", &error)),
                 }
             }
 
@@ -308,30 +429,30 @@ impl RToolsServer {
                         ContentBlock::text("Resized successfully"),
                         file_output_content(&output)?,
                     ])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("image.resize", &error)),
                 }
             }
 
             "organize_photos" => {
                 let input: OrganizeInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = match collect_images(&input.input_dir) {
-                    Ok(inputs) => inputs,
-                    Err(error) => return Ok(tool_error(&error)),
-                };
                 let config = rtools_ai::organize::OrganizeConfig {
                     output_dir: PathBuf::from(&input.output_dir),
-                    strategy: match input.strategy.as_deref().unwrap_or("date") {
-                        "date" => rtools_ai::organize::OrganizeStrategy::ByDate,
-                        "subject" => rtools_ai::organize::OrganizeStrategy::BySubject,
-                        "location" => rtools_ai::organize::OrganizeStrategy::ByLocation,
-                        "camera" => rtools_ai::organize::OrganizeStrategy::ByCamera,
-                        "custom" => rtools_ai::organize::OrganizeStrategy::Custom,
-                        other => {
-                            return Err(McpError::invalid_params(
-                                format!("Unsupported organization strategy: {other}"),
-                                None,
-                            ));
+                    strategy: match input.strategy.unwrap_or(OrganizeStrategyInput::Date) {
+                        OrganizeStrategyInput::Date => {
+                            rtools_ai::organize::OrganizeStrategy::ByDate
+                        }
+                        OrganizeStrategyInput::Subject => {
+                            rtools_ai::organize::OrganizeStrategy::BySubject
+                        }
+                        OrganizeStrategyInput::Location => {
+                            rtools_ai::organize::OrganizeStrategy::ByLocation
+                        }
+                        OrganizeStrategyInput::Camera => {
+                            rtools_ai::organize::OrganizeStrategy::ByCamera
+                        }
+                        OrganizeStrategyInput::Custom => {
+                            rtools_ai::organize::OrganizeStrategy::Custom
                         }
                     },
                     by_date: true,
@@ -339,22 +460,25 @@ impl RToolsServer {
                     dry_run: false,
                 };
                 let processor = rtools_ai::OrganizeProcessor;
+                if let Err(error) = processor.validate_config(&config) {
+                    return Ok(tool_error("ai.organize.date", &error));
+                }
+                let inputs = match collect_images(&input.input_dir) {
+                    Ok(inputs) => inputs,
+                    Err(error) => return Ok(tool_error("ai.organize.date", &error)),
+                };
                 match processor.process(inputs, config) {
                     Ok(outputs) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Organized {} photos",
                         outputs.len()
                     ))])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("ai.organize.date", &error)),
                 }
             }
 
             "rename_photos" => {
                 let input: RenameInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = match collect_images(&input.input_dir) {
-                    Ok(inputs) => inputs,
-                    Err(error) => return Ok(tool_error(&error)),
-                };
                 let config = rtools_ai::rename::RenameConfig {
                     pattern: input
                         .pattern
@@ -365,12 +489,19 @@ impl RToolsServer {
                     dry_run: input.dry_run.unwrap_or(false),
                 };
                 let processor = rtools_ai::RenameProcessor;
+                if let Err(error) = processor.validate_config(&config) {
+                    return Ok(tool_error("ai.rename.deterministic", &error));
+                }
+                let inputs = match collect_images(&input.input_dir) {
+                    Ok(inputs) => inputs,
+                    Err(error) => return Ok(tool_error("ai.rename.deterministic", &error)),
+                };
                 match processor.process(inputs, config) {
                     Ok(outputs) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Renamed {} photos",
                         outputs.len()
                     ))])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("ai.rename.deterministic", &error)),
                 }
             }
 
@@ -389,7 +520,7 @@ impl RToolsServer {
                     Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                         result.alt_text,
                     )])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("ai.alt_text", &error)),
                 }
             }
 
@@ -398,7 +529,7 @@ impl RToolsServer {
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let inputs = match collect_images(&input.input_dir) {
                     Ok(inputs) => inputs,
-                    Err(error) => return Ok(tool_error(&error)),
+                    Err(error) => return Ok(tool_error("ai.duplicates.report", &error)),
                 };
                 let config = rtools_ai::duplicates::DuplicatesConfig {
                     threshold: input.threshold.unwrap_or(0.9),
@@ -415,7 +546,7 @@ impl RToolsServer {
                         let _ = writeln!(text, "Duplicates: {}", result.total_duplicates);
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("ai.duplicates.report", &error)),
                 }
             }
 
@@ -425,15 +556,15 @@ impl RToolsServer {
                 let file_input =
                     rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
                 let config = rtools_pdf::PdfCompressConfig {
-                    level: match input.level.as_deref().unwrap_or("medium") {
-                        "light" => rtools_pdf::compress::PdfCompressionLevel::Light,
-                        "medium" => rtools_pdf::compress::PdfCompressionLevel::Medium,
-                        "heavy" => rtools_pdf::compress::PdfCompressionLevel::Heavy,
-                        other => {
-                            return Err(McpError::invalid_params(
-                                format!("Unsupported PDF compression level: {other}"),
-                                None,
-                            ));
+                    level: match input.level.unwrap_or(PdfCompressionLevelInput::Medium) {
+                        PdfCompressionLevelInput::Light => {
+                            rtools_pdf::compress::PdfCompressionLevel::Light
+                        }
+                        PdfCompressionLevelInput::Medium => {
+                            rtools_pdf::compress::PdfCompressionLevel::Medium
+                        }
+                        PdfCompressionLevelInput::Heavy => {
+                            rtools_pdf::compress::PdfCompressionLevel::Heavy
                         }
                     },
                     output: input.output_path.map(PathBuf::from),
@@ -449,7 +580,7 @@ impl RToolsServer {
                         }
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("pdf.compress", &error)),
                 }
             }
 
@@ -462,17 +593,16 @@ impl RToolsServer {
                     .map(|p| rtools_core::FileInput::from_path(PathBuf::from(p)))
                     .collect();
                 let config = rtools_pdf::PdfMergeConfig {
-                    inputs: input.input_paths.iter().map(PathBuf::from).collect(),
+                    inputs: Vec::new(),
                     output: PathBuf::from(&input.output_path),
                     add_page_numbers: false,
                 };
                 let processor = rtools_pdf::PdfMergeProcessor;
                 match processor.process(file_inputs, config) {
-                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                        "Merged PDFs into {}",
-                        input.output_path
-                    ))])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                        "Merged PDFs successfully",
+                    )])),
+                    Err(error) => Ok(tool_error("pdf.merge", &error)),
                 }
             }
 
@@ -491,7 +621,7 @@ impl RToolsServer {
                     Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                         result.text,
                     )])),
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("ai.ocr", &error)),
                 }
             }
 
@@ -508,7 +638,7 @@ impl RToolsServer {
                             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                         Ok(CallToolResult::success(vec![ContentBlock::text(result)]))
                     }
-                    Err(error) => Ok(tool_error(&error)),
+                    Err(error) => Ok(tool_error("image.exif.json", &error)),
                 }
             }
 
@@ -550,6 +680,8 @@ fn collect_images(dir: &str) -> RToolsResult<Vec<rtools_core::FileInput>> {
         }
     }
 
+    inputs.sort_by(|left, right| left.source.as_path().cmp(&right.source.as_path()));
+
     Ok(inputs)
 }
 
@@ -583,7 +715,16 @@ impl ServerHandler for RToolsServer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if let Some(argument) = std::env::args().nth(1) {
+        if argument == "--print-contracts" {
+            println!("{}", runtime_contract_json()?);
+            return Ok(());
+        }
+        anyhow::bail!("unsupported argument: {argument}");
+    }
+
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -602,6 +743,7 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use image::ImageFormat;
+    use lopdf::{dictionary, Document, Object, Stream};
     use std::io::Cursor;
 
     fn write_png(path: &std::path::Path) {
@@ -610,6 +752,36 @@ mod tests {
             .write_to(&mut bytes, ImageFormat::Png)
             .expect("test PNG must encode");
         std::fs::write(path, bytes.into_inner()).expect("test PNG must write");
+    }
+
+    fn write_pdf(path: &std::path::Path) {
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let catalog_id = document.new_object_id();
+        let content_id = document.add_object(Stream::new(dictionary! {}, Vec::new()));
+        let leaf_page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Contents" => content_id,
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![Object::Reference(leaf_page_id)],
+                "Count" => 1,
+            }),
+        );
+        document.objects.insert(
+            catalog_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages_id,
+            }),
+        );
+        document.trailer.set("Root", catalog_id);
+        document.save(path).unwrap();
     }
 
     fn crc32(bytes: &[u8]) -> [u8; 4] {
@@ -660,9 +832,306 @@ mod tests {
             .find_map(|text| {
                 serde_json::from_str::<serde_json::Value>(text)
                     .ok()
-                    .filter(|document| document.get("destination").is_some())
+                    .filter(|document| document.get("mime_type").is_some())
             })
-            .expect("tool result must contain a serialized FileOutput")
+            .expect("tool result must contain path-free file metadata")
+    }
+
+    fn tool_by_name(name: &str) -> serde_json::Value {
+        let tools = serde_json::to_value(RToolsServer::tools()).expect("tools must serialize");
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("missing live MCP tool {name}"))
+    }
+
+    #[test]
+    fn mcp_contract_runtime_catalog_is_unique_and_drives_live_tools() {
+        let exported: serde_json::Value =
+            serde_json::from_str(&runtime_contract_json().unwrap()).unwrap();
+        let rows = exported["tools"].as_array().unwrap();
+        let exported_names: Vec<_> = rows
+            .iter()
+            .map(|row| row["tool"].as_str().unwrap())
+            .collect();
+        let mut unique_names = exported_names.clone();
+        unique_names.sort_unstable();
+        unique_names.dedup();
+        assert_eq!(unique_names.len(), exported_names.len());
+
+        let listed = serde_json::to_value(RToolsServer::tools()).unwrap();
+        let listed_names: Vec<_> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(listed_names, exported_names);
+        assert!(rows.iter().all(|row| {
+            row["structured_errors"] == true
+                && row["operation_id"].is_string()
+                && row["state"].is_string()
+        }));
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_every_catalog_tool_has_a_dispatch_handler() {
+        for contract in MCP_TOOL_CONTRACTS {
+            let error = RToolsServer
+                .handle_tool(contract.tool, serde_json::json!({}))
+                .await
+                .expect_err("empty arguments must be invalid MCP parameters");
+            assert!(
+                !error.message.contains("Unknown tool"),
+                "{} is listed without a dispatch handler",
+                contract.tool
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_contract_live_schemas_match_processor_validation() {
+        for tool in ["compress_image", "convert_image"] {
+            let schema = tool_by_name(tool);
+            assert_eq!(schema["inputSchema"]["properties"]["quality"]["minimum"], 1);
+            assert_eq!(
+                schema["inputSchema"]["properties"]["quality"]["maximum"],
+                100
+            );
+        }
+
+        let resize = tool_by_name("resize_image");
+        for dimension in ["width", "height"] {
+            assert_eq!(resize["inputSchema"]["properties"][dimension]["minimum"], 1);
+            assert_eq!(
+                resize["inputSchema"]["properties"][dimension]["maximum"],
+                32_768
+            );
+        }
+
+        let duplicates = tool_by_name("find_duplicates");
+        assert_eq!(
+            duplicates["inputSchema"]["properties"]["threshold"]["minimum"],
+            0.0
+        );
+        assert_eq!(
+            duplicates["inputSchema"]["properties"]["threshold"]["maximum"],
+            1.0
+        );
+
+        let merge = tool_by_name("merge_pdfs");
+        assert_eq!(
+            merge["inputSchema"]["properties"]["input_paths"]["minItems"],
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_all_processor_errors_are_sanitized_and_identified() {
+        let temp = tempfile::tempdir().unwrap();
+        let canary = temp.path().join("PRIVATE-CANARY-mcp-error");
+        let missing = canary.join("missing");
+        let cases = [
+            (
+                "compress_image",
+                serde_json::json!({"input_path": missing.with_extension("png")}),
+                "image.compress",
+            ),
+            (
+                "convert_image",
+                serde_json::json!({"input_path": missing.with_extension("png"), "target_format": "png"}),
+                "image.convert",
+            ),
+            (
+                "resize_image",
+                serde_json::json!({"input_path": missing.with_extension("png"), "width": 2}),
+                "image.resize",
+            ),
+            (
+                "organize_photos",
+                serde_json::json!({"input_dir": missing, "output_dir": canary.join("organized"), "strategy": "date"}),
+                "ai.organize.date",
+            ),
+            (
+                "rename_photos",
+                serde_json::json!({"input_dir": missing, "dry_run": true}),
+                "ai.rename.deterministic",
+            ),
+            (
+                "generate_alt_text",
+                serde_json::json!({"input_path": missing.with_extension("png")}),
+                "ai.alt_text",
+            ),
+            (
+                "find_duplicates",
+                serde_json::json!({"input_dir": missing}),
+                "ai.duplicates.report",
+            ),
+            (
+                "compress_pdf",
+                serde_json::json!({"input_path": missing.with_extension("pdf"), "level": "medium"}),
+                "pdf.compress",
+            ),
+            (
+                "merge_pdfs",
+                serde_json::json!({
+                    "input_paths": [missing.with_extension("pdf"), canary.join("missing-two.pdf")],
+                    "output_path": canary.join("merged.pdf")
+                }),
+                "pdf.merge",
+            ),
+            (
+                "extract_text",
+                serde_json::json!({"input_path": missing.with_extension("png")}),
+                "ai.ocr",
+            ),
+            (
+                "get_metadata",
+                serde_json::json!({"input_path": missing.with_extension("png")}),
+                "image.exif.json",
+            ),
+        ];
+
+        for (tool, arguments, operation_id) in cases {
+            let result = RToolsServer
+                .handle_tool(tool, arguments)
+                .await
+                .unwrap_or_else(|error| panic!("{tool} returned protocol error: {error}"));
+            let serialized = serde_json::to_value(&result).unwrap();
+            let document = serde_json::to_string(&serialized).unwrap();
+            assert!(is_error(&result), "{tool}: {document}");
+            assert_eq!(
+                serialized["structuredContent"]["operation_id"], operation_id,
+                "{tool}: {document}"
+            );
+            assert!(
+                !document.contains("PRIVATE-CANARY-mcp-error"),
+                "{tool} leaked a host path: {document}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_file_success_metadata_never_exposes_host_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let canary_dir = temp.path().join("PRIVATE-CANARY-mcp-success");
+        std::fs::create_dir(&canary_dir).unwrap();
+        let input = canary_dir.join("input.png");
+        let output = canary_dir.join("output.png");
+        write_png(&input);
+
+        let result = RToolsServer
+            .handle_tool(
+                "compress_image",
+                serde_json::json!({
+                    "input_path": input,
+                    "output_path": output,
+                    "quality": 85
+                }),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        let document = serde_json::to_string(&result).unwrap();
+
+        assert!(!is_error(&result), "{document}");
+        assert!(
+            !document.contains("PRIVATE-CANARY-mcp-success"),
+            "{document}"
+        );
+        assert!(!document.contains("destination"), "{document}");
+        assert!(output.exists());
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_valid_merge_uses_processor_inputs_without_exposing_output_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let canary = temp.path().join("PRIVATE-CANARY-valid-merge");
+        std::fs::create_dir(&canary).unwrap();
+        let first = canary.join("first.pdf");
+        let second = canary.join("second.pdf");
+        let output = canary.join("merged.pdf");
+        write_pdf(&first);
+        write_pdf(&second);
+
+        let result = RToolsServer
+            .handle_tool(
+                "merge_pdfs",
+                serde_json::json!({
+                    "input_paths": [first, second],
+                    "output_path": output,
+                }),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        let document = serde_json::to_string(&result).unwrap();
+
+        assert!(!is_error(&result), "{document}");
+        assert!(output.exists());
+        rtools_pdf::validate_pdf_artifact(&output).unwrap();
+        assert!(
+            !document.contains("PRIVATE-CANARY-valid-merge"),
+            "{document}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_unavailable_ai_modes_are_gated_before_directory_access() {
+        let canary = "PRIVATE-CANARY-missing-ai-directory";
+        for (strategy, operation_id) in [
+            ("subject", "ai.organize.subject"),
+            ("location", "ai.organize.location"),
+            ("camera", "ai.organize.camera"),
+            ("custom", "ai.organize.custom"),
+        ] {
+            let result = RToolsServer
+                .handle_tool(
+                    "organize_photos",
+                    serde_json::json!({
+                        "input_dir": canary,
+                        "output_dir": "also-missing",
+                        "strategy": strategy,
+                    }),
+                )
+                .await
+                .expect("known strategy must return a tool result");
+            let serialized = serde_json::to_value(&result).unwrap();
+            let document = serde_json::to_string(&serialized).unwrap();
+            assert_eq!(
+                serialized["structuredContent"]["code"], "CAPABILITY_UNAVAILABLE",
+                "{strategy}: {document}"
+            );
+            assert_eq!(
+                serialized["structuredContent"]["operation_id"], operation_id,
+                "{strategy}: {document}"
+            );
+            assert!(!document.contains(canary), "{strategy}: {document}");
+        }
+
+        let rename = RToolsServer
+            .handle_tool(
+                "rename_photos",
+                serde_json::json!({
+                    "input_dir": canary,
+                    "pattern": "{subject}_{index}",
+                    "dry_run": true,
+                }),
+            )
+            .await
+            .expect("known subject token must return a tool result");
+        let serialized = serde_json::to_value(&rename).unwrap();
+        let document = serde_json::to_string(&serialized).unwrap();
+        assert_eq!(
+            serialized["structuredContent"]["code"],
+            "CAPABILITY_UNAVAILABLE"
+        );
+        assert_eq!(
+            serialized["structuredContent"]["operation_id"],
+            "ai.rename.ai"
+        );
+        assert!(!document.contains(canary), "{document}");
     }
 
     #[tokio::test]
@@ -678,24 +1147,33 @@ mod tests {
             let input = directory.join("orientation.jpg");
             std::fs::write(&input, &fixture).unwrap();
             let explicit_output = directory.join("output.png");
-            let arguments = match tool {
-                "compress_image" => serde_json::json!({
-                    "input_path": input,
-                    "output_path": directory.join("output.jpg"),
-                    "quality": 85
-                }),
-                "convert_image" => serde_json::json!({
-                    "input_path": input,
-                    "output_path": explicit_output,
-                    "target_format": "png",
-                    "quality": 85
-                }),
-                "resize_image" => serde_json::json!({
-                    "input_path": input,
-                    "width": 36,
-                    "height": null,
-                    "maintain_aspect": true
-                }),
+            let (arguments, expected_path) = match tool {
+                "compress_image" => (
+                    serde_json::json!({
+                        "input_path": input,
+                        "output_path": directory.join("output.jpg"),
+                        "quality": 85
+                    }),
+                    directory.join("output.jpg"),
+                ),
+                "convert_image" => (
+                    serde_json::json!({
+                        "input_path": input,
+                        "output_path": explicit_output,
+                        "target_format": "png",
+                        "quality": 85
+                    }),
+                    explicit_output,
+                ),
+                "resize_image" => (
+                    serde_json::json!({
+                        "input_path": input,
+                        "width": 36,
+                        "height": null,
+                        "maintain_aspect": true
+                    }),
+                    directory.join("orientation_36x24.jpg"),
+                ),
                 _ => unreachable!(),
             };
             let result = RToolsServer
@@ -709,11 +1187,8 @@ mod tests {
                 serde_json::json!(["EXIF orientation 6 applied"]),
                 "{tool}: {output}"
             );
-            let path = output["destination"]["File"]
-                .as_str()
-                .map(PathBuf::from)
-                .expect("serialized destination must be a file");
-            let image = image::open(path).unwrap();
+            assert!(output.get("destination").is_none(), "{tool}: {output}");
+            let image = image::open(expected_path).unwrap();
             assert_eq!((image.width(), image.height()), (36, 24), "{tool}");
         }
     }
@@ -947,10 +1422,18 @@ mod tests {
             .await
             .expect("tool dispatch must complete");
         let document = serde_json::to_string(&result).expect("tool result must serialize");
+        let serialized = serde_json::to_value(&result).unwrap();
 
         assert!(is_error(&result), "{result:?}");
-        assert!(document.contains("decoded_pixels"), "{document}");
-        assert!(document.contains("100010000"), "{document}");
-        assert!(document.contains("100000000"), "{document}");
+        assert_eq!(
+            serialized["structuredContent"]["code"],
+            "RESOURCE_LIMIT_EXCEEDED"
+        );
+        assert_eq!(
+            serialized["structuredContent"]["operation_id"],
+            "ai.duplicates.report"
+        );
+        assert!(!document.contains("100010000"), "{document}");
+        assert!(!document.contains("100000000"), "{document}");
     }
 }

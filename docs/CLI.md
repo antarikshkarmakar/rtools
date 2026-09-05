@@ -12,7 +12,7 @@ rtools [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 |--------|-------|-------------|
 | `--config` | `-c` | Configuration file path |
 | `--verbose` | `-v` | Enable verbose output |
-| `--dry-run` | `-d` | Preview changes without applying |
+| `--dry-run` | `-d` | Exact no-write plans for date organize/deterministic rename; other commands fail unavailable |
 | `--help` | `-h` | Show help |
 | `--version` | `-V` | Show version |
 
@@ -40,8 +40,13 @@ rtools image compress [OPTIONS]
 | `--output` | `-o` | - | Output path |
 | `--quality` | `-q` | 85 | Quality (1-100) |
 | `--format` | `-f` | - | Output format |
-| `--preserve-metadata` | - | false | Keep EXIF data |
-| `--strip-gps` | - | false | Remove GPS data |
+| `--preserve-metadata` | - | false | Unavailable; `true` fails before input/output access |
+| `--strip-gps` | - | false | Unavailable; `true` fails before input/output access |
+
+The safe executable metadata policy is the default: writing operations
+re-encode and drop metadata. Metadata preservation and selective GPS removal
+are recognized compatibility flags, but both return
+`CAPABILITY_UNAVAILABLE` when selected.
 
 **Examples:**
 ```bash
@@ -68,8 +73,8 @@ rtools image convert [OPTIONS]
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input file(s) |
 | `--format` | `-f` | - | Target format |
-| `--output` | `-o` | - | Output directory |
-| `--quality` | `-q` | 85 | Quality for lossy formats |
+| `--output` | `-o` | - | Output path |
+| `--quality` | `-q` | 85 | Quality for lossy formats (1-100) |
 
 **Examples:**
 ```bash
@@ -96,9 +101,9 @@ rtools image resize [OPTIONS]
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input file(s) |
 | `--width` | `-w` | - | Target width |
-| `--height` | `-h` | - | Target height |
+| `--height` | - | - | Target height |
 | `--maintain-aspect` | - | true | Maintain aspect ratio |
-| `--output` | `-o` | - | Output directory |
+| `--output` | `-o` | - | Output path |
 
 **Examples:**
 ```bash
@@ -127,7 +132,7 @@ rtools image crop [OPTIONS]
 | `--region` | `-r` | - | Crop region (x,y,w,h) |
 | `--ratio` | `-a` | - | Aspect ratio |
 | `--gravity` | `-g` | center | Gravity point |
-| `--output` | `-o` | - | Output directory |
+| `--output` | `-o` | - | Output path |
 
 **Examples:**
 ```bash
@@ -153,23 +158,23 @@ rtools image watermark [OPTIONS]
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input file(s) |
-| `--text` | `-t` | - | Watermark text |
-| `--image` | `-m` | - | Watermark image |
+| `--text` | `-t` | - | Unavailable text watermark; fails before file access |
+| `--image` | - | - | Watermark image (executable mode) |
 | `--position` | `-p` | bottom-right | Position |
 | `--opacity` | - | 0.5 | Opacity (0.0-1.0) |
-| `--output` | `-o` | - | Output directory |
+| `--output` | `-o` | - | Output path |
 
 **Examples:**
 ```bash
-# Add text watermark
-rtools image watermark -i photo.jpg -t "© 2024"
-
 # Add image watermark
-rtools image watermark -i photo.jpg -m logo.png
+rtools image watermark -i photo.jpg --image logo.png
 
-# Custom position and opacity
-rtools image watermark -i photo.jpg -t "DRAFT" -p center -opacity 0.3
+# Custom image-watermark position and opacity
+rtools image watermark -i photo.jpg --image logo.png -p center --opacity 0.3
 ```
+
+`--text` remains visible for compatibility but returns
+`CAPABILITY_UNAVAILABLE`; this build has no text-rendering provider.
 
 #### `rtools image filter`
 
@@ -185,23 +190,15 @@ rtools image filter [OPTIONS]
 | `--input` | `-i` | - | Input file(s) |
 | `--preset` | `-p` | - | Filter preset |
 | `--strength` | - | 1.0 | Filter strength |
-| `--output` | `-o` | - | Output directory |
+| `--output` | `-o` | - | Output path |
 
-**Available Presets:**
+**CLI presets:**
 - `kodak-portra-400` / `portra`
 - `kodak-gold-200` / `gold`
-- `kodak-ektar-100` / `ektar`
 - `fuji-pro-400h` / `fuji`
 - `fuji-velvia-50` / `velvia`
-- `fuji-superia-400` / `superia`
 - `polaroid-sx70` / `polaroid`
-- `polaroid-600`
-- `ilford-hp5` / `hp5`
-- `ilford-fp4` / `fp4`
 - `trix-400` / `trix`
-- `cinestill-800t` / `cinestill`
-- `lomography-400` / `lomo`
-- `agfa-vista-200` / `agfa`
 
 **Examples:**
 ```bash
@@ -209,7 +206,7 @@ rtools image filter [OPTIONS]
 rtools image filter -i photo.jpg -p portra
 
 # Apply with reduced strength
-rtools image filter -i photo.jpg -p fuji -strength 0.5
+rtools image filter -i photo.jpg -p fuji --strength 0.5
 ```
 
 #### `rtools image exif`
@@ -224,7 +221,7 @@ rtools image exif [OPTIONS]
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input file(s) |
-| `--format` | `-f` | text | Output format (text, json) |
+| `--format` | `-f` | human | Output format (`human`, `json`) |
 
 **Examples:**
 ```bash
@@ -237,7 +234,9 @@ rtools image exif -i photo.jpg -f json
 
 #### `rtools image ocr`
 
-Extract text from images.
+Unavailable in Milestone 1. The command is registered for compatibility but
+returns `CAPABILITY_UNAVAILABLE` before reading the image or writing output;
+no verified Tesseract adapter is configured.
 
 ```bash
 rtools image ocr [OPTIONS]
@@ -250,17 +249,7 @@ rtools image ocr [OPTIONS]
 | `--language` | `-l` | eng | Tesseract language |
 | `--output` | `-o` | - | Output file |
 
-**Examples:**
-```bash
-# OCR single image
-rtools image ocr -i document.jpg
-
-# OCR with language
-rtools image ocr -i document.jpg -l eng+fra
-
-# Save to file
-rtools image ocr -i document.jpg -o output.txt
-```
+There is intentionally no executable OCR example for this build.
 
 ### PDF Processing
 
@@ -401,14 +390,7 @@ rtools ai alt-text [OPTIONS]
 | `--language` | `-l` | en | Language |
 | `--output` | `-o` | - | Output file |
 
-**Examples:**
-```bash
-# Generate alt text
-rtools ai alt-text -i photo.jpg
-
-# Save to file
-rtools ai alt-text -i *.jpg -o alt-texts.txt
-```
+There is intentionally no executable alt-text example for this build.
 
 #### `rtools ai duplicates`
 
@@ -422,7 +404,7 @@ rtools ai duplicates [OPTIONS]
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input directory |
-| `--threshold` | `-t` | 0.9 | Similarity threshold |
+| `--threshold` | `-t` | 0.9 | Finite similarity threshold (0.0-1.0) |
 | `--action` | `-a` | report | Only report is executable; mutations are unavailable |
 
 **Examples:**
@@ -430,18 +412,17 @@ rtools ai duplicates [OPTIONS]
 # Find duplicates
 rtools ai duplicates -i ~/Photos
 
-# Move duplicates to folder
-rtools ai duplicates -i ~/Photos -a move
-
-# Delete duplicates (careful!)
-rtools ai duplicates -i ~/Photos -a delete
 ```
+
+`move`, `delete`, and `symlink` are recognized actions but return
+`CAPABILITY_UNAVAILABLE` before mutation. Only `--action report` executes.
 
 ### Batch Processing
 
 #### `rtools batch`
 
-Process multiple operations from config file.
+Unavailable in Milestone 1. The command returns
+`CAPABILITY_UNAVAILABLE` without executing the recipe.
 
 ```bash
 rtools batch [OPTIONS]
@@ -453,29 +434,8 @@ rtools batch [OPTIONS]
 | `--config` | `-c` | Batch config file |
 | `--jobs` | `-j` | Parallel jobs |
 
-**Example Config (batch.toml):**
-```toml
-[[operations]]
-operation = "compress"
-input = ["photos/*.jpg"]
-output = "compressed/"
-quality = 85
-
-[[operations]]
-operation = "convert"
-input = ["compressed/*.jpg"]
-output = "webp/"
-format = "webp"
-```
-
-**Examples:**
-```bash
-# Run batch operations
-rtools batch -c batch.toml
-
-# Run with 8 parallel jobs
-rtools batch -c batch.toml -j 8
-```
+There is intentionally no executable batch recipe or command example for this
+build. Run supported operations individually.
 
 ### Configuration
 

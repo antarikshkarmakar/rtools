@@ -1,7 +1,7 @@
 use lopdf::{Document, Object, ObjectId};
 use rtools_core::error::{RToolsError, RToolsResult};
 use rtools_core::types::ProcessStats;
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, InputSource, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,11 +20,11 @@ fn compression_ratio(output_size: u64, input_size: u64) -> f64 {
 /// Configuration for PDF merging
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfMergeConfig {
-    /// List of PDF files to merge (in order)
+    /// Legacy input list. Must remain empty; pass ordered `FileInput` values to `process`.
     pub inputs: Vec<PathBuf>,
     /// Output path; its parent directory must already exist
     pub output: PathBuf,
-    /// Add page numbers
+    /// Add page numbers. Currently unavailable and rejected before filesystem access.
     pub add_page_numbers: bool,
 }
 
@@ -55,18 +55,36 @@ impl Processor for PdfMergeProcessor {
     ) -> RToolsResult<FileOutput> {
         let start = Instant::now();
 
-        let mut input_paths: Vec<PathBuf> = inputs
-            .iter()
-            .filter_map(|i| i.source.as_path().cloned())
-            .collect();
+        let input_paths: Vec<PathBuf> = inputs
+            .into_iter()
+            .map(|input| match input.source {
+                InputSource::File(path) => Ok(path),
+                _ => Err(RToolsError::invalid_input(
+                    "PDF merge requires every input to be a file path",
+                )),
+            })
+            .collect::<RToolsResult<_>>()?;
 
-        if input_paths.is_empty() {
-            input_paths.clone_from(&config.inputs);
+        if input_paths.len() < 2 {
+            return Err(RToolsError::invalid_input(
+                "At least 2 PDF file inputs are required",
+            ));
         }
 
-        if input_paths.is_empty() {
-            return Err(RToolsError::invalid_input("No PDF files to merge"));
-        }
+        let input_size = input_paths.iter().try_fold(0_u64, |total, path| {
+            let size = std::fs::metadata(path)
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        RToolsError::file_not_found(path.display().to_string())
+                    } else {
+                        error.into()
+                    }
+                })?
+                .len();
+            total.checked_add(size).ok_or_else(|| {
+                RToolsError::invalid_input("Combined PDF input size exceeds supported range")
+            })
+        })?;
 
         let mut max_id = 1u32;
         let mut pagenum = 1u32;
@@ -162,12 +180,6 @@ impl Processor for PdfMergeProcessor {
         let elapsed = start.elapsed();
         let output_size = std::fs::metadata(&output)?.len();
 
-        let input_size: u64 = input_paths
-            .iter()
-            .filter_map(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
-            .sum();
-
         Ok(FileOutput {
             destination: rtools_core::output::OutputDestination::File(output),
             name: None,
@@ -184,10 +196,17 @@ impl Processor for PdfMergeProcessor {
     }
 
     fn validate_config(&self, config: &PdfMergeConfig) -> RToolsResult<()> {
-        for path in &config.inputs {
-            if !path.exists() {
-                return Err(RToolsError::file_not_found(path.display().to_string()));
-            }
+        if config.add_page_numbers {
+            return Err(RToolsError::capability_unavailable(
+                "pdf.merge.page_numbers",
+                "PDF merge page numbering is not implemented",
+                "Disable add_page_numbers",
+            ));
+        }
+        if !config.inputs.is_empty() {
+            return Err(RToolsError::invalid_input(
+                "PdfMergeConfig.inputs is unsupported; pass ordered FileInput values to process",
+            ));
         }
         Ok(())
     }
