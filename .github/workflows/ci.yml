@@ -16,6 +16,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify portable tracked paths
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/verify-portable-paths.sh
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Format
