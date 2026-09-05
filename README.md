@@ -145,6 +145,12 @@ artifact.
   adapters use that safe default. Rust callers may deliberately select
   `OutputPolicy::UniqueName` or `OutputPolicy::Overwrite`; overwrite is never
   inferred from the presence of an output path.
+- Output reservations and atomic/no-replace publication coordinate cooperating
+  rTools processes and protect against ordinary filesystem races. They do not
+  defend against a malicious process that already has write access to the same
+  output directory and deliberately replaces private namespace entries during
+  a commit. Isolate untrusted local processes with directory permissions or a
+  separate operating-system account.
 - Filesystem image outputs and `rtools config init --output` require every
   parent directory to exist already. Create those directories from a trusted
   path before invoking rTools; the writer will not create a missing parent.

@@ -31,10 +31,12 @@ pub enum OutputPolicy {
 /// Cooperating rTools writers hold an exclusive advisory lock on a `create_new`
 /// reservation. Publication itself does not depend on cooperation: create-only
 /// publication preserves any final-path entry installed by another writer.
-/// A same-user process that deliberately removes reservation pathnames while
-/// ignoring the advisory lock is outside the portable locking guarantee, but
-/// ownership changes are detected and foreign reservation entries are never
-/// intentionally removed.
+/// These guarantees cover cooperating rTools processes and ordinary filesystem
+/// races. A malicious process with write access to the same directory can
+/// deliberately replace private reservation, temporary, or retirement names
+/// while a commit is running and is outside the portable locking boundary.
+/// Callers that do not trust other same-account processes must isolate output
+/// directories with operating-system permissions or a separate account.
 #[derive(Debug)]
 pub struct PendingOutput {
     final_path: PathBuf,

@@ -38,6 +38,11 @@ rendering, ONNX inference, or fabricated batch execution.
 - Output reservation and a sibling temporary artifact precede validated atomic
   publication. Reserved Windows device names, ambiguous Windows drive/root
   relative paths, and symlinks in any output-parent ancestor are rejected.
+- Reservation and publication guarantees cover cooperating rTools processes
+  and ordinary filesystem races. A malicious same-account process with write
+  access to the output directory can alter private namespace entries and is
+  outside this boundary; use directory permissions or a separate account when
+  local processes are not mutually trusted.
 - PDF output parents must already exist. PDF processors never call path-based
   recursive directory creation on a requested output, because that operation
   can traverse an unvalidated linked ancestor before output policy runs. This
