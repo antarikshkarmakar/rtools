@@ -53,6 +53,10 @@ Endpoint schemas are strict:
   basename and are never used as a storage path. Absolute paths, traversal
   components, duplicate filenames, reserved names, and unusual characters
   cannot select or overwrite server files.
+- Image bytes must match the normalized supported filename extension; the
+  client-supplied multipart `Content-Type` is not trusted. A mismatch or an
+  unidentifiable/unsupported encoded image returns structured HTTP 400 before
+  processing or artifact publication.
 - Unknown, duplicate, missing, or invalid fields return structured HTTP 400.
 
 ## Available image endpoints
@@ -93,7 +97,8 @@ written because their REST encoders are not proven in Milestone 1. Other
 unknown or unsupported values return structured HTTP 400. Supplying `quality`
 for PNG, WebP, TIFF, BMP, or GIF is rejected rather than silently ignored.
 Setting both `preserve_metadata=true` and `strip_gps=true` is an invalid request
-and returns HTTP 400 before either unavailable capability is selected.
+and returns HTTP 400 before either unavailable capability is selected,
+regardless of the requested target format or multipart field order.
 
 Only `image.default_quality` currently affects the REST adapter, and only as
 the omitted JPEG quality. Other behavioral `[image]` encoder settings
@@ -221,12 +226,15 @@ never serialized. Safe machine-readable `details` are included only when
 applicable, such as `resource`, `actual`, and `limit` for resource-limit errors,
 or `operation_id` for an unavailable capability. Missing or malformed
 multipart boundaries use this JSON envelope rather than a plain-text extractor
-response. Malformed uploaded image or PDF data returns structured HTTP 400.
+response. Invalid path encoding, unknown routes, and methods that a route does
+not accept also use this envelope. Malformed uploaded image or PDF data returns
+structured HTTP 400.
 
-Common mappings are HTTP 400 for invalid input/unsupported formats, 409 for an
-existing output, 413 for configured resource limits, 501 for unavailable
-capabilities, and 500 for processing/configuration failures. Oversized
-multipart requests use the same structured resource-limit error shape.
+Common mappings are HTTP 400 for invalid input/unsupported formats, 404 for an
+unknown route or artifact, 405 for an unsupported method, 409 for an existing
+output, 413 for configured resource limits, 501 for unavailable capabilities,
+and 500 for processing/configuration failures. Oversized multipart requests
+use the same structured resource-limit error shape.
 
 ## Health check
 

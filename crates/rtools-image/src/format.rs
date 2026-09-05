@@ -218,6 +218,23 @@ pub(crate) fn read_bounded_snapshot(path: &Path, limits: &ResourceLimits) -> RTo
     Ok(encoded)
 }
 
+/// Identify an encoded image from its bytes under the configured input limit.
+///
+/// # Errors
+///
+/// Returns a resource-limit error for oversized input and an unsupported-format
+/// error when the encoded bytes do not identify a public rTools image format.
+pub fn identify_bounded_format(path: &Path, limits: &ResourceLimits) -> RToolsResult<ImageFormat> {
+    let encoded = read_bounded_snapshot(path, limits)?;
+    let actual = image::guess_format(&encoded)
+        .map_err(|_| RToolsError::unsupported_format("Cannot determine encoded image format"))?;
+    actual
+        .extensions_str()
+        .first()
+        .and_then(|extension| ImageFormat::from_extension(extension))
+        .ok_or_else(|| RToolsError::unsupported_format("Encoded image format is unsupported"))
+}
+
 /// Resolve one encoder format and one public MIME-bearing format from an
 /// output path before any output reservation is created.
 pub(crate) fn resolve_output_format(

@@ -1,7 +1,7 @@
 use super::artifact::ArtifactResponse;
 use super::{
     parse_bool, parse_multipart, parse_u32, parse_u8, require_multipart, ApiError, ApiResult,
-    FieldKind, IncomingFile, MultipartInput, RequestFiles,
+    FieldKind, IncomingFile, MultipartInput, ParsedMultipart, RequestFiles,
 };
 use axum::{extract::State, Json};
 use rtools_core::{FileInput, ImageFormat, Processor, RToolsError};
@@ -36,9 +36,12 @@ pub struct MetadataResponse {
     pub metadata: rtools_core::types::ImageMetadata,
 }
 
-fn image_format(value: &str) -> ApiResult<ImageFormat> {
-    let format = ImageFormat::from_extension(value)
-        .ok_or_else(|| ApiError::invalid(format!("Unsupported image format '{value}'")))?;
+fn parse_image_format(value: &str) -> ApiResult<ImageFormat> {
+    ImageFormat::from_extension(value)
+        .ok_or_else(|| ApiError::invalid(format!("Unsupported image format '{value}'")))
+}
+
+fn require_rest_image_format(format: ImageFormat) -> ApiResult<ImageFormat> {
     if matches!(format, ImageFormat::Avif | ImageFormat::Ico) {
         return Err(ApiError::unavailable(
             "api.image.format",
@@ -55,9 +58,26 @@ fn image_format(value: &str) -> ApiResult<ImageFormat> {
             | ImageFormat::Exr
             | ImageFormat::Pdf
     ) {
-        return Err(ApiError::from(RToolsError::unsupported_format(value)));
+        return Err(ApiError::from(RToolsError::unsupported_format(
+            format.mime_type(),
+        )));
     }
     Ok(format)
+}
+
+fn parse_metadata_flags(form: &mut ParsedMultipart) -> ApiResult<(bool, bool)> {
+    let preserve_metadata = parse_bool(
+        "preserve_metadata",
+        form.optional_text("preserve_metadata"),
+        false,
+    )?;
+    let strip_gps = parse_bool("strip_gps", form.optional_text("strip_gps"), false)?;
+    if preserve_metadata && strip_gps {
+        return Err(ApiError::invalid(
+            "preserve_metadata=true cannot be combined with strip_gps=true",
+        ));
+    }
+    Ok((preserve_metadata, strip_gps))
 }
 
 fn incoming_image(
@@ -72,7 +92,7 @@ fn incoming_image(
         .ok_or_else(|| {
             ApiError::invalid("Uploaded image filename requires a supported extension")
         })?;
-    let format = image_format(extension)?;
+    let format = require_rest_image_format(parse_image_format(extension)?)?;
     let path = request.write(index, format.extensions()[0], &upload.bytes)?;
     if let Err(error) = rtools_image::format::decode_bounded(&path, limits) {
         return match error.code() {
@@ -81,6 +101,13 @@ fn incoming_image(
             | rtools_core::ErrorCode::UnsupportedFormat => Err(error.into()),
             _ => Err(ApiError::invalid("Uploaded image data is malformed")),
         };
+    }
+    let actual = rtools_image::format::identify_bounded_format(&path, limits)
+        .map_err(|_| ApiError::invalid("Uploaded image data is malformed"))?;
+    if actual != format {
+        return Err(ApiError::invalid(
+            "Uploaded image bytes do not match the filename extension",
+        ));
     }
     let mut input = FileInput::from_path(path);
     input.format = Some(format);
@@ -122,6 +149,14 @@ pub async fn compress(
         state.config.api.max_upload_size,
     )
     .await?;
+    let requested_format = form
+        .optional_text("format")
+        .map(|value| parse_image_format(&value))
+        .transpose()?;
+    let (preserve_metadata, strip_gps) = parse_metadata_flags(&mut form)?;
+    let requested_format = requested_format
+        .map(require_rest_image_format)
+        .transpose()?;
     let requested_quality = form.optional_text("quality");
     let has_requested_quality = requested_quality.is_some();
     let quality = parse_u8(
@@ -132,21 +167,6 @@ pub async fn compress(
     if !(1..=100).contains(&quality) {
         return Err(ApiError::invalid(
             "Compression quality must be between 1 and 100",
-        ));
-    }
-    let requested_format = form
-        .optional_text("format")
-        .map(|value| image_format(&value))
-        .transpose()?;
-    let preserve_metadata = parse_bool(
-        "preserve_metadata",
-        form.optional_text("preserve_metadata"),
-        false,
-    )?;
-    let strip_gps = parse_bool("strip_gps", form.optional_text("strip_gps"), false)?;
-    if preserve_metadata && strip_gps {
-        return Err(ApiError::invalid(
-            "preserve_metadata=true cannot be combined with strip_gps=true",
         ));
     }
     if preserve_metadata {
@@ -225,11 +245,13 @@ pub async fn convert(
         state.config.api.max_upload_size,
     )
     .await?;
-    let target_format = image_format(
+    let target_format = parse_image_format(
         form.optional_text("format")
             .as_deref()
             .ok_or_else(|| ApiError::invalid("Multipart field 'format' is required"))?,
     )?;
+    let (preserve_metadata, strip_gps) = parse_metadata_flags(&mut form)?;
+    let target_format = require_rest_image_format(target_format)?;
     let requested_quality = form.optional_text("quality");
     let has_requested_quality = requested_quality.is_some();
     let quality = parse_u8(
@@ -240,17 +262,6 @@ pub async fn convert(
     if !(1..=100).contains(&quality) {
         return Err(ApiError::invalid(
             "Conversion quality must be between 1 and 100",
-        ));
-    }
-    let preserve_metadata = parse_bool(
-        "preserve_metadata",
-        form.optional_text("preserve_metadata"),
-        false,
-    )?;
-    let strip_gps = parse_bool("strip_gps", form.optional_text("strip_gps"), false)?;
-    if preserve_metadata && strip_gps {
-        return Err(ApiError::invalid(
-            "preserve_metadata=true cannot be combined with strip_gps=true",
         ));
     }
     if preserve_metadata || strip_gps {

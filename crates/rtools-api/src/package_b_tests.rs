@@ -87,6 +87,14 @@ fn png_bytes(width: u32, height: u32) -> Vec<u8> {
     bytes.into_inner()
 }
 
+fn jpeg_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(width, height)
+        .write_to(&mut bytes, ImageFormat::Jpeg)
+        .unwrap();
+    bytes.into_inner()
+}
+
 fn pdf_bytes() -> Vec<u8> {
     let mut document = Document::with_version("1.5");
     let pages_id = document.new_object_id();
@@ -1067,31 +1075,141 @@ async fn implemented_endpoints_wrap_missing_or_invalid_multipart_boundaries_as_j
 #[tokio::test]
 async fn incompatible_metadata_flags_are_invalid_before_capability_selection() {
     let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
-    let (status, document) = json_response(
-        &app(),
-        multipart(
+    for path in ["/api/v1/image/compress", "/api/v1/image/convert"] {
+        for target in ["avif", "ico"] {
+            for flags_first in [true, false] {
+                let parts = if flags_first {
+                    vec![
+                        Part::Text {
+                            field: "preserve_metadata",
+                            value: "true",
+                        },
+                        Part::Text {
+                            field: "strip_gps",
+                            value: "true",
+                        },
+                        Part::Text {
+                            field: "format",
+                            value: target,
+                        },
+                        Part::File {
+                            field: "file",
+                            name: "input.png",
+                            content_type: "image/png",
+                            bytes: png_bytes(2, 2),
+                        },
+                    ]
+                } else {
+                    vec![
+                        Part::Text {
+                            field: "format",
+                            value: target,
+                        },
+                        Part::File {
+                            field: "file",
+                            name: "input.png",
+                            content_type: "image/png",
+                            bytes: png_bytes(2, 2),
+                        },
+                        Part::Text {
+                            field: "strip_gps",
+                            value: "true",
+                        },
+                        Part::Text {
+                            field: "preserve_metadata",
+                            value: "true",
+                        },
+                    ]
+                };
+                let before = request_directories();
+                let (status, document) = json_response(&app(), multipart(path, parts)).await;
+                assert_structured(status, &document, StatusCode::BAD_REQUEST);
+                assert_eq!(document["code"], "INVALID_INPUT");
+                assert_eq!(request_directories(), before);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn ai_rejects_declared_extension_and_encoded_format_mismatches() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    for path in [
+        "/api/v1/ai/organize",
+        "/api/v1/ai/rename",
+        "/api/v1/ai/duplicates",
+    ] {
+        for name in ["spoof.png", "spoof.heic", "spoof.unknown"] {
+            let before = request_directories();
+            let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+            let router = build_router_with_state(state.clone(), 1024 * 1024);
+            let (status, document) = json_response(
+                &router,
+                multipart(
+                    path,
+                    vec![Part::File {
+                        field: "files",
+                        name,
+                        content_type: "image/png",
+                        bytes: jpeg_bytes(4, 4),
+                    }],
+                ),
+            )
+            .await;
+            assert_structured(status, &document, StatusCode::BAD_REQUEST);
+            let serialized = document.to_string();
+            assert!(!serialized.contains("rtools-api-request-"));
+            assert!(state.artifacts.records.read().await.is_empty());
+            assert_eq!(
+                std::fs::read_dir(state.artifacts.root.path())
+                    .unwrap()
+                    .count(),
+                0
+            );
+            assert_eq!(request_directories(), before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn framework_routing_rejections_use_the_structured_json_envelope() {
+    for (method, uri, expected) in [
+        (Method::GET, "/api/v1/does-not-exist", StatusCode::NOT_FOUND),
+        (
+            Method::GET,
             "/api/v1/image/compress",
-            vec![
-                Part::Text {
-                    field: "preserve_metadata",
-                    value: "true",
-                },
-                Part::Text {
-                    field: "strip_gps",
-                    value: "true",
-                },
-                Part::File {
-                    field: "file",
-                    name: "input.png",
-                    content_type: "image/png",
-                    bytes: png_bytes(2, 2),
-                },
-            ],
+            StatusCode::METHOD_NOT_ALLOWED,
         ),
-    )
-    .await;
-    assert_structured(status, &document, StatusCode::BAD_REQUEST);
-    assert_eq!(document["code"], "INVALID_INPUT");
+        (
+            Method::GET,
+            "/api/v1/artifacts/%FF",
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{uri}");
+        assert_eq!(
+            response.headers()[CONTENT_TYPE],
+            "application/json",
+            "{uri}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let document: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(document["success"], false);
+        assert!(document["code"].is_string());
+        let serialized = document.to_string();
+        assert!(!serialized.contains("/tmp/"));
+        assert!(!serialized.contains("rtools-api-"));
+    }
 }
 
 #[tokio::test]

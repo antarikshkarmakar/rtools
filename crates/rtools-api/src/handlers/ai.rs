@@ -45,6 +45,13 @@ fn incoming_image(
             _ => Err(ApiError::invalid("Uploaded image data is malformed")),
         };
     }
+    let actual = rtools_image::format::identify_bounded_format(&path, limits)
+        .map_err(|_| ApiError::invalid("Uploaded image data is malformed"))?;
+    if actual != format {
+        return Err(ApiError::invalid(
+            "Uploaded image bytes do not match the filename extension",
+        ));
+    }
     let mut input = FileInput::from_path(path);
     input.format = Some(format);
     input.name = Some(upload.client_name.clone());

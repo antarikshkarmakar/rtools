@@ -1,7 +1,7 @@
 use super::{ApiError, ApiResult};
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, State},
+    extract::{rejection::PathRejection, Path, State},
     http::{header, HeaderValue, Response},
 };
 use futures_util::stream;
@@ -207,8 +207,9 @@ fn content_disposition(name: &str) -> ApiResult<HeaderValue> {
 #[allow(clippy::significant_drop_tightening)] // The permit intentionally lives in the body stream.
 pub async fn download(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    path: Result<Path<String>, PathRejection>,
 ) -> ApiResult<Response<Body>> {
+    let Path(id) = path.map_err(|_| ApiError::invalid("Invalid artifact identifier"))?;
     if !valid_artifact_id(&id) {
         return Err(ApiError::invalid("Invalid artifact identifier"));
     }

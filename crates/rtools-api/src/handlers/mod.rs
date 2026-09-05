@@ -55,6 +55,13 @@ impl ApiError {
         }
     }
 
+    pub fn method_not_allowed(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::METHOD_NOT_ALLOWED,
+            error: RToolsError::invalid_input(message),
+        }
+    }
+
     pub const fn from_error(error: RToolsError) -> Self {
         let status = match error.code() {
             ErrorCode::InvalidInput | ErrorCode::UnsupportedFormat => StatusCode::BAD_REQUEST,

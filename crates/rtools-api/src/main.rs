@@ -108,9 +108,19 @@ fn build_router_with_state(state: Arc<AppState>, upload_limit: usize) -> Router 
         .route("/api/v1/ai/rename", post(handlers::ai::rename))
         .route("/api/v1/ai/alt-text", post(handlers::ai::alt_text))
         .route("/api/v1/ai/duplicates", post(handlers::ai::duplicates))
+        .fallback(api_not_found)
+        .method_not_allowed_fallback(api_method_not_allowed)
         .layer(cors)
         .layer(DefaultBodyLimit::max(upload_limit))
         .with_state(state)
+}
+
+async fn api_not_found() -> handlers::ApiError {
+    handlers::ApiError::not_found("API route does not exist")
+}
+
+async fn api_method_not_allowed() -> handlers::ApiError {
+    handlers::ApiError::method_not_allowed("HTTP method is not allowed for this route")
 }
 
 async fn serve_with_shutdown<F>(
