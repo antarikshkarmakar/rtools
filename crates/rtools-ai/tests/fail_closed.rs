@@ -4,7 +4,9 @@ use rtools_ai::organize::{OrganizeConfig, OrganizeStrategy};
 use rtools_ai::rename::RenameConfig;
 use rtools_ai::sort::{SortConfig, SortProcessor};
 use rtools_ai::{OrganizeProcessor, RenameProcessor};
-use rtools_core::{ErrorCode, FileInput, OutputDestination, Processor, RToolsError};
+#[cfg(unix)]
+use rtools_core::OutputDestination;
+use rtools_core::{ErrorCode, FileInput, Processor, RToolsError};
 
 fn assert_unavailable(error: &RToolsError, operation: &str) {
     assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
