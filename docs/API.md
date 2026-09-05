@@ -1,481 +1,205 @@
-# API Reference
+# REST API Reference
 
-## Base URL
+## Milestone 1 transport and lifecycle
 
-```
-http://localhost:8080
-```
+The REST server listens on `http://127.0.0.1:8080` by default. It currently
+supports plaintext HTTP, no authentication, and wildcard CORS only. This makes
+the default suitable for loopback development, not direct exposure to an
+untrusted network. Configuration fails closed if authentication, an API key,
+TLS material, TLS, or a custom CORS allowlist is requested; none of those
+settings is silently ignored.
 
-## Authentication
+There is no application-level rate limiter, job queue, durable artifact store,
+or retention guarantee in Milestone 1. `api.max_upload_size` is enforced as the
+maximum encoded HTTP request-body size (100 MiB by default), including
+multipart framing and scalar fields.
 
-API key authentication (optional):
+Successful writing operations return an opaque artifact object:
 
-```bash
-curl -H "X-API-Key: your-api-key" http://localhost:8080/api/v1/image/compress
-```
-
-## Image Endpoints
-
-### POST /api/v1/image/compress
-
-Compress an image with quality preservation.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/image/compress \
-  -F "file=@photo.jpg" \
-  -F "quality=85" \
-  -F "format=webp"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file to compress |
-| quality | Integer | No | 85 | Quality (1-100) |
-| format | String | No | - | Output format (jpg, png, webp, avif) |
-| preserve_metadata | Boolean | No | true | Keep EXIF data |
-| strip_gps | Boolean | No | false | Remove GPS coordinates |
-
-**Response:**
 ```json
 {
-  "success": true,
-  "message": "Compressed photo.jpg",
-  "output_path": "/tmp/rtools/photo_compressed.jpg",
-  "stats": {
-    "input_size": 5242880,
-    "output_size": 1048576,
-    "compression_ratio": 0.2,
-    "processing_time_ms": 150
+  "artifact": {
+    "id": "artifact-random-token.png",
+    "download_url": "/api/v1/artifacts/artifact-random-token.png",
+    "name": "photo_compressed.png",
+    "media_type": "image/png"
   }
 }
 ```
 
-### POST /api/v1/image/convert
+Use `GET /api/v1/artifacts/:id` while the same server process is running. The
+response uses `Cache-Control: private, no-store`. Artifacts live only in a
+server-owned temporary directory and are deleted when that server instance
+shuts down. Public responses never contain host filesystem paths. Clients that
+need durable storage must download and store the bytes themselves.
 
-Convert image to different format.
+## Multipart rules
 
-**Request:**
+Endpoint schemas are strict:
+
+- File and scalar field names must match the tables below.
+- A singular file or scalar field may appear only once. `files` may repeat.
+- Scalar fields must be valid UTF-8 and use the documented integer, number,
+  boolean (`true` or `false`), or enum syntax. Non-finite numbers are rejected.
+- Uploaded files require a filename. Client filenames are reduced to a display
+  basename and are never used as a storage path. Absolute paths, traversal
+  components, duplicate filenames, reserved names, and unusual characters
+  cannot select or overwrite server files.
+- Unknown, duplicate, missing, or invalid fields return structured HTTP 400.
+
+## Available image endpoints
+
+### `POST /api/v1/image/compress`
+
+| Field | Type | Required | Default | Values |
+|---|---|---:|---|---|
+| `file` | file | yes | - | Supported image filename extension required |
+| `quality` | integer | no | `image.default_quality` | 1-100 |
+| `format` | string | no | input format | `jpg`, `jpeg`, `png`, `webp`, `avif`, `tiff`, `bmp`, `gif`, `ico` |
+| `preserve_metadata` | boolean | no | `false` | `true` returns `CAPABILITY_UNAVAILABLE` |
+| `strip_gps` | boolean | no | `false` | `true` returns `CAPABILITY_UNAVAILABLE` |
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/image/convert \
-  -F "file=@photo.jpg" \
-  -F "format=webp" \
-  -F "quality=90"
+curl -X POST http://127.0.0.1:8080/api/v1/image/compress \
+  -F "file=@photo.jpg" -F "quality=85" -F "format=webp"
 ```
 
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file to convert |
-| format | String | Yes | - | Target format (webp, png, jpg, avif, tiff) |
-| quality | Integer | No | 85 | Quality for lossy formats |
+The JSON response includes `success`, `message`, `artifact`, optional `stats`,
+and metadata/orientation `warnings` when present.
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Converted photo.jpg to webp",
-  "output_path": "/tmp/rtools/photo.webp"
-}
-```
+### `POST /api/v1/image/convert`
 
-### POST /api/v1/image/resize
+| Field | Type | Required | Default | Values |
+|---|---|---:|---|---|
+| `file` | file | yes | - | Supported image filename extension required |
+| `format` | string | yes | - | Same formats as image compress |
+| `quality` | integer | no | `image.default_quality` | 1-100 |
+| `preserve_metadata` | boolean | no | `false` | `true` is unavailable |
+| `strip_gps` | boolean | no | `false` | `true` is unavailable |
 
-Resize image by dimensions.
+The JSON response includes `success`, `message`, `artifact`, and optional
+`warnings`.
 
-**Request:**
+### `POST /api/v1/image/resize`
+
+| Field | Type | Required | Default | Values |
+|---|---|---:|---|---|
+| `file` | file | yes | - | Supported image filename extension required |
+| `width` | integer | conditionally | - | Positive pixel width |
+| `height` | integer | conditionally | - | Positive pixel height |
+| `maintain_aspect` | boolean | no | `true` | `true` or `false` |
+
+At least one of `width` or `height` is required. The JSON response includes an
+opaque `artifact`; resize output and decoded input limits come from the shared
+resource configuration.
+
+### `POST /api/v1/image/metadata`
+
+| Field | Type | Required | Default |
+|---|---|---:|---|
+| `file` | file | yes | - |
+| `include_exif` | boolean | no | `true` |
+| `include_dimensions` | boolean | no | `true` |
+| `include_file_info` | boolean | no | `true` |
+
+This read-only endpoint returns `success` and `metadata`; it creates no
+download artifact.
+
+## Available PDF endpoints
+
+### `POST /api/v1/pdf/merge`
+
+Repeat the `files` field at least twice. Order in the multipart body is merge
+order. No other fields are accepted.
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/image/resize \
-  -F "file=@photo.jpg" \
-  -F "width=1920" \
-  -F "height=1080" \
-  -F "maintain_aspect=true"
+curl -X POST http://127.0.0.1:8080/api/v1/pdf/merge \
+  -F "files=@first.pdf" -F "files=@second.pdf"
 ```
 
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file to resize |
-| width | Integer | No | - | Target width in pixels |
-| height | Integer | No | - | Target height in pixels |
-| maintain_aspect | Boolean | No | true | Maintain aspect ratio |
+The response artifact is a downloadable PDF named `merged.pdf`.
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Resized photo.jpg",
-  "output_path": "/tmp/rtools/photo_1920x1080.jpg"
-}
-```
+### `POST /api/v1/pdf/compress`
 
-### POST /api/v1/image/crop
+| Field | Type | Required | Default | Values |
+|---|---|---:|---|---|
+| `file` | file | yes | - | PDF |
+| `level` | string | no | `pdf.compression_level` (`medium` by default) | Only `medium` is effective in Milestone 1 |
+| `remove_metadata` | boolean | no | `false` | `true` or `false` |
 
-Crop image to specific region.
+`light` and `heavy` return `CAPABILITY_UNAVAILABLE` rather than pretending to
+change behavior. The response artifact is a downloadable PDF.
 
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/image/crop \
-  -F "file=@photo.jpg" \
-  -F "region=100,100,800,600" \
-  -F "ratio=16:9" \
-  -F "gravity=center"
-```
+## Available AI endpoints
 
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file to crop |
-| region | String | No | - | Crop region (x,y,width,height) |
-| ratio | String | No | - | Aspect ratio (16:9, 4:3, 1:1) |
-| gravity | String | No | center | Gravity point (center, north, south, etc.) |
+### `POST /api/v1/ai/organize`
 
-### POST /api/v1/image/watermark
+Repeat `files` one or more times. Optional `strategy` defaults to `date`.
+Recognized strategies `subject`, `type`, and `gps` return
+`CAPABILITY_UNAVAILABLE` before request files are written; any other value is
+invalid and returns HTTP 400. Successful responses contain an `artifacts`
+array. Date organization is experimental.
 
-Add watermark to image.
+### `POST /api/v1/ai/rename`
 
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/image/watermark \
-  -F "file=@photo.jpg" \
-  -F "text=© 2024 My Company" \
-  -F "position=bottom-right" \
-  -F "opacity=0.5"
-```
+| Field | Type | Required | Default |
+|---|---|---:|---|
+| `files` | file(s) | yes | - |
+| `pattern` | string | no | `{date}_{name}_{index}` |
+| `start_number` | integer | no | `1` |
 
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file |
-| text | String | No | - | Watermark text |
-| image | File | No | - | Watermark image |
-| position | String | No | bottom-right | Position (topleft, topright, bottomleft, bottomright, center) |
-| opacity | Float | No | 0.5 | Opacity (0.0-1.0) |
+Supported deterministic tokens are `{date}`, `{time}`, `{datetime}`, `{index}`,
+`{name}`, and `{ext}`. The pattern must produce one portable filename; paths,
+reserved device names, malformed tokens, and the AI `{subject}` token are
+rejected. Successful responses contain `names` and downloadable `artifacts`.
 
-### POST /api/v1/image/filter
+### `POST /api/v1/ai/duplicates`
 
-Apply film filter to image.
+| Field | Type | Required | Default | Values |
+|---|---|---:|---|---|
+| `files` | file(s) | yes | - | One or more images |
+| `threshold` | number | no | `0.9` | Finite value from 0.0 through 1.0 |
+| `algorithm` | string | no | `perceptual` | `average`, `perceptual`, `difference` |
 
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/image/filter \
-  -F "file=@photo.jpg" \
-  -F "preset=kodak-portra-400" \
-  -F "strength=1.0"
-```
+This experimental endpoint is report-only. It returns counts and never moves,
+deletes, or links uploaded files.
 
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file |
-| preset | String | Yes | - | Filter preset (kodak-portra-400, fuji-velvia-50, etc.) |
-| strength | Float | No | 1.0 | Filter strength (0.0-1.0) |
+## Unavailable REST adapters
 
-**Available Presets:**
-- `kodak-portra-400` / `portra`
-- `kodak-gold-200` / `gold`
-- `kodak-ektar-100` / `ektar`
-- `fuji-pro-400h` / `fuji`
-- `fuji-velvia-50` / `velvia`
-- `fuji-superia-400` / `superia`
-- `polaroid-sx70` / `polaroid`
-- `polaroid-600`
-- `ilford-hp5` / `hp5`
-- `ilford-fp4` / `fp4`
-- `trix-400` / `trix`
-- `cinestill-800t` / `cinestill`
-- `lomography-400` / `lomo`
-- `agfa-vista-200` / `agfa`
+These routes return HTTP 501 with `CAPABILITY_UNAVAILABLE` before parsing or
+writing an uploaded body:
 
-### POST /api/v1/image/metadata
+- `POST /api/v1/image/crop`
+- `POST /api/v1/image/filter`
+- `POST /api/v1/image/watermark`
+- `POST /api/v1/pdf/split`
+- `POST /api/v1/pdf/ocr`
+- `POST /api/v1/ai/alt-text`
 
-Get image metadata and EXIF data.
+Their corresponding CLI/core operations may have a different capability state;
+the statement here is specifically about the Milestone-1 REST adapter.
 
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/image/metadata \
-  -F "file=@photo.jpg"
-```
+## Errors
 
-**Response:**
-```json
-{
-  "success": true,
-  "metadata": {
-    "width": 4032,
-    "height": 3024,
-    "format": "Jpeg",
-    "file_size": 5242880,
-    "color_space": "Rgb8",
-    "exif": {
-      "camera_make": "Apple",
-      "camera_model": "iPhone 15 Pro",
-      "datetime_original": "2024-01-15 14:30:22",
-      "gps_latitude": 37.7749,
-      "gps_longitude": -122.4194,
-      "exposure_time": "1/125",
-      "f_number": 1.8,
-      "iso": 100,
-      "focal_length": 6.86
-    }
-  }
-}
-```
-
-## PDF Endpoints
-
-### POST /api/v1/pdf/merge
-
-Merge multiple PDF files.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/pdf/merge \
-  -F "files=@file1.pdf" \
-  -F "files=@file2.pdf" \
-  -F "files=@file3.pdf"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| files | File[] | Yes | - | PDF files to merge (minimum 2) |
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Merged 3 PDFs",
-  "output_path": "/tmp/rtools/merged.pdf"
-}
-```
-
-### POST /api/v1/pdf/compress
-
-Compress PDF file size.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/pdf/compress \
-  -F "file=@document.pdf" \
-  -F "level=medium"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | PDF file to compress |
-| level | String | No | medium | Compression level (light, medium, heavy) |
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Compressed document.pdf",
-  "output_path": "/tmp/rtools/document_compressed.pdf",
-  "stats": {
-    "input_size": 10485760,
-    "output_size": 3145728,
-    "compression_ratio": 0.3
-  }
-}
-```
-
-### POST /api/v1/pdf/split
-
-Split PDF into individual pages.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/pdf/split \
-  -F "file=@document.pdf" \
-  -F "pages=1-5,10,15-20"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | PDF file to split |
-| pages | String | No | all | Page ranges (e.g., "1-5,10,15-20") |
-
-### POST /api/v1/pdf/ocr
-
-Extract text from scanned PDF.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/pdf/ocr \
-  -F "file=@scanned.pdf" \
-  -F "language=eng" \
-  -F "dpi=300"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | PDF file to OCR |
-| language | String | No | eng | Tesseract language |
-| dpi | Integer | No | 300 | Resolution for OCR |
-
-## AI Endpoints
-
-### POST /api/v1/ai/organize
-
-AI-organize photos into folders.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/ai/organize \
-  -F "files=@photo1.jpg" \
-  -F "files=@photo2.jpg" \
-  -F "files=@photo3.jpg" \
-  -F "strategy=date"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| files | File[] | Yes | - | Photos to organize |
-| strategy | String | No | date | Strategy (date, subject, location) |
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Organized 3 photos",
-  "results": {
-    "count": 3,
-    "folders_created": ["2024/01", "2024/02"]
-  }
-}
-```
-
-### POST /api/v1/ai/rename
-
-AI-rename photos with descriptive names.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/ai/rename \
-  -F "files=@IMG_001.jpg" \
-  -F "files=@IMG_002.jpg" \
-  -F "pattern={date}_{subject}_{index}"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| files | File[] | Yes | - | Photos to rename |
-| pattern | String | No | {date}_{subject}_{index} | Filename pattern |
-
-**Pattern Variables:**
-- `{date}` - Date (YYYYMMDD)
-- `{time}` - Time (HHMMSS)
-- `{datetime}` - Date and time
-- `{subject}` - AI-detected subject
-- `{index}` - Sequential number
-- `{name}` - Original filename
-
-### POST /api/v1/ai/alt-text
-
-Generate accessibility alt text.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/ai/alt-text \
-  -F "file=@photo.jpg" \
-  -F "language=en"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| file | File | Yes | - | Image file |
-| language | String | No | en | Language code |
-
-**Response:**
-```json
-{
-  "success": true,
-  "results": [
-    {
-      "path": "photo.jpg",
-      "alt_text": "A golden retriever playing fetch in a sunny park",
-      "confidence": 0.92
-    }
-  ]
-}
-```
-
-### POST /api/v1/ai/duplicates
-
-Find duplicate images by visual similarity.
-
-**Request:**
-```bash
-curl -X POST http://localhost:8080/api/v1/ai/duplicates \
-  -F "files=@photo1.jpg" \
-  -F "files=@photo2.jpg" \
-  -F "files=@photo3.jpg" \
-  -F "threshold=0.9"
-```
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| files | File[] | Yes | - | Photos to check |
-| threshold | Float | No | 0.9 | Similarity threshold (0.0-1.0) |
-
-**Response:**
-```json
-{
-  "success": true,
-  "results": {
-    "groups": 2,
-    "originals": 1,
-    "duplicates": 2
-  }
-}
-```
-
-## Error Responses
-
-All endpoints return errors in this format:
+Handler errors are JSON:
 
 ```json
 {
-  "error": {
-    "code": "INVALID_INPUT",
-    "message": "Quality must be between 1 and 100"
-  }
+  "success": false,
+  "code": "INVALID_INPUT",
+  "message": "Invalid input: Multipart field 'width' must be an integer"
 }
 ```
 
-**Error Codes:**
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| INVALID_INPUT | 400 | Invalid request parameters |
-| FILE_NOT_FOUND | 404 | Input file not found |
-| UNSUPPORTED_FORMAT | 400 | File format not supported |
-| PROCESSING_ERROR | 500 | Error during processing |
-| TIMEOUT | 504 | Processing timeout |
-| RATE_LIMITED | 429 | Too many requests |
+Common mappings are HTTP 400 for invalid input/unsupported formats, 409 for an
+existing output, 413 for configured resource limits, 501 for unavailable
+capabilities, and 500 for processing/configuration failures. Oversized
+multipart requests use the same structured resource-limit error shape.
 
-## Rate Limiting
+## Health check
 
-Default limits:
-- 100 requests per minute
-- 10 concurrent uploads
-- 100MB max file size
+`GET /health` returns:
 
-## Health Check
-
-```bash
-curl http://localhost:8080/health
-```
-
-**Response:**
 ```json
 {
   "status": "ok",

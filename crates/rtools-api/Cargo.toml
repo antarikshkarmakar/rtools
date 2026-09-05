@@ -33,6 +33,7 @@ tempfile = "3.8"
 tower = "0.5"
 image = { workspace = true }
 base64 = "0.22"
+lopdf = { workspace = true }
 
 [lints]
 workspace = true

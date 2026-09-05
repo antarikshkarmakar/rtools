@@ -1,248 +1,310 @@
-use axum::{
-    extract::{Multipart, State},
-    http::StatusCode,
-    Json,
+use super::artifact::ArtifactResponse;
+use super::{
+    parse_f64, parse_multipart, parse_u32, ApiError, ApiResult, FieldKind, IncomingFile,
+    RequestFiles,
 };
-use rtools_core::{ErrorCode, Processor, RToolsError};
+use axum::{extract::State, Json};
+use rtools_core::{FileInput, ImageFormat, Processor};
 use serde::Serialize;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::AppState;
+
+const NAME_PLACEHOLDER: &str = "{name}";
 
 #[derive(Serialize)]
 pub struct AiResponse {
     pub success: bool,
     pub message: String,
-    pub results: Option<serde_json::Value>,
+    pub results: serde_json::Value,
 }
 
-#[derive(Serialize)]
-pub struct AiErrorResponse {
-    pub success: bool,
-    pub code: ErrorCode,
-    pub message: String,
+fn incoming_image(
+    request: &RequestFiles,
+    upload: IncomingFile,
+    index: usize,
+) -> ApiResult<(FileInput, String, ImageFormat)> {
+    let extension = Path::new(&upload.client_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            ApiError::invalid("Uploaded image filename requires a supported extension")
+        })?;
+    let format = ImageFormat::from_extension(extension)
+        .filter(|format| !matches!(format, ImageFormat::Pdf))
+        .ok_or_else(|| ApiError::invalid(format!("Unsupported image format '{extension}'")))?;
+    let path = request.write(index, format.extensions()[0], &upload.bytes)?;
+    let mut input = FileInput::from_path(path);
+    input.format = Some(format);
+    input.name = Some(upload.client_name.clone());
+    input.mime_type = Some(format.mime_type().to_string());
+    Ok((input, upload.client_name, format))
 }
 
-fn ai_error(status: StatusCode, error: &RToolsError) -> (StatusCode, Json<AiErrorResponse>) {
-    (
-        status,
-        Json(AiErrorResponse {
-            success: false,
-            code: error.code(),
-            message: error.to_string(),
-        }),
-    )
+fn artifact_path(output: &rtools_core::FileOutput) -> ApiResult<&std::path::PathBuf> {
+    output
+        .destination
+        .as_path()
+        .ok_or_else(|| ApiError::invalid("Processor did not return a path-based artifact"))
+}
+
+fn safe_output_stem(name: &str) -> String {
+    Path::new(name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upload")
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn validate_rest_rename_pattern(pattern: &str) -> ApiResult<()> {
+    if pattern == "."
+        || pattern == ".."
+        || pattern.ends_with(['.', ' '])
+        || pattern
+            .chars()
+            .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
+    {
+        return Err(ApiError::invalid(
+            "Rename pattern must produce one portable filename, not a path",
+        ));
+    }
+    let stem = pattern
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                suffix.len() == 1
+                    && suffix
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|digit| (b'1'..=b'9').contains(digit))
+            });
+    if reserved {
+        return Err(ApiError::invalid(
+            "Rename pattern resolves to a reserved portable filename",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn organize(
-    State(_state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Json<AiResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut files = Vec::new();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        files.push(rtools_core::FileInput::from_path(temp_path));
+    State(state): State<Arc<AppState>>,
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<AiResponse>> {
+    let mut form = parse_multipart(
+        multipart,
+        &[("files", FieldKind::Files), ("strategy", FieldKind::Text)],
+        state.config.api.max_upload_size,
+    )
+    .await?;
+    let strategy = form
+        .optional_text("strategy")
+        .unwrap_or_else(|| "date".to_string());
+    match strategy.as_str() {
+        "date" => {}
+        "subject" | "type" | "gps" => {
+            return Err(ApiError::unavailable(
+                &format!("ai.organize.{strategy}"),
+                "Only date organization is implemented",
+                "Use strategy=date",
+            ));
+        }
+        _ => {
+            return Err(ApiError::invalid(format!(
+                "Unsupported organization strategy '{strategy}'"
+            )));
+        }
     }
-
-    let config = rtools_ai::organize::OrganizeConfig {
-        output_dir: std::env::temp_dir().join("organized"),
-        strategy: rtools_ai::organize::OrganizeStrategy::ByDate,
-        by_date: true,
-        by_subject: false,
-        dry_run: false,
-    };
-
-    let processor = rtools_ai::OrganizeProcessor;
-    match processor.process(files, config) {
-        Ok(outputs) => Ok(Json(AiResponse {
-            success: true,
-            message: format!("Organized {} files", outputs.len()),
-            results: Some(serde_json::json!({
-                "count": outputs.len(),
-            })),
-        })),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    let uploads = form.files("files")?;
+    state.config.limits.check_batch_items(
+        u64::try_from(uploads.len()).map_err(|_| ApiError::invalid("Too many input files"))?,
+    )?;
+    let request = RequestFiles::new()?;
+    let mut inputs = Vec::with_capacity(uploads.len());
+    let mut metadata = Vec::with_capacity(uploads.len());
+    for (index, upload) in uploads.into_iter().enumerate() {
+        let (input, name, format) = incoming_image(&request, upload, index)?;
+        inputs.push(input);
+        metadata.push((name, format));
     }
+    let outputs = rtools_ai::OrganizeProcessor.process(
+        inputs,
+        rtools_ai::organize::OrganizeConfig {
+            output_dir: request.path().join("organized"),
+            strategy: rtools_ai::organize::OrganizeStrategy::ByDate,
+            by_date: true,
+            by_subject: false,
+            dry_run: false,
+        },
+    )?;
+    let mut artifacts = Vec::with_capacity(outputs.len());
+    for (output, (name, format)) in outputs.iter().zip(metadata) {
+        artifacts.push(state.artifacts.publish(
+            artifact_path(output)?,
+            name,
+            format.mime_type().to_string(),
+        )?);
+    }
+    Ok(Json(AiResponse {
+        success: true,
+        message: format!("Organized {} files", artifacts.len()),
+        results: serde_json::json!({ "artifacts": artifacts }),
+    }))
 }
 
 pub async fn rename(
-    State(_state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Json<AiResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut files = Vec::new();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        files.push(rtools_core::FileInput::from_path(temp_path));
+    State(state): State<Arc<AppState>>,
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<AiResponse>> {
+    let mut form = parse_multipart(
+        multipart,
+        &[
+            ("files", FieldKind::Files),
+            ("pattern", FieldKind::Text),
+            ("start_number", FieldKind::Text),
+        ],
+        state.config.api.max_upload_size,
+    )
+    .await?;
+    let pattern = form
+        .optional_text("pattern")
+        .unwrap_or_else(|| "{date}_{name}_{index}".to_string());
+    rtools_ai::rename::validate_deterministic_pattern(&pattern)?;
+    validate_rest_rename_pattern(&pattern)?;
+    let start_number = parse_u32("start_number", form.optional_text("start_number"))?.unwrap_or(1);
+    let uploads = form.files("files")?;
+    state.config.limits.check_batch_items(
+        u64::try_from(uploads.len()).map_err(|_| ApiError::invalid("Too many input files"))?,
+    )?;
+    let request = RequestFiles::new()?;
+    let mut staged = Vec::with_capacity(uploads.len());
+    for (index, upload) in uploads.into_iter().enumerate() {
+        staged.push(incoming_image(&request, upload, index)?);
     }
 
-    let config = rtools_ai::rename::RenameConfig {
-        pattern: "{date}_{name}_{index}".to_string(),
-        output_dir: None,
-        start_number: 1,
-        use_ai_descriptions: false,
-        dry_run: false,
-    };
-
-    let processor = rtools_ai::RenameProcessor;
-    match processor.process(files, config) {
-        Ok(outputs) => {
-            let names: Vec<String> = outputs.iter().filter_map(|o| o.name.clone()).collect();
-            Ok(Json(AiResponse {
-                success: true,
-                message: format!("Renamed {} files", names.len()),
-                results: Some(serde_json::json!({
-                    "names": names,
-                })),
-            }))
-        }
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    let mut completed = Vec::with_capacity(staged.len());
+    for (offset, (input, client_name, format)) in staged.into_iter().enumerate() {
+        let offset = u32::try_from(offset)
+            .map_err(|_| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
+        let index = start_number
+            .checked_add(offset)
+            .ok_or_else(|| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
+        let effective_pattern = pattern.replace(NAME_PLACEHOLDER, &safe_output_stem(&client_name));
+        validate_rest_rename_pattern(&effective_pattern)?;
+        let mut outputs = rtools_ai::RenameProcessor.process(
+            vec![input],
+            rtools_ai::rename::RenameConfig {
+                pattern: effective_pattern,
+                output_dir: None,
+                start_number: index,
+                use_ai_descriptions: false,
+                dry_run: false,
+            },
+        )?;
+        let output = outputs
+            .pop()
+            .ok_or_else(|| ApiError::invalid("Rename processor returned no artifact"))?;
+        completed.push((output, client_name, format));
     }
-}
-
-#[derive(Serialize)]
-pub struct AltTextResult {
-    pub path: String,
-    pub alt_text: String,
-    pub confidence: f64,
-}
-
-pub async fn alt_text(
-    State(_state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Json<AiResponse>, (StatusCode, Json<AiErrorResponse>)> {
-    let temp_dir = tempfile::Builder::new()
-        .prefix("rtools-api-alt-text-")
-        .tempdir()
-        .map_err(|error| ai_error(StatusCode::INTERNAL_SERVER_ERROR, &RToolsError::from(error)))?;
-    let mut results = Vec::new();
-
-    while let Some(field) = multipart.next_field().await.map_err(|error| {
-        ai_error(
-            StatusCode::BAD_REQUEST,
-            &RToolsError::invalid_input(error.to_string()),
-        )
-    })? {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field.bytes().await.map_err(|error| {
-            ai_error(
-                StatusCode::BAD_REQUEST,
-                &RToolsError::invalid_input(error.to_string()),
-            )
-        })?;
-
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data).map_err(|error| {
-            ai_error(StatusCode::INTERNAL_SERVER_ERROR, &RToolsError::from(error))
-        })?;
-
-        let input = rtools_core::FileInput::from_path(temp_path);
-        let config = rtools_ai::alt_text::AltTextConfig::default();
-
-        let processor = rtools_ai::AltTextProcessor;
-        match processor.process(input, config) {
-            Ok(result) => {
-                results.push(AltTextResult {
-                    path: file_name,
-                    alt_text: result.alt_text,
-                    confidence: result.confidence,
-                });
-            }
-            Err(e) => {
-                return Err(ai_error(StatusCode::INTERNAL_SERVER_ERROR, &e));
-            }
-        }
+    let mut artifacts = Vec::<ArtifactResponse>::with_capacity(completed.len());
+    let mut names = Vec::with_capacity(completed.len());
+    for (output, _client_name, format) in &completed {
+        let name = output
+            .name
+            .clone()
+            .unwrap_or_else(|| "renamed-upload".to_string());
+        names.push(name.clone());
+        artifacts.push(state.artifacts.publish(
+            artifact_path(output)?,
+            name,
+            format.mime_type().to_string(),
+        )?);
     }
-
-    if results.is_empty() {
-        return Err(ai_error(
-            StatusCode::BAD_REQUEST,
-            &RToolsError::invalid_input("At least one image is required for alt text"),
-        ));
-    }
-
     Ok(Json(AiResponse {
         success: true,
-        message: format!("Generated alt text for {} images", results.len()),
-        results: Some(serde_json::json!({
-            "results": results,
-        })),
+        message: format!("Renamed {} files", artifacts.len()),
+        results: serde_json::json!({ "names": names, "artifacts": artifacts }),
     }))
+}
+
+pub async fn alt_text() -> ApiResult<Json<AiResponse>> {
+    Err(ApiError::unavailable(
+        "ai.alt_text",
+        "No image captioning provider is configured",
+        "Configure a supported image captioning provider",
+    ))
 }
 
 pub async fn duplicates(
     State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Json<AiResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut files = Vec::new();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<AiResponse>> {
+    let mut form = parse_multipart(
+        multipart,
+        &[
+            ("files", FieldKind::Files),
+            ("threshold", FieldKind::Text),
+            ("algorithm", FieldKind::Text),
+        ],
+        state.config.api.max_upload_size,
+    )
+    .await?;
+    let threshold = parse_f64("threshold", form.optional_text("threshold"), 0.9)?;
+    let algorithm = match form
+        .optional_text("algorithm")
+        .as_deref()
+        .unwrap_or("perceptual")
     {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        files.push(rtools_core::FileInput::from_path(temp_path));
-    }
-
-    let config = rtools_ai::duplicates::DuplicatesConfig {
-        threshold: 0.9,
-        algorithm: rtools_ai::duplicates::HashAlgorithm::Perceptual,
-        action: rtools_ai::duplicates::DuplicateAction::Report,
-        dry_run: false,
-        limits: state.config.limits.clone(),
+        "average" => rtools_ai::duplicates::HashAlgorithm::Average,
+        "perceptual" => rtools_ai::duplicates::HashAlgorithm::Perceptual,
+        "difference" => rtools_ai::duplicates::HashAlgorithm::Difference,
+        value => {
+            return Err(ApiError::invalid(format!(
+                "Unsupported duplicate algorithm '{value}'"
+            )))
+        }
     };
-
-    let processor = rtools_ai::DuplicatesProcessor;
-    match processor.process(files, config) {
-        Ok(result) => Ok(Json(AiResponse {
-            success: true,
-            message: format!("Found {} duplicate groups", result.groups.len()),
-            results: Some(serde_json::json!({
-                "groups": result.groups.len(),
-                "originals": result.total_originals,
-                "duplicates": result.total_duplicates,
-            })),
-        })),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    let uploads = form.files("files")?;
+    state.config.limits.check_batch_items(
+        u64::try_from(uploads.len()).map_err(|_| ApiError::invalid("Too many input files"))?,
+    )?;
+    let request = RequestFiles::new()?;
+    let mut inputs = Vec::with_capacity(uploads.len());
+    for (index, upload) in uploads.into_iter().enumerate() {
+        let (input, _, _) = incoming_image(&request, upload, index)?;
+        inputs.push(input);
     }
+    let result = rtools_ai::DuplicatesProcessor.process(
+        inputs,
+        rtools_ai::duplicates::DuplicatesConfig {
+            threshold,
+            algorithm,
+            action: rtools_ai::duplicates::DuplicateAction::Report,
+            dry_run: false,
+            limits: state.config.limits.clone(),
+        },
+    )?;
+    Ok(Json(AiResponse {
+        success: true,
+        message: format!("Found {} duplicate groups", result.groups.len()),
+        results: serde_json::json!({
+            "groups": result.groups.len(),
+            "originals": result.total_originals,
+            "duplicates": result.total_duplicates,
+        }),
+    }))
 }

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     fmt,
-    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -495,28 +494,7 @@ impl AppConfig {
         if self.api.max_upload_size == 0 {
             return Err(invalid_setting("api.max_upload_size", "must be positive"));
         }
-        if self.api.auth_enabled
-            && self
-                .api
-                .api_key
-                .as_deref()
-                .is_none_or(|key| key.trim().is_empty())
-        {
-            return Err(invalid_setting(
-                "api.api_key",
-                "must be set when authentication is enabled",
-            ));
-        }
-        if self.api.tls_enabled {
-            let certificate = self.api.tls_cert_path.as_ref().ok_or_else(|| {
-                invalid_setting("api.tls_cert_path", "must be set when TLS is enabled")
-            })?;
-            let key = self.api.tls_key_path.as_ref().ok_or_else(|| {
-                invalid_setting("api.tls_key_path", "must be set when TLS is enabled")
-            })?;
-            validate_readable_file("api.tls_cert_path", certificate)?;
-            validate_readable_file("api.tls_key_path", key)?;
-        }
+        validate_api_config(&self.api)?;
         if self.mcp.server_name.trim().is_empty() {
             return Err(invalid_setting("mcp.server_name", "must not be empty"));
         }
@@ -583,6 +561,53 @@ fn validate_quality(name: &str, value: u8) -> RToolsResult<()> {
     Ok(())
 }
 
+fn validate_api_config(api: &ApiConfig) -> RToolsResult<()> {
+    for (enabled, name, reason) in [
+        (
+            api.auth_enabled,
+            "api.auth_enabled",
+            "is unavailable because the REST server does not enforce authentication",
+        ),
+        (
+            api.tls_enabled,
+            "api.tls_enabled",
+            "is unavailable because the REST server only supports plaintext HTTP",
+        ),
+    ] {
+        if enabled {
+            return Err(invalid_setting(name, reason));
+        }
+    }
+    for (configured, name, reason) in [
+        (
+            api.api_key.is_some(),
+            "api.api_key",
+            "must not be set because REST authentication is unavailable",
+        ),
+        (
+            api.tls_cert_path.is_some(),
+            "api.tls_cert_path",
+            "must not be set because REST TLS is unavailable",
+        ),
+        (
+            api.tls_key_path.is_some(),
+            "api.tls_key_path",
+            "must not be set because REST TLS is unavailable",
+        ),
+    ] {
+        if configured {
+            return Err(invalid_setting(name, reason));
+        }
+    }
+    if api.cors_origins.as_slice() != ["*"] {
+        return Err(invalid_setting(
+            "api.cors_origins",
+            "currently supports only the default wildcard origin",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_nonzero_limits(limits: &ResourceLimits) -> RToolsResult<()> {
     for (name, value) in [
         ("limits.max_input_bytes", limits.max_input_bytes),
@@ -594,21 +619,6 @@ fn validate_nonzero_limits(limits: &ResourceLimits) -> RToolsResult<()> {
         if value == 0 {
             return Err(invalid_setting(name, "must be positive"));
         }
-    }
-    Ok(())
-}
-
-fn validate_readable_file(name: &str, path: &Path) -> RToolsResult<()> {
-    if path.as_os_str().is_empty() {
-        return Err(invalid_setting(name, "must not be empty"));
-    }
-    let metadata = std::fs::metadata(path)
-        .map_err(|_| invalid_setting(name, "must reference a readable regular file"))?;
-    if !metadata.is_file() || File::open(path).is_err() {
-        return Err(invalid_setting(
-            name,
-            "must reference a readable regular file",
-        ));
     }
     Ok(())
 }
@@ -868,6 +878,51 @@ mod tests {
         assert_eq!(error.code(), ErrorCode::ConfigurationInvalid);
     }
 
+    #[test]
+    fn api_security_settings_fail_closed_until_the_server_enforces_them() {
+        let mut auth = AppConfig::default();
+        auth.api.auth_enabled = true;
+        auth.api.api_key = Some("configured-secret".to_string());
+        let auth_error = auth.validate().unwrap_err();
+        assert_eq!(auth_error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(auth_error.to_string().contains("api.auth_enabled"));
+        assert!(!auth_error.to_string().contains("configured-secret"));
+
+        let mut unused_key = AppConfig::default();
+        unused_key.api.api_key = Some("configured-secret".to_string());
+        let key_error = unused_key.validate().unwrap_err();
+        assert_eq!(key_error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(key_error.to_string().contains("api.api_key"));
+        assert!(!key_error.to_string().contains("configured-secret"));
+
+        let mut tls = AppConfig::default();
+        tls.api.tls_enabled = true;
+        let tls_error = tls.validate().unwrap_err();
+        assert_eq!(tls_error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(tls_error.to_string().contains("api.tls_enabled"));
+    }
+
+    #[test]
+    fn unused_api_transport_material_and_custom_cors_fail_closed() {
+        let mut certificate = AppConfig::default();
+        certificate.api.tls_cert_path = Some(PathBuf::from("unused-cert.pem"));
+        let cert_error = certificate.validate().unwrap_err();
+        assert_eq!(cert_error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(cert_error.to_string().contains("api.tls_cert_path"));
+
+        let mut key = AppConfig::default();
+        key.api.tls_key_path = Some(PathBuf::from("unused-key.pem"));
+        let key_error = key.validate().unwrap_err();
+        assert_eq!(key_error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(key_error.to_string().contains("api.tls_key_path"));
+
+        let mut cors = AppConfig::default();
+        cors.api.cors_origins = vec!["https://example.test".to_string()];
+        let cors_error = cors.validate().unwrap_err();
+        assert_eq!(cors_error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(cors_error.to_string().contains("api.cors_origins"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn dangling_discovered_symlink_is_an_error() {
@@ -974,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn readable_tls_files_are_accepted() {
+    fn readable_tls_files_still_fail_closed_until_tls_is_implemented() {
         let sandbox = tempdir().unwrap();
         let certificate = write(&sandbox, "server.crt", "certificate fixture");
         let key = write(&sandbox, "server.key", "key fixture");
@@ -988,7 +1043,9 @@ mod tests {
             ),
         );
 
-        load_isolated(Some(&explicit), &ConfigLocations::default()).unwrap();
+        let error = load_isolated(Some(&explicit), &ConfigLocations::default()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ConfigurationInvalid);
+        assert!(error.to_string().contains("api.tls_enabled"));
     }
 
     #[test]

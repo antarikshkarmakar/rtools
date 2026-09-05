@@ -2380,6 +2380,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "image",
+ "lopdf",
  "rtools-ai",
  "rtools-core",
  "rtools-image",

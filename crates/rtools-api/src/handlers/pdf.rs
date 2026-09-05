@@ -1,196 +1,154 @@
-use axum::{
-    extract::{Multipart, State},
-    http::StatusCode,
-    Json,
-};
-use rtools_core::Processor;
-use serde::Serialize;
+use super::artifact::ArtifactResponse;
+use super::{parse_bool, parse_multipart, ApiError, ApiResult, FieldKind, RequestFiles};
+use axum::{extract::State, Json};
+use rtools_core::{FileInput, Processor};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::AppState;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PdfResponse {
     pub success: bool,
     pub message: String,
-    pub output_path: Option<String>,
+    pub artifact: ArtifactResponse,
 }
 
 pub async fn merge(
-    State(_state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Json<PdfResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut files = Vec::new();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        files.push(temp_path);
+    State(state): State<Arc<AppState>>,
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<PdfResponse>> {
+    let mut form = parse_multipart(
+        multipart,
+        &[("files", FieldKind::Files)],
+        state.config.api.max_upload_size,
+    )
+    .await?;
+    let uploads = form.files("files")?;
+    if uploads.len() < 2 {
+        return Err(ApiError::invalid("At least 2 PDF files are required"));
     }
-
-    if files.len() < 2 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "At least 2 PDF files required".to_string(),
-        ));
+    state.config.limits.check_batch_items(
+        u64::try_from(uploads.len()).map_err(|_| ApiError::invalid("Too many input files"))?,
+    )?;
+    let request = RequestFiles::new()?;
+    let mut paths = Vec::with_capacity(uploads.len());
+    for (index, upload) in uploads.into_iter().enumerate() {
+        paths.push(request.write(index, "pdf", &upload.bytes)?);
     }
-
-    let output_path = std::env::temp_dir().join("merged.pdf");
-    let config = rtools_pdf::PdfMergeConfig {
-        inputs: files,
-        output: output_path.clone(),
-        add_page_numbers: false,
-    };
-
-    let processor = rtools_pdf::PdfMergeProcessor;
-    let inputs: Vec<rtools_core::FileInput> = config
-        .inputs
-        .iter()
-        .map(|p| rtools_core::FileInput::from_path(p.clone()))
-        .collect();
-
-    match processor.process(inputs, config) {
-        Ok(output) => Ok(Json(PdfResponse {
-            success: true,
-            message: "PDFs merged successfully".to_string(),
-            output_path: output
-                .destination
-                .as_path()
-                .map(|p| p.display().to_string()),
-        })),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-    }
+    let output_path = request.path().join("merged.pdf");
+    let inputs = paths.iter().cloned().map(FileInput::from_path).collect();
+    let output = rtools_pdf::PdfMergeProcessor.process(
+        inputs,
+        rtools_pdf::PdfMergeConfig {
+            inputs: paths,
+            output: output_path,
+            add_page_numbers: false,
+        },
+    )?;
+    let path = output
+        .destination
+        .as_path()
+        .ok_or_else(|| ApiError::invalid("PDF merge returned no path-based artifact"))?;
+    let artifact = state.artifacts.publish(
+        path,
+        "merged.pdf".to_string(),
+        "application/pdf".to_string(),
+    )?;
+    Ok(Json(PdfResponse {
+        success: true,
+        message: "PDFs merged successfully".to_string(),
+        artifact,
+    }))
 }
 
 pub async fn compress(
-    State(_state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Json<PdfResponse>, (StatusCode, String)> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    {
-        let file_name = field.file_name().unwrap_or("unknown").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-
-        let temp_path = temp_dir.path().join(&file_name);
-        std::fs::write(&temp_path, &data)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let input = rtools_core::FileInput::from_path(temp_path);
-        let config = rtools_pdf::PdfCompressConfig {
-            level: rtools_pdf::compress::PdfCompressionLevel::Medium,
-            output: None,
-            remove_metadata: false,
-        };
-
-        let processor = rtools_pdf::PdfCompressProcessor;
-        match processor.process(input, config) {
-            Ok(output) => {
-                return Ok(Json(PdfResponse {
-                    success: true,
-                    message: format!("Compressed {file_name}"),
-                    output_path: output
-                        .destination
-                        .as_path()
-                        .map(|p| p.display().to_string()),
-                }));
-            }
-            Err(e) => {
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-            }
+    State(state): State<Arc<AppState>>,
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<PdfResponse>> {
+    let mut form = parse_multipart(
+        multipart,
+        &[
+            ("file", FieldKind::File),
+            ("level", FieldKind::Text),
+            ("remove_metadata", FieldKind::Text),
+        ],
+        state.config.api.max_upload_size,
+    )
+    .await?;
+    let configured_level = match &state.config.pdf.compression_level {
+        rtools_core::config::PdfCompressionLevel::Light => "light",
+        rtools_core::config::PdfCompressionLevel::Medium => "medium",
+        rtools_core::config::PdfCompressionLevel::Heavy => "heavy",
+    };
+    let level = form
+        .optional_text("level")
+        .unwrap_or_else(|| configured_level.to_string());
+    match level.as_str() {
+        "medium" => {}
+        "light" | "heavy" => {
+            return Err(ApiError::unavailable(
+                "api.pdf.compress.level",
+                "The REST adapter currently supports only the effective medium level",
+                "Use level=medium or omit the field",
+            ));
+        }
+        _ => {
+            return Err(ApiError::invalid(format!(
+                "Unsupported PDF compression level '{level}'"
+            )));
         }
     }
-
-    Err((StatusCode::BAD_REQUEST, "No file uploaded".to_string()))
+    let remove_metadata = parse_bool(
+        "remove_metadata",
+        form.optional_text("remove_metadata"),
+        false,
+    )?;
+    let upload = form.one_file("file")?;
+    let display_name = std::path::Path::new(&upload.client_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("document")
+        .to_string();
+    let request = RequestFiles::new()?;
+    let path = request.write(0, "pdf", &upload.bytes)?;
+    let output = rtools_pdf::PdfCompressProcessor.process(
+        FileInput::from_path(path),
+        rtools_pdf::PdfCompressConfig {
+            level: rtools_pdf::compress::PdfCompressionLevel::Medium,
+            output: None,
+            remove_metadata,
+        },
+    )?;
+    let path = output
+        .destination
+        .as_path()
+        .ok_or_else(|| ApiError::invalid("PDF compression returned no path-based artifact"))?;
+    let artifact = state.artifacts.publish(
+        path,
+        format!("{display_name}_compressed.pdf"),
+        "application/pdf".to_string(),
+    )?;
+    Ok(Json(PdfResponse {
+        success: true,
+        message: "PDF compressed successfully".to_string(),
+        artifact,
+    }))
 }
 
-pub async fn split(
-    State(_state): State<Arc<AppState>>,
-    mut _multipart: Multipart,
-) -> Result<Json<PdfResponse>, (StatusCode, String)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        "PDF split not yet implemented".to_string(),
+pub async fn split() -> ApiResult<Json<PdfResponse>> {
+    Err(ApiError::unavailable(
+        "api.pdf.split",
+        "The REST split adapter is not implemented",
+        "Use the CLI PDF split command",
     ))
 }
 
-pub async fn ocr(
-    State(_state): State<Arc<AppState>>,
-    mut _multipart: Multipart,
-) -> Result<Json<PdfResponse>, (StatusCode, String)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        "PDF OCR not yet implemented".to_string(),
+pub async fn ocr() -> ApiResult<Json<PdfResponse>> {
+    Err(ApiError::unavailable(
+        "pdf.ocr",
+        "PDF OCR is not implemented",
+        "Use an external OCR tool",
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::{
-        body::Body,
-        http::{header::CONTENT_TYPE, Request},
-        routing::post,
-        Router,
-    };
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn merge_consumes_two_multipart_parts_before_processing() {
-        const BOUNDARY: &str = "rtools-test-boundary";
-        let body = format!(
-            "--{BOUNDARY}\r\n\
-             Content-Disposition: form-data; name=\"files\"; filename=\"first.pdf\"\r\n\
-             Content-Type: application/pdf\r\n\r\n\
-             not-a-pdf\r\n\
-             --{BOUNDARY}\r\n\
-             Content-Disposition: form-data; name=\"files\"; filename=\"second.pdf\"\r\n\
-             Content-Type: application/pdf\r\n\r\n\
-             also-not-a-pdf\r\n\
-             --{BOUNDARY}--\r\n"
-        );
-        let app = Router::new()
-            .route("/merge", post(merge))
-            .with_state(Arc::new(AppState {
-                config: rtools_core::AppConfig::default(),
-            }));
-        let request = Request::builder()
-            .method("POST")
-            .uri("/merge")
-            .header(
-                CONTENT_TYPE,
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            )
-            .body(Body::from(body))
-            .expect("multipart request should be valid");
-
-        let response = app.oneshot(request).await.expect("router should respond");
-
-        assert_eq!(
-            response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "two fields must reach PDF merge processing rather than the two-file guard"
-        );
-    }
 }

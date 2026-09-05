@@ -2,6 +2,7 @@
 #![allow(clippy::redundant_clone)]
 
 use axum::{
+    extract::DefaultBodyLimit,
     response::IntoResponse,
     routing::{get, post, Router},
     Json,
@@ -10,13 +11,30 @@ use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::limit::RequestBodyLimitLayer;
 
 mod handlers;
 
-#[derive(Clone)]
 struct AppState {
     config: rtools_core::AppConfig,
+    artifacts: ArtifactStore,
+}
+
+struct ArtifactStore {
+    root: tempfile::TempDir,
+}
+
+impl AppState {
+    fn new(config: rtools_core::AppConfig) -> anyhow::Result<Self> {
+        config.validate()?;
+        Ok(Self {
+            config,
+            artifacts: ArtifactStore {
+                root: tempfile::Builder::new()
+                    .prefix("rtools-api-artifacts-")
+                    .tempdir()?,
+            },
+        })
+    }
 }
 
 #[tokio::main]
@@ -31,20 +49,33 @@ async fn main() -> anyhow::Result<()> {
 
     // Load configuration
     let config = rtools_core::AppConfig::load(None)?;
-    let state = AppState {
-        config: config.clone(),
-    };
+    let app = build_router(config.clone())?;
 
-    // Build CORS layer
+    // Start server
+    let addr = SocketAddr::new(config.api.host.parse()?, config.api.port);
+
+    tracing::info!("Starting server on {}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn build_router(config: rtools_core::AppConfig) -> anyhow::Result<Router> {
+    let upload_limit = usize::try_from(config.api.max_upload_size).map_err(|_| {
+        anyhow::anyhow!("api.max_upload_size exceeds this platform's addressable size")
+    })?;
+    let state = Arc::new(AppState::new(config)?);
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Build router
-    let app = Router::new()
+    Ok(Router::new()
         .route("/", get(root))
         .route("/health", get(health))
+        .route("/api/v1/artifacts/:id", get(handlers::artifact::download))
         .route("/api/v1/image/compress", post(handlers::image::compress))
         .route("/api/v1/image/convert", post(handlers::image::convert))
         .route("/api/v1/image/resize", post(handlers::image::resize))
@@ -61,18 +92,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/ai/alt-text", post(handlers::ai::alt_text))
         .route("/api/v1/ai/duplicates", post(handlers::ai::duplicates))
         .layer(cors)
-        .layer(RequestBodyLimitLayer::new(100 * 1024 * 1024)) // 100MB limit
-        .with_state(Arc::new(state));
-
-    // Start server
-    let addr = SocketAddr::new(config.api.host.parse()?, config.api.port);
-
-    tracing::info!("Starting server on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+        .layer(DefaultBodyLimit::max(upload_limit))
+        .with_state(state))
 }
 
 async fn root() -> &'static str {
@@ -91,6 +112,9 @@ async fn health() -> impl IntoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
+
+#[cfg(test)]
+mod package_b_tests;
 
 #[cfg(test)]
 mod tests {
@@ -131,9 +155,25 @@ mod tests {
         let boundary = "rtools-test-boundary";
         let mut body = Vec::new();
         if let Some((name, data)) = file {
-            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: image/png\r\n\r\n").as_bytes());
+            let field = if matches!(path, "/rename" | "/organize" | "/duplicates") {
+                "files"
+            } else {
+                "file"
+            };
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\nContent-Type: image/png\r\n\r\n").as_bytes());
             body.extend_from_slice(&data);
             body.extend_from_slice(b"\r\n");
+        }
+        if path == "/convert" {
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"format\"\r\n\r\nwebp\r\n").as_bytes());
+        }
+        if path == "/resize" {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"width\"\r\n\r\n800\r\n"
+                )
+                .as_bytes(),
+            );
         }
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
         Request::builder()
@@ -149,6 +189,7 @@ mod tests {
 
     fn test_app() -> Router {
         Router::new()
+            .route("/api/v1/artifacts/:id", get(handlers::artifact::download))
             .route("/compress", post(handlers::image::compress))
             .route("/convert", post(handlers::image::convert))
             .route("/resize", post(handlers::image::resize))
@@ -157,12 +198,12 @@ mod tests {
             .route("/organize", post(handlers::ai::organize))
             .route("/duplicates", post(handlers::ai::duplicates))
             .route("/api/v1/ai/alt-text", post(handlers::ai::alt_text))
-            .with_state(Arc::new(AppState {
-                config: rtools_core::AppConfig::default(),
-            }))
+            .with_state(Arc::new(
+                AppState::new(rtools_core::AppConfig::default()).unwrap(),
+            ))
     }
 
-    fn persistent_image_temp_dirs() -> BTreeSet<PathBuf> {
+    fn persistent_request_temp_dirs() -> BTreeSet<PathBuf> {
         std::fs::read_dir(std::env::temp_dir())
             .expect("system temp directory must be readable")
             .filter_map(Result::ok)
@@ -170,20 +211,7 @@ mod tests {
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("rtools-api-image-"))
-            })
-            .collect()
-    }
-
-    fn persistent_alt_text_temp_dirs() -> BTreeSet<PathBuf> {
-        std::fs::read_dir(std::env::temp_dir())
-            .expect("system temp directory must be readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("rtools-api-alt-text-"))
+                    .is_some_and(|name| name.starts_with("rtools-api-request-"))
             })
             .collect()
     }
@@ -191,8 +219,11 @@ mod tests {
     #[tokio::test]
     async fn image_adapter_returns_live_sanitized_artifacts() {
         let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
+        let _request_guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
         for path in ["/compress", "/convert", "/resize"] {
-            let response = test_app()
+            let app = test_app();
+            let response = app
+                .clone()
                 .oneshot(multipart_request(
                     path,
                     Some(("..\\private\\input.png", png_bytes())),
@@ -207,27 +238,23 @@ mod tests {
             let document: serde_json::Value =
                 serde_json::from_slice(&body).expect("response must be JSON");
             assert!(document.get("warnings").is_none(), "{path}: {document}");
-            let output_path = document["output_path"]
+            assert!(document.get("output_path").is_none(), "{path}: {document}");
+            let download_url = document["artifact"]["download_url"]
                 .as_str()
-                .map(std::path::PathBuf::from)
-                .expect("response must include an output path");
-            assert!(output_path.exists(), "{}", output_path.display());
-            assert!(
-                image::open(&output_path).is_ok(),
-                "{}",
-                output_path.display()
-            );
-            let artifact_dir = output_path.parent().expect("artifact parent");
-            assert!(
-                artifact_dir
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("rtools-api-image-")),
-                "{}",
-                artifact_dir.display()
-            );
-            assert!(!output_path.display().to_string().contains("private"));
-            std::fs::remove_dir_all(artifact_dir).expect("test artifact cleanup");
+                .expect("response must include a download URL");
+            let artifact = app
+                .oneshot(
+                    Request::builder()
+                        .uri(download_url)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(artifact.status(), StatusCode::OK);
+            let bytes = to_bytes(artifact.into_body(), usize::MAX).await.unwrap();
+            assert!(image::load_from_memory(&bytes).is_ok());
+            assert!(!document.to_string().contains("private"));
         }
     }
 
@@ -237,7 +264,12 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "success": true,
                 "message": "ok",
-                "output_path": null,
+                "artifact": {
+                    "id": "artifact-example.png",
+                    "download_url": "/api/v1/artifacts/artifact-example.png",
+                    "name": "example.png",
+                    "media_type": "image/png"
+                },
                 "stats": null
             }))
             .unwrap();
@@ -250,7 +282,12 @@ mod tests {
         let convert: handlers::image::ConvertResponse = serde_json::from_value(serde_json::json!({
             "success": true,
             "message": "ok",
-            "output_path": null
+            "artifact": {
+                "id": "artifact-example.png",
+                "download_url": "/api/v1/artifacts/artifact-example.png",
+                "name": "example.png",
+                "media_type": "image/png"
+            }
         }))
         .unwrap();
         assert!(convert.warnings.is_empty());
@@ -263,12 +300,15 @@ mod tests {
     #[tokio::test]
     async fn image_adapter_returns_orientation_warnings_and_oriented_live_artifacts() {
         let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
+        let _request_guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
         for (path, expected_dimensions) in [
             ("/compress", (36, 24)),
             ("/convert", (36, 24)),
             ("/resize", (800, 533)),
         ] {
-            let response = test_app()
+            let app = test_app();
+            let response = app
+                .clone()
                 .oneshot(multipart_request(
                     path,
                     Some(("orientation.jpg", orientation_jpeg_bytes())),
@@ -288,21 +328,30 @@ mod tests {
                 "{path}: {}",
                 String::from_utf8_lossy(&body)
             );
-            let output_path = PathBuf::from(
-                document["output_path"]
-                    .as_str()
-                    .expect("response must include an output path"),
-            );
-            let image = image::open(&output_path).unwrap();
+            let download_url = document["artifact"]["download_url"]
+                .as_str()
+                .expect("response must include a download URL");
+            let artifact = app
+                .oneshot(
+                    Request::builder()
+                        .uri(download_url)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(artifact.status(), StatusCode::OK);
+            let bytes = to_bytes(artifact.into_body(), usize::MAX).await.unwrap();
+            let image = image::load_from_memory(&bytes).unwrap();
             assert_eq!((image.width(), image.height()), expected_dimensions);
-            std::fs::remove_dir_all(output_path.parent().unwrap()).unwrap();
         }
     }
 
     #[tokio::test]
     async fn failed_image_processing_cleans_its_request_directory() {
         let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
-        let before = persistent_image_temp_dirs();
+        let _request_guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+        let before = persistent_request_temp_dirs();
 
         let response = test_app()
             .oneshot(multipart_request(
@@ -312,13 +361,14 @@ mod tests {
             .await
             .expect("router call must complete");
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(persistent_image_temp_dirs(), before);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(persistent_request_temp_dirs(), before);
     }
 
     #[tokio::test]
     async fn metadata_adapter_treats_valid_bmp_and_gif_as_empty_exif() {
         let _guard = IMAGE_ARTIFACT_TEST_LOCK.lock().await;
+        let _request_guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
         for (name, format) in [
             ("plain.bmp", ImageFormat::Bmp),
             ("plain.gif", ImageFormat::Gif),
@@ -355,23 +405,18 @@ mod tests {
 
     #[tokio::test]
     async fn ai_adapter_rejects_empty_duplicates_and_uses_deterministic_rename() {
+        let _guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
         let organize_response = test_app()
             .oneshot(multipart_request("/organize", None))
             .await
             .expect("router call must complete");
-        assert_eq!(
-            organize_response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
+        assert_eq!(organize_response.status(), StatusCode::BAD_REQUEST);
 
         let duplicate_response = test_app()
             .oneshot(multipart_request("/duplicates", None))
             .await
             .expect("router call must complete");
-        assert_eq!(
-            duplicate_response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
+        assert_eq!(duplicate_response.status(), StatusCode::BAD_REQUEST);
         let duplicate_body = to_bytes(duplicate_response.into_body(), usize::MAX)
             .await
             .expect("response body must read");
@@ -401,11 +446,12 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_adapter_uses_configured_decoded_pixel_limit() {
+        let _guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
         let mut config = rtools_core::AppConfig::default();
         config.limits.max_decoded_pixels = 1;
         let app = Router::new()
             .route("/duplicates", post(handlers::ai::duplicates))
-            .with_state(Arc::new(AppState { config }));
+            .with_state(Arc::new(AppState::new(config).unwrap()));
 
         let response = app
             .oneshot(multipart_request(
@@ -420,14 +466,15 @@ mod tests {
             .expect("response body must read");
         let text = String::from_utf8_lossy(&body);
 
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{text}");
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{text}");
         assert!(text.contains("decoded_pixels"), "{text}");
         assert!(text.contains("4 (limit: 1)"), "{text}");
     }
 
     #[tokio::test]
     async fn empty_alt_text_request_returns_structured_invalid_input() {
-        let before = persistent_alt_text_temp_dirs();
+        let _guard = package_b_tests::REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+        let before = persistent_request_temp_dirs();
         let response = test_app()
             .oneshot(multipart_request("/api/v1/ai/alt-text", None))
             .await
@@ -439,10 +486,10 @@ mod tests {
         let document: serde_json::Value =
             serde_json::from_slice(&body).expect("error response must be JSON");
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(document["success"], false);
-        assert_eq!(document["code"], "INVALID_INPUT");
+        assert_eq!(document["code"], "CAPABILITY_UNAVAILABLE");
         assert!(document.get("results").is_none());
-        assert_eq!(persistent_alt_text_temp_dirs(), before);
+        assert_eq!(persistent_request_temp_dirs(), before);
     }
 }
