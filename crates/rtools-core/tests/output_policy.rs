@@ -35,6 +35,20 @@ fn assert_no_rtools_artifacts(directory: &Path) {
     assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
 }
 
+#[test]
+fn commit_retires_reservation_on_the_workspace_filesystem() {
+    let current_directory = std::env::current_dir().unwrap();
+    let directory = tempfile::tempdir_in(current_directory).unwrap();
+    for iteration in 0..32 {
+        let output = directory.path().join(format!("result-{iteration}.bin"));
+        let committed = write_and_commit(&output, OutputPolicy::FailIfExists, b"validated");
+
+        assert_eq!(committed, output);
+        assert_eq!(fs::read(&committed).unwrap(), b"validated");
+    }
+    assert_no_rtools_artifacts(directory.path());
+}
+
 #[cfg(unix)]
 fn create_directory_symlink(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap_or_else(|error| {

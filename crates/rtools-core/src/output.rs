@@ -38,7 +38,8 @@ pub struct PendingOutput {
     final_path: PathBuf,
     temporary_path: PathBuf,
     reservation_path: PathBuf,
-    reservation_file: File,
+    reservation_file: Option<File>,
+    reservation_retired: bool,
     owner_token: String,
     policy: OutputPolicy,
 }
@@ -69,6 +70,7 @@ impl PendingOutput {
             .create_new(true)
             .open(&temporary_path)
         {
+            drop(reservation_file);
             let _ = retire_reservation(&reservation_path, &owner_token);
             return Err(error.into());
         }
@@ -77,7 +79,8 @@ impl PendingOutput {
             final_path,
             temporary_path,
             reservation_path,
-            reservation_file,
+            reservation_file: Some(reservation_file),
+            reservation_retired: false,
             owner_token,
             policy,
         })
@@ -94,17 +97,23 @@ impl PendingOutput {
     ///
     /// Returns the validator error, a collision or reservation-ownership
     /// error, or an I/O/rollback error when the durable commit fails.
-    pub fn commit<F>(self, validate: F) -> RToolsResult<PathBuf>
+    pub fn commit<F>(mut self, validate: F) -> RToolsResult<PathBuf>
     where
         F: FnOnce(&Path) -> RToolsResult<()>,
     {
-        self.commit_internal(validate, || Ok(()))
+        self.commit_internal(validate, || Ok(()), || Ok(()))
     }
 
-    fn commit_internal<F, H>(&self, validate: F, pre_publish: H) -> RToolsResult<PathBuf>
+    fn commit_internal<F, H, R>(
+        &mut self,
+        validate: F,
+        pre_publish: H,
+        after_retire: R,
+    ) -> RToolsResult<PathBuf>
     where
         F: FnOnce(&Path) -> RToolsResult<()>,
         H: FnOnce() -> RToolsResult<()>,
+        R: FnOnce() -> RToolsResult<()>,
     {
         let mut artifact = OpenOptions::new()
             .read(true)
@@ -114,21 +123,44 @@ impl PendingOutput {
         artifact.flush()?;
         artifact.sync_all()?;
 
-        ensure_open_lock_owned(&self.reservation_file, &self.owner_token)?;
+        ensure_open_lock_owned(self.open_reservation()?, &self.owner_token)?;
         ensure_lock_owned(&self.reservation_path, &self.owner_token)?;
         self.recheck_destination()?;
         pre_publish()?;
-        ensure_open_lock_owned(&self.reservation_file, &self.owner_token)?;
+        ensure_open_lock_owned(self.open_reservation()?, &self.owner_token)?;
         ensure_lock_owned(&self.reservation_path, &self.owner_token)?;
-        self.publish_artifact()?;
+
+        // DrvFS defers the visible destination of a rename for an open locked
+        // file. Close our verified handle while the canonical reservation name
+        // still blocks cooperating writers, then atomically claim and verify
+        // that name before publishing. Fail-if-exists and unique publication
+        // remain protected by the create-only hard-link primitive even if a
+        // second writer reserves the destination in the narrow interval after
+        // retirement.
+        drop(self.reservation_file.take());
         retire_reservation(&self.reservation_path, &self.owner_token)?;
+        self.reservation_retired = true;
+        after_retire()?;
+        if path_entry_exists(&self.reservation_path)? {
+            return Err(RToolsError::output_exists(format!(
+                "output was reserved by another writer: {}",
+                self.final_path.display()
+            )));
+        }
+        self.publish_artifact()?;
 
         Ok(self.final_path.clone())
     }
 
+    fn open_reservation(&self) -> RToolsResult<&File> {
+        self.reservation_file.as_ref().ok_or_else(|| {
+            RToolsError::Internal("output reservation handle is already closed".to_string())
+        })
+    }
+
     #[cfg(test)]
     fn commit_with_pre_publish_hook<F, H>(
-        self,
+        mut self,
         validate: F,
         pre_publish: H,
     ) -> RToolsResult<PathBuf>
@@ -136,7 +168,20 @@ impl PendingOutput {
         F: FnOnce(&Path) -> RToolsResult<()>,
         H: FnOnce() -> RToolsResult<()>,
     {
-        self.commit_internal(validate, pre_publish)
+        self.commit_internal(validate, pre_publish, || Ok(()))
+    }
+
+    #[cfg(test)]
+    fn commit_with_retired_reservation_hook<F, H>(
+        mut self,
+        validate: F,
+        after_retire: H,
+    ) -> RToolsResult<PathBuf>
+    where
+        F: FnOnce(&Path) -> RToolsResult<()>,
+        H: FnOnce() -> RToolsResult<()>,
+    {
+        self.commit_internal(validate, || Ok(()), after_retire)
     }
 
     fn recheck_destination(&self) -> RToolsResult<()> {
@@ -195,7 +240,10 @@ impl PendingOutput {
 impl Drop for PendingOutput {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.temporary_path);
-        let _ = retire_reservation(&self.reservation_path, &self.owner_token);
+        drop(self.reservation_file.take());
+        if !self.reservation_retired {
+            let _ = retire_reservation(&self.reservation_path, &self.owner_token);
+        }
     }
 }
 
@@ -645,6 +693,14 @@ mod atomic_output_tests {
     use crate::ErrorCode;
     use std::fs;
 
+    fn rtools_artifacts(directory: &std::path::Path) -> Vec<std::ffi::OsString> {
+        fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().contains("rtools"))
+            .collect()
+    }
+
     #[test]
     fn no_replace_publication_preserves_existing_destination() {
         let directory = tempfile::tempdir().unwrap();
@@ -722,6 +778,59 @@ mod atomic_output_tests {
 
         assert_eq!(error.code(), ErrorCode::OutputExists);
         assert_eq!(fs::read(output).unwrap(), b"external");
+        assert!(rtools_artifacts(directory.path()).is_empty());
+    }
+
+    #[test]
+    fn second_writer_can_publish_after_retirement_without_being_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("result.bin");
+        let first = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+        fs::write(first.temporary_path(), b"first").unwrap();
+
+        let error = first
+            .commit_with_retired_reservation_hook(
+                |_| Ok(()),
+                || {
+                    let second = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+                    fs::write(second.temporary_path(), b"second").unwrap();
+                    second.commit(|_| Ok(()))?;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert_eq!(fs::read(&output).unwrap(), b"second");
+        assert!(rtools_artifacts(directory.path()).is_empty());
+    }
+
+    #[test]
+    fn foreign_reservation_created_after_retirement_is_preserved() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("result.bin");
+        let reservation = directory.path().join(".result.bin.rtools.lock");
+        let pending = PendingOutput::new(&output, OutputPolicy::FailIfExists).unwrap();
+        fs::write(pending.temporary_path(), b"ours").unwrap();
+
+        let error = pending
+            .commit_with_retired_reservation_hook(
+                |_| Ok(()),
+                || {
+                    fs::write(&reservation, b"foreign-owner")?;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert!(!output.exists());
+        assert_eq!(fs::read(&reservation).unwrap(), b"foreign-owner");
+        let artifacts = rtools_artifacts(directory.path());
+        assert_eq!(
+            artifacts,
+            vec![reservation.file_name().unwrap().to_os_string()]
+        );
     }
 
     #[test]

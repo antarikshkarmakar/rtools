@@ -168,6 +168,31 @@ fn merge_uses_processor_inputs_and_preserves_valid_merge_behavior() {
     assert_no_rtools_artifacts(temp.path());
 }
 
+#[test]
+fn merge_commits_without_retirement_artifacts_on_the_workspace_filesystem() {
+    let current_directory = std::env::current_dir().unwrap();
+    let temp = tempfile::tempdir_in(current_directory).unwrap();
+    let first = temp.path().join("first.pdf");
+    let second = temp.path().join("second.pdf");
+    let output = temp.path().join("merged.pdf");
+    write_pdf(&first, 1);
+    write_pdf(&second, 1);
+
+    let result = PdfMergeProcessor
+        .process(
+            vec![FileInput::from_path(first), FileInput::from_path(second)],
+            PdfMergeConfig {
+                output: output.clone(),
+                ..PdfMergeConfig::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(result.destination.as_path(), Some(&output));
+    rtools_pdf::validate_pdf_artifact(&output).unwrap();
+    assert_no_rtools_artifacts(temp.path());
+}
+
 #[cfg(unix)]
 fn create_directory_symlink(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap_or_else(|error| {

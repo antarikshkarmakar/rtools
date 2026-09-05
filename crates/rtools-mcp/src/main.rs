@@ -17,6 +17,8 @@ struct RToolsServer;
 struct CompressInput {
     input_path: String,
     output_path: Option<String>,
+    /// Optional JPEG quality. Omit for non-JPEG input because those encoders
+    /// do not use this value.
     #[schemars(range(min = 1, max = 100))]
     quality: Option<u8>,
 }
@@ -26,6 +28,8 @@ struct ConvertInput {
     input_path: String,
     target_format: TargetFormatInput,
     output_path: Option<String>,
+    /// Optional JPEG quality. Valid only when `target_format` is jpg or jpeg;
+    /// omit it for every other target format.
     #[schemars(range(min = 1, max = 100))]
     quality: Option<u8>,
 }
@@ -207,7 +211,7 @@ const MCP_TOOL_CONTRACTS: &[McpToolContract] = &[
         operation_id: "image.compress",
         state: "available",
         description: "Compress an image with quality preservation",
-        adapter_contract: "quality=1..100",
+        adapter_contract: "quality=1..100 for JPEG input only; omit for non-JPEG",
         structured_errors: true,
     },
     McpToolContract {
@@ -215,8 +219,7 @@ const MCP_TOOL_CONTRACTS: &[McpToolContract] = &[
         operation_id: "image.convert",
         state: "available",
         description: "Convert an image to an explicitly selected format",
-        adapter_contract:
-            "target_format=webp|png|jpg|jpeg|avif|tiff|tif|bmp|gif|hdr; quality=1..100",
+        adapter_contract: "target_format=webp|png|jpg|jpeg|avif|tiff|tif|bmp|gif|hdr; quality=1..100 for jpg|jpeg only; omit for other targets",
         structured_errors: true,
     },
     McpToolContract {
@@ -343,8 +346,18 @@ impl RToolsServer {
             "compress_image" => {
                 let input: CompressInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let file_input =
-                    rtools_core::FileInput::from_path(PathBuf::from(&input.input_path));
+                let input_path = PathBuf::from(&input.input_path);
+                let target_format = rtools_core::ImageFormat::from_path(&input_path);
+                if input.quality.is_some() && target_format != Some(rtools_core::ImageFormat::Jpeg)
+                {
+                    return Ok(tool_error(
+                        "image.compress",
+                        &RToolsError::invalid_input(
+                            "Quality is effective only for JPEG compression output",
+                        ),
+                    ));
+                }
+                let file_input = rtools_core::FileInput::from_path(input_path);
                 let config = rtools_image::CompressConfig {
                     preset: rtools_image::compress::CompressionPreset::Custom(
                         input.quality.unwrap_or(85),
@@ -385,6 +398,14 @@ impl RToolsServer {
                         .ok_or_else(|| {
                             McpError::invalid_params("Unsupported target format", None)
                         })?;
+                if input.quality.is_some() && target_format != rtools_core::ImageFormat::Jpeg {
+                    return Ok(tool_error(
+                        "image.convert",
+                        &RToolsError::invalid_input(
+                            "Quality is effective only for JPEG conversion output",
+                        ),
+                    ));
+                }
                 let config = rtools_image::ConvertConfig {
                     target_format,
                     output: input.output_path.map(PathBuf::from),
@@ -754,6 +775,17 @@ mod tests {
         std::fs::write(path, bytes.into_inner()).expect("test PNG must write");
     }
 
+    fn write_quality_fixture(path: &std::path::Path) {
+        let image = image::RgbImage::from_fn(96, 96, |x, y| {
+            image::Rgb([
+                u8::try_from((x * 17 + y * 29) % 256).unwrap(),
+                u8::try_from((x * 47 + y * 11) % 256).unwrap(),
+                u8::try_from((x * 7 + y * 53) % 256).unwrap(),
+            ])
+        });
+        image.save(path).expect("quality fixture must encode");
+    }
+
     fn write_pdf(path: &std::path::Path) {
         let mut document = Document::with_version("1.5");
         let pages_id = document.new_object_id();
@@ -901,6 +933,11 @@ mod tests {
                 schema["inputSchema"]["properties"]["quality"]["maximum"],
                 100
             );
+            assert!(
+                schema["inputSchema"]["properties"]["quality"]["description"]
+                    .as_str()
+                    .is_some_and(|description| description.contains("JPEG"))
+            );
         }
 
         let resize = tool_by_name("resize_image");
@@ -1028,8 +1065,7 @@ mod tests {
                 "compress_image",
                 serde_json::json!({
                     "input_path": input,
-                    "output_path": output,
-                    "quality": 85
+                    "output_path": output
                 }),
             )
             .await
@@ -1046,8 +1082,111 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_contract_valid_merge_uses_processor_inputs_without_exposing_output_path() {
+    async fn mcp_contract_explicit_quality_requires_a_jpeg_target_before_processing() {
         let temp = tempfile::tempdir().unwrap();
+        let canary = temp.path().join("PRIVATE-CANARY-ineffective-quality");
+        let mut cases = Vec::new();
+        for extension in ["png", "webp", "avif", "tiff", "tif", "bmp", "gif", "hdr"] {
+            cases.push((
+                "compress_image",
+                serde_json::json!({
+                    "input_path": canary.join(format!("missing.{extension}")),
+                    "output_path": canary.join(format!("compressed.{extension}")),
+                    "quality": 50,
+                }),
+                "image.compress",
+                canary.join(format!("compressed.{extension}")),
+            ));
+        }
+        cases.push((
+            "compress_image",
+            serde_json::json!({
+                "input_path": canary.join("unknown.bin"),
+                "output_path": canary.join("compressed.bin"),
+                "quality": 50,
+            }),
+            "image.compress",
+            canary.join("compressed.bin"),
+        ));
+        for target in ["png", "webp", "avif", "tiff", "tif", "bmp", "gif", "hdr"] {
+            cases.push((
+                "convert_image",
+                serde_json::json!({
+                    "input_path": canary.join("missing.png"),
+                    "target_format": target,
+                    "output_path": canary.join(format!("converted.{target}")),
+                    "quality": 50,
+                }),
+                "image.convert",
+                canary.join(format!("converted.{target}")),
+            ));
+        }
+
+        for (tool, arguments, operation_id, output) in cases {
+            let result = RToolsServer
+                .handle_tool(tool, arguments)
+                .await
+                .expect("quality validation must return a tool result");
+            let serialized = serde_json::to_value(&result).unwrap();
+            let document = serde_json::to_string(&serialized).unwrap();
+            assert!(is_error(&result), "{tool}: {document}");
+            assert_eq!(
+                serialized["structuredContent"]["code"], "INVALID_INPUT",
+                "{tool}: {document}"
+            );
+            assert_eq!(
+                serialized["structuredContent"]["operation_id"], operation_id,
+                "{tool}: {document}"
+            );
+            assert!(!document.contains("PRIVATE-CANARY"), "{tool}: {document}");
+            assert!(!output.exists(), "{tool}: {}", output.display());
+        }
+        assert!(!canary.exists());
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_jpeg_quality_changes_compress_and_convert_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let png_input = temp.path().join("quality.png");
+        let jpeg_input = temp.path().join("quality-input.jpg");
+        write_quality_fixture(&png_input);
+        write_quality_fixture(&jpeg_input);
+
+        for (tool, input, extra) in [
+            ("compress_image", &jpeg_input, serde_json::json!({})),
+            (
+                "convert_image",
+                &png_input,
+                serde_json::json!({"target_format": "jpeg"}),
+            ),
+        ] {
+            let mut lengths = Vec::new();
+            for quality in [1, 100] {
+                let output = temp.path().join(format!("{tool}-{quality}.jpg"));
+                let mut arguments = serde_json::json!({
+                    "input_path": input,
+                    "output_path": output,
+                    "quality": quality,
+                });
+                arguments
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().unwrap().clone());
+                let result = RToolsServer
+                    .handle_tool(tool, arguments)
+                    .await
+                    .expect("JPEG quality request must dispatch");
+                assert!(!is_error(&result), "{tool}: {result:?}");
+                lengths.push(std::fs::metadata(output).unwrap().len());
+            }
+            assert_ne!(lengths[0], lengths[1], "{tool}: {lengths:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_valid_merge_on_workspace_filesystem_has_no_path_or_artifact_leak() {
+        let current_directory = std::env::current_dir().unwrap();
+        let temp = tempfile::tempdir_in(current_directory).unwrap();
         let canary = temp.path().join("PRIVATE-CANARY-valid-merge");
         std::fs::create_dir(&canary).unwrap();
         let first = canary.join("first.pdf");
@@ -1075,6 +1214,12 @@ mod tests {
             !document.contains("PRIVATE-CANARY-valid-merge"),
             "{document}"
         );
+        let leftovers: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().contains("rtools"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
     }
 
     #[tokio::test]
@@ -1160,8 +1305,7 @@ mod tests {
                     serde_json::json!({
                         "input_path": input,
                         "output_path": explicit_output,
-                        "target_format": "png",
-                        "quality": 85
+                        "target_format": "png"
                     }),
                     explicit_output,
                 ),
