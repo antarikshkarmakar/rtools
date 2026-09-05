@@ -162,6 +162,9 @@ artifact.
   exist already. Dry-run can be used to obtain the exact planned paths first.
   The REST adapter creates only derived directories below its private,
   server-owned request directory.
+- REST artifact batches register only after every private copy is durable.
+  Cancellation or a later copy/registration failure removes every owned
+  create-new path; a cleanup failure is reported as `ROLLBACK_FAILED`.
 - PDF compression currently accepts only `medium`. `light`, `heavy`, and
   metadata removal fail with `CAPABILITY_UNAVAILABLE`; complete Info, XMP,
   embedded-file, and post-write metadata verification is not implemented. PDF
@@ -294,6 +297,7 @@ max_dimension = 8192
 [limits]
 max_input_bytes = 104857600
 max_decoded_pixels = 100000000
+max_image_dimension = 32768
 max_pdf_pages = 2000
 max_batch_items = 10000
 max_duration_ms = 300000

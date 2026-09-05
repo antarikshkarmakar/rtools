@@ -9,6 +9,8 @@ pub struct ResourceLimits {
     pub max_input_bytes: u64,
     /// Maximum number of pixels accepted after decoding an image header.
     pub max_decoded_pixels: u64,
+    /// Maximum width or height accepted from an image header or computed output.
+    pub max_image_dimension: u32,
     /// Maximum number of pages accepted from one PDF.
     pub max_pdf_pages: u64,
     /// Maximum number of items accepted in one batch.
@@ -22,6 +24,7 @@ impl Default for ResourceLimits {
         Self {
             max_input_bytes: 100 * 1024 * 1024,
             max_decoded_pixels: 100_000_000,
+            max_image_dimension: 32_768,
             max_pdf_pages: 2_000,
             max_batch_items: 10_000,
             max_duration_ms: 300_000,
@@ -46,6 +49,14 @@ impl ResourceLimits {
     /// Returns `ResourceLimitExceeded` when the dimensions overflow or exceed
     /// `max_decoded_pixels`.
     pub fn check_decoded_pixels(&self, width: u32, height: u32) -> RToolsResult<()> {
+        let largest_axis = width.max(height);
+        if largest_axis > self.max_image_dimension {
+            return Err(RToolsError::ResourceLimitExceeded {
+                resource: "image_dimension",
+                actual: u64::from(largest_axis),
+                limit: u64::from(self.max_image_dimension),
+            });
+        }
         let actual = u64::from(width).checked_mul(u64::from(height)).ok_or(
             RToolsError::ResourceLimitExceeded {
                 resource: "decoded_pixels",

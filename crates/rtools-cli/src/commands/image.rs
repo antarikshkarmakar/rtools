@@ -1,6 +1,6 @@
 use crate::commands::{CommandResult, ItemFailure};
 use crate::{AspectRatioArg, CropRegionArg, ExifOutputFormat, ImageCommands, ImageFormatArg};
-use rtools_core::{AppConfig, FileInput, Processor, RToolsError, RToolsResult};
+use rtools_core::{AppConfig, FileInput, ImageFormat, Processor, RToolsError, RToolsResult};
 use rtools_image::{
     CompressConfig, CompressProcessor, ConvertConfig, ConvertProcessor, CropConfig, CropProcessor,
     FilterConfig, FilterProcessor, ResizeConfig, ResizeProcessor, WatermarkConfig,
@@ -33,11 +33,19 @@ pub fn handle_image_command(
             preserve_metadata,
             strip_gps,
         } => {
-            let quality = quality.unwrap_or(config.image.default_quality);
+            let target_format = format.map(ImageFormatArg::into_core);
+            validate_explicit_compress_quality(quality, target_format, &input)?;
+            let quality = quality.unwrap_or_else(|| {
+                if target_format.is_some_and(|format| format != ImageFormat::Jpeg) {
+                    100
+                } else {
+                    config.image.default_quality
+                }
+            });
             let processor = CompressProcessor;
             let processor_config = CompressConfig {
                 preset: rtools_image::compress::CompressionPreset::Custom(quality),
-                format: format.map(ImageFormatArg::into_core),
+                format: target_format,
                 output,
                 output_policy: rtools_core::OutputPolicy::default(),
                 preserve_metadata,
@@ -60,10 +68,18 @@ pub fn handle_image_command(
             output,
             quality,
         } => {
-            let quality = quality.unwrap_or(config.image.default_quality);
+            let target_format = format.into_core();
+            validate_explicit_quality(quality, target_format)?;
+            let quality = quality.unwrap_or_else(|| {
+                if target_format == ImageFormat::Jpeg {
+                    config.image.default_quality
+                } else {
+                    100
+                }
+            });
             let processor = ConvertProcessor;
             let processor_config = ConvertConfig {
-                target_format: format.into_core(),
+                target_format,
                 output,
                 output_policy: rtools_core::OutputPolicy::default(),
                 output_dir: None,
@@ -253,6 +269,37 @@ pub fn handle_image_command(
             "Configure a supported image OCR provider",
         )),
     }
+}
+
+fn validate_explicit_quality(quality: Option<u8>, target: ImageFormat) -> RToolsResult<()> {
+    if quality.is_some() && target != ImageFormat::Jpeg {
+        return Err(RToolsError::invalid_input(
+            "--quality is supported only for JPEG output",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_explicit_compress_quality(
+    quality: Option<u8>,
+    target: Option<ImageFormat>,
+    inputs: &[std::path::PathBuf],
+) -> RToolsResult<()> {
+    if quality.is_none() {
+        return Ok(());
+    }
+    if let Some(target) = target {
+        return validate_explicit_quality(quality, target);
+    }
+    if inputs
+        .iter()
+        .any(|input| ImageFormat::from_path(input) != Some(ImageFormat::Jpeg))
+    {
+        return Err(RToolsError::invalid_input(
+            "--quality is supported only for JPEG output",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_requested_image_dimensions(

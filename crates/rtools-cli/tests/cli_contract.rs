@@ -284,6 +284,34 @@ fn nonfinite_duplicate_threshold_exits_invalid() {
 }
 
 #[test]
+fn rename_rejects_superscript_device_and_long_component_without_mutation() {
+    for (name, pattern) in [
+        ("COM¹.png", ["{", "name", "}"].concat()),
+        ("input.png", "a".repeat(256)),
+    ] {
+        for dry_run in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let input = temp.path().join(name);
+            create_png(&input, 2, 2);
+            let mut invocation = command(temp.path());
+            invocation
+                .args(["--output-format", "json", "ai", "rename", "--input"])
+                .arg(temp.path())
+                .args(["--pattern", &pattern]);
+            if dry_run {
+                invocation.arg("--dry-run");
+            }
+            let output = invocation.output().unwrap();
+
+            assert_exit(&output, 2);
+            assert_eq!(stdout_json(&output)["failures"][0]["code"], "INVALID_INPUT");
+            assert!(input.exists());
+            assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+    }
+}
+
+#[test]
 fn zero_image_quality_exits_invalid_without_publishing_output() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("input.png");
@@ -455,6 +483,77 @@ fn omitted_jpeg_quality_uses_image_default_quality_and_explicit_value_overrides_
 }
 
 #[test]
+fn webp_rejects_explicit_quality_but_allows_omitted_quality() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.png");
+    create_png(&input, 8, 8);
+
+    for (operation, quality) in [
+        ("compress", "1"),
+        ("compress", "100"),
+        ("convert", "1"),
+        ("convert", "100"),
+    ] {
+        let destination = temp
+            .path()
+            .join(format!("{operation}-explicit-{quality}.webp"));
+        let output = command(temp.path())
+            .args(["--output-format", "json", "image", operation, "--input"])
+            .arg(&input)
+            .args(["--format", "webp", "--quality", quality, "--output"])
+            .arg(&destination)
+            .output()
+            .unwrap();
+
+        assert_exit(&output, 2);
+        assert_eq!(stdout_json(&output)["failures"][0]["code"], "INVALID_INPUT");
+        assert!(!destination.exists());
+    }
+
+    for operation in ["compress", "convert"] {
+        let destination = temp.path().join(format!("{operation}-omitted.webp"));
+        let output = command(temp.path())
+            .env("RTOOLS_IMAGE__DEFAULT_QUALITY", "1")
+            .args(["image", operation, "--input"])
+            .arg(&input)
+            .args(["--format", "webp", "--output"])
+            .arg(&destination)
+            .output()
+            .unwrap();
+
+        assert_exit(&output, 0);
+        assert!(destination.exists());
+    }
+}
+
+#[test]
+fn ineffective_explicit_quality_is_rejected_before_input_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("never-created.webp");
+    let output = command(temp.path())
+        .args([
+            "--output-format",
+            "json",
+            "image",
+            "convert",
+            "--input",
+            "missing.png",
+            "--format",
+            "webp",
+            "--quality",
+            "85",
+            "--output",
+        ])
+        .arg(&destination)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 2);
+    assert_eq!(stdout_json(&output)["failures"][0]["code"], "INVALID_INPUT");
+    assert!(!destination.exists());
+}
+
+#[test]
 fn cli_applies_general_file_size_and_image_dimension_settings() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("input.png");
@@ -503,6 +602,31 @@ fn cli_rejects_requested_resize_dimension_above_configured_maximum() {
         stdout_json(&output)["failures"][0]["code"],
         "RESOURCE_LIMIT_EXCEEDED"
     );
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn cli_rejects_derived_resize_axis_above_configured_maximum() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("wide.png");
+    let output_path = temp.path().join("derived-too-wide.png");
+    create_png(&input, 10, 1);
+
+    let output = command(temp.path())
+        .env("RTOOLS_IMAGE__MAX_DIMENSION", "10")
+        .args(["--output-format", "json", "image", "resize", "--input"])
+        .arg(&input)
+        .args(["--height", "2", "--output"])
+        .arg(&output_path)
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 4);
+    assert_eq!(
+        stdout_json(&output)["failures"][0]["code"],
+        "RESOURCE_LIMIT_EXCEEDED"
+    );
+    assert!(input.exists());
     assert!(!output_path.exists());
 }
 

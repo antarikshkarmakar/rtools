@@ -38,7 +38,7 @@ rtools image compress [OPTIONS]
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input file(s) |
 | `--output` | `-o` | - | Output path |
-| `--quality` | `-q` | 85 | Quality (1-100) |
+| `--quality` | `-q` | configured | JPEG quality (1-100); rejected for non-JPEG output |
 | `--format` | `-f` | - | Output format |
 | `--preserve-metadata` | - | false | Unavailable; `true` fails before input/output access |
 | `--strip-gps` | - | false | Unavailable; `true` fails before input/output access |
@@ -56,8 +56,8 @@ rtools image compress -i photo.jpg -q 80
 # Compress all JPEGs in directory
 rtools image compress -i *.jpg -o compressed/
 
-# Compress and convert to WebP
-rtools image compress -i photo.jpg -f webp -q 85
+# Compress and convert to lossless WebP
+rtools image compress -i photo.jpg -f webp
 ```
 
 #### `rtools image convert`
@@ -74,7 +74,7 @@ rtools image convert [OPTIONS]
 | `--input` | `-i` | - | Input file(s) |
 | `--format` | `-f` | - | Target format |
 | `--output` | `-o` | - | Output path |
-| `--quality` | `-q` | 85 | Quality for lossy formats (1-100) |
+| `--quality` | `-q` | configured | JPEG quality (1-100); rejected for non-JPEG output |
 
 **Examples:**
 ```bash
@@ -468,9 +468,11 @@ Validate configuration file.
 rtools config validate -c rtools.toml
 ```
 
-Executable file operations honor `image.default_quality` when `--quality` is
-omitted, `image.max_dimension`, `general.max_file_size`, and the shared
-byte/pixel/batch limits. Explicit CLI arguments override supported defaults.
+Executable JPEG operations honor `image.default_quality` when `--quality` is
+omitted. Lossless and fixed-encoding formats reject an explicit quality rather
+than silently ignoring it. Executable file operations honor
+`image.max_dimension`, `general.max_file_size`, and the shared byte/pixel/batch
+limits. Explicit CLI arguments override supported defaults.
 Non-default legacy behavior settings that are not implemented
 (`parallel_jobs`, temporary-directory/logging/verbose behavior, WebP/AVIF
 toggles, JPEG/PNG tuning, dithering, PDF OCR/image/alternate compression

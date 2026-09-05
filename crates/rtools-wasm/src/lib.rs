@@ -235,6 +235,16 @@ fn validate_geometry(width: u32, height: u32, limits: &ResourceLimits) -> Result
 }
 
 fn check_pixels(width: u32, height: u32, limits: &ResourceLimits) -> Result<(), WasmError> {
+    let largest_axis = width.max(height);
+    if largest_axis > limits.max_image_dimension {
+        return Err(WasmError::new(
+            "RESOURCE_LIMIT_EXCEEDED",
+            format!(
+                "image_dimension {largest_axis} exceeds limit {}",
+                limits.max_image_dimension
+            ),
+        ));
+    }
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or_else(|| WasmError::new("RESOURCE_LIMIT_EXCEEDED", "pixel count overflow"))?;

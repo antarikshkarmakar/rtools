@@ -187,4 +187,7 @@ PY
     cd -- "$repo_root"
     cargo test --locked -p rtools-mcp mcp_contract
     cargo test --locked -p rtools-api recognized_but_unavailable_options_return_structured_501
+    cargo test --locked -p rtools-api rename_uses_one_isolated_batch_when_client_names_resemble_staging_names
+    cargo test --locked -p rtools-cli webp_rejects_explicit_quality_but_allows_omitted_quality
+    cargo test --locked -p rtools-core portable_filename_component_rejects_superscript_devices_and_long_names
 )

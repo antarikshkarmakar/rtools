@@ -26,6 +26,8 @@ struct ArtifactStore {
     root: tempfile::TempDir,
     records: RwLock<HashMap<String, handlers::artifact::ArtifactRecord>>,
     downloads: Arc<Semaphore>,
+    #[cfg(test)]
+    test_control: Arc<handlers::artifact::ArtifactTestControl>,
 }
 
 impl AppState {

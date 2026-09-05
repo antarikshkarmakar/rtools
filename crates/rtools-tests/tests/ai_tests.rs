@@ -319,6 +319,34 @@ fn duplicate_analysis_rejects_declared_canvas_before_decode_allocation() {
 }
 
 #[test]
+fn duplicate_analysis_rejects_one_axis_above_the_dimension_limit() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "wide.png", 3, 1);
+    let config = DuplicatesConfig {
+        limits: ResourceLimits {
+            max_image_dimension: 2,
+            max_decoded_pixels: 1_000_000,
+            ..ResourceLimits::default()
+        },
+        ..DuplicatesConfig::default()
+    };
+
+    let error = DuplicatesProcessor
+        .process(vec![FileInput::from_path(input.clone())], config)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        RToolsError::ResourceLimitExceeded {
+            resource: "image_dimension",
+            actual: 3,
+            limit: 2,
+        }
+    ));
+    assert!(input.exists());
+}
+
+#[test]
 fn duplicate_threshold_nan_is_invalid_before_input_access() {
     let error = DuplicatesProcessor
         .process(

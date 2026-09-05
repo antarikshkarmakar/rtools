@@ -26,6 +26,27 @@ fn rejects_decoded_pixel_overflow_without_multiplication_overflow() {
 }
 
 #[test]
+fn rejects_either_image_axis_above_the_dimension_limit() {
+    let limits = ResourceLimits {
+        max_image_dimension: 10,
+        max_decoded_pixels: 1_000_000,
+        ..ResourceLimits::default()
+    };
+
+    for (width, height, actual) in [(11, 1, 11), (1, 12, 12)] {
+        let error = limits.check_decoded_pixels(width, height).unwrap_err();
+        assert!(matches!(
+            error,
+            RToolsError::ResourceLimitExceeded {
+                resource: "image_dimension",
+                actual: value,
+                limit: 10,
+            } if value == actual
+        ));
+    }
+}
+
+#[test]
 fn unknown_actual_resource_limit_has_stable_resource_code() {
     let error = RToolsError::ResourceLimitExceededUnknownActual {
         resource: "image_decoder_allocation_bytes",

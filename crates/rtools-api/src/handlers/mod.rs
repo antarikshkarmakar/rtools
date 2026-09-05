@@ -79,6 +79,11 @@ impl ApiError {
         Self { status, error }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> ErrorCode {
+        self.error.code()
+    }
+
     fn from_multipart(
         error: &axum::extract::multipart::MultipartError,
         max_upload_size: u64,

@@ -879,6 +879,7 @@ fn rejects_oversized_image_before_creating_output() {
         format: Some(rtools_core::ImageFormat::Png),
         output: Some(output.clone()),
         limits: ResourceLimits {
+            max_image_dimension: 50_000,
             max_decoded_pixels: 1_000_000,
             ..ResourceLimits::default()
         },
@@ -1234,6 +1235,42 @@ fn resize_checks_computed_target_pixels_before_output_allocation() {
         }
     ));
     assert!(!default_output.exists());
+}
+
+#[test]
+fn resize_checks_both_derived_target_axes_before_output_allocation() {
+    let tmp = TempDir::new().unwrap();
+    let input = create_test_image(tmp.path(), "wide-input.png", 10, 1);
+    let output = tmp.path().join("derived-too-wide.png");
+
+    let error = ResizeProcessor
+        .process(
+            FileInput::from_path(input.clone()),
+            ResizeConfig {
+                width: None,
+                height: Some(2),
+                maintain_aspect: true,
+                output: Some(output.clone()),
+                limits: ResourceLimits {
+                    max_image_dimension: 10,
+                    max_decoded_pixels: 1_000_000,
+                    ..ResourceLimits::default()
+                },
+                ..ResizeConfig::default()
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        rtools_core::RToolsError::ResourceLimitExceeded {
+            resource: "image_dimension",
+            actual: 20,
+            limit: 10,
+        }
+    ));
+    assert!(input.exists());
+    assert!(!output.exists());
 }
 
 #[test]

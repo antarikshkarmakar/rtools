@@ -44,8 +44,10 @@ graph LR
 - CLI, REST, and MCP translate public parameters into those processor types.
   They do not enable unavailable behavior by silently changing an option.
 - REST uploads live in request-owned temporary storage. Successful REST files
-  are copied into an in-memory artifact store and returned by opaque artifact
-  ID. There is no durable retention guarantee.
+  are copied into a process-local artifact store backed by a private temporary
+  directory and returned by opaque artifact ID. Batch publication tracks every
+  create-new path with a cancellation-safe cleanup guard and registers records
+  only after every copy is durable. There is no durable retention guarantee.
 - MCP operates on server-local paths, but public results and errors do not
   expose host filesystem paths. It has no hosted-download contract.
 

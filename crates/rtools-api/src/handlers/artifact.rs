@@ -6,7 +6,7 @@ use axum::{
 };
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
-use std::path::Path as FsPath;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt as _;
 
@@ -46,6 +46,218 @@ pub(crate) struct PendingArtifact<'a> {
     pub(crate) media_type: String,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) enum ArtifactPublishStage {
+    Copy,
+    Sync,
+    BetweenCopies,
+    RecordLock,
+}
+
+#[cfg(test)]
+impl ArtifactPublishStage {
+    const fn index(self) -> usize {
+        match self {
+            Self::Copy => 0,
+            Self::Sync => 1,
+            Self::BetweenCopies => 2,
+            Self::RecordLock => 3,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ArtifactTestState {
+    stage_counts: [usize; 4],
+    pause: Option<ArtifactPauseConfig>,
+    copy_count: usize,
+    fail_copy_on: Option<usize>,
+    delete_count: usize,
+    fail_delete_on: Option<usize>,
+}
+
+#[cfg(test)]
+struct ArtifactPauseConfig {
+    stage: ArtifactPublishStage,
+    occurrence: usize,
+    entered: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct ArtifactTestControl {
+    state: std::sync::Mutex<ArtifactTestState>,
+}
+
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct ArtifactPause {
+    entered: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[cfg(test)]
+impl ArtifactPause {
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered
+            .acquire()
+            .await
+            .expect("artifact pause semaphore remains open")
+            .forget();
+    }
+}
+
+#[cfg(test)]
+impl Drop for ArtifactPause {
+    fn drop(&mut self) {
+        self.release.add_permits(1);
+    }
+}
+
+#[cfg(test)]
+impl ArtifactTestControl {
+    fn pause_at(&self, stage: ArtifactPublishStage, occurrence: usize) -> ArtifactPause {
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut control = self.state.lock().expect("artifact test control lock");
+        control.stage_counts = [0; 4];
+        control.pause = Some(ArtifactPauseConfig {
+            stage,
+            occurrence,
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        });
+        drop(control);
+        ArtifactPause { entered, release }
+    }
+
+    async fn checkpoint(&self, stage: ArtifactPublishStage) {
+        let pause = {
+            let mut control = self.state.lock().expect("artifact test control lock");
+            control.stage_counts[stage.index()] += 1;
+            let occurrence = control.stage_counts[stage.index()];
+            control.pause.as_ref().and_then(|pause| {
+                (pause.stage == stage && pause.occurrence == occurrence)
+                    .then(|| (Arc::clone(&pause.entered), Arc::clone(&pause.release)))
+            })
+        };
+        if let Some((entered, release)) = pause {
+            entered.add_permits(1);
+            release
+                .acquire()
+                .await
+                .expect("artifact pause semaphore remains open")
+                .forget();
+        }
+    }
+
+    fn fail_copy_on(&self, occurrence: usize) {
+        let mut state = self.state.lock().expect("artifact test control lock");
+        state.copy_count = 0;
+        state.fail_copy_on = Some(occurrence);
+    }
+
+    fn should_fail_copy(&self) -> bool {
+        let mut state = self.state.lock().expect("artifact test control lock");
+        state.copy_count += 1;
+        state.fail_copy_on == Some(state.copy_count)
+    }
+
+    fn fail_delete_on(&self, occurrence: usize) {
+        let mut state = self.state.lock().expect("artifact test control lock");
+        state.delete_count = 0;
+        state.fail_delete_on = Some(occurrence);
+    }
+
+    fn should_fail_delete(&self) -> bool {
+        let mut state = self.state.lock().expect("artifact test control lock");
+        state.delete_count += 1;
+        state.fail_delete_on == Some(state.delete_count)
+    }
+}
+
+struct ArtifactBatchCleanup {
+    paths: Vec<PathBuf>,
+    armed: bool,
+    #[cfg(test)]
+    test_control: Arc<ArtifactTestControl>,
+}
+
+impl ArtifactBatchCleanup {
+    #[cfg(not(test))]
+    const fn new() -> Self {
+        Self {
+            paths: Vec::new(),
+            armed: true,
+        }
+    }
+
+    #[cfg(test)]
+    const fn new(test_control: Arc<ArtifactTestControl>) -> Self {
+        Self {
+            paths: Vec::new(),
+            armed: true,
+            test_control,
+        }
+    }
+
+    fn track(&mut self, path: PathBuf) {
+        self.paths.push(path);
+    }
+
+    fn cleanup_once(&mut self) -> usize {
+        let mut failed = Vec::new();
+        for path in std::mem::take(&mut self.paths) {
+            #[cfg(test)]
+            let result = if self.test_control.should_fail_delete() {
+                Err(std::io::Error::other("injected artifact cleanup failure"))
+            } else {
+                std::fs::remove_file(&path)
+            };
+            #[cfg(not(test))]
+            let result = std::fs::remove_file(&path);
+            match result {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => failed.push(path),
+            }
+        }
+        let failure_count = failed.len();
+        self.paths = failed;
+        failure_count
+    }
+
+    fn rollback(&mut self, original: ApiError) -> ApiError {
+        let failures = self.cleanup_once();
+        if failures == 0 {
+            self.armed = false;
+            original
+        } else {
+            ApiError::from_error(rtools_core::RToolsError::rollback_failed(format!(
+                "artifact publication could not remove {failures} owned path(s)"
+            )))
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.paths.clear();
+        self.armed = false;
+    }
+}
+
+impl Drop for ArtifactBatchCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.cleanup_once();
+        }
+    }
+}
+
 pub fn valid_artifact_id(id: &str) -> bool {
     id.len() == "artifact-".len() + 32
         && id.starts_with("artifact-")
@@ -62,7 +274,28 @@ impl ArtifactStore {
                 .tempdir()?,
             records: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             downloads: Arc::new(tokio::sync::Semaphore::new(16)),
+            #[cfg(test)]
+            test_control: Arc::new(ArtifactTestControl::default()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_publication_at(
+        &self,
+        stage: ArtifactPublishStage,
+        occurrence: usize,
+    ) -> ArtifactPause {
+        self.test_control.pause_at(stage, occurrence)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_publication_copy_on(&self, occurrence: usize) {
+        self.test_control.fail_copy_on(occurrence);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_publication_delete_on(&self, occurrence: usize) {
+        self.test_control.fail_delete_on(occurrence);
     }
 
     fn random_id() -> ApiResult<String> {
@@ -105,16 +338,22 @@ impl ArtifactStore {
             HeaderValue::from_str(&artifact.media_type)
                 .map_err(|_| ApiError::invalid("Artifact media type is invalid"))?;
         }
-        let mut created = Vec::<(String, ArtifactRecord)>::with_capacity(pending.len());
-        for artifact in pending {
-            match self.copy_one(&artifact).await {
+        #[cfg(test)]
+        let mut cleanup = ArtifactBatchCleanup::new(Arc::clone(&self.test_control));
+        #[cfg(not(test))]
+        let mut cleanup = ArtifactBatchCleanup::new();
+        let pending_count = pending.len();
+        let mut created = Vec::<(String, ArtifactRecord)>::with_capacity(pending_count);
+        for (index, artifact) in pending.into_iter().enumerate() {
+            match self.copy_one(&artifact, &mut cleanup).await {
                 Ok(record) => created.push(record),
-                Err(error) => {
-                    for (_, record) in &created {
-                        let _ = tokio::fs::remove_file(&record.path).await;
-                    }
-                    return Err(error);
-                }
+                Err(error) => return Err(cleanup.rollback(error)),
+            }
+            if index + 1 < pending_count {
+                #[cfg(test)]
+                self.test_control
+                    .checkpoint(ArtifactPublishStage::BetweenCopies)
+                    .await;
             }
         }
 
@@ -124,13 +363,21 @@ impl ArtifactStore {
                 ArtifactResponse::new(id.clone(), record.name.clone(), record.media_type.clone())
             })
             .collect();
-        self.records.write().await.extend(created);
+        #[cfg(test)]
+        self.test_control
+            .checkpoint(ArtifactPublishStage::RecordLock)
+            .await;
+        let mut records = self.records.write().await;
+        records.extend(created);
+        cleanup.disarm();
+        drop(records);
         Ok(responses)
     }
 
     async fn copy_one(
         &self,
         artifact: &PendingArtifact<'_>,
+        cleanup: &mut ArtifactBatchCleanup,
     ) -> ApiResult<(String, ArtifactRecord)> {
         let source_metadata = tokio::fs::symlink_metadata(artifact.source).await?;
         if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
@@ -140,24 +387,31 @@ impl ArtifactStore {
         for _ in 0..16 {
             let id = Self::random_id()?;
             let path = self.root.path().join(&id);
-            let open = tokio::fs::OpenOptions::new()
+            let open = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&path)
-                .await;
-            let mut destination = match open {
+                .open(&path);
+            let destination = match open {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             };
-            if let Err(error) = tokio::io::copy(&mut source, &mut destination).await {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error.into());
+            cleanup.track(path.clone());
+            let mut destination = tokio::fs::File::from_std(destination);
+            #[cfg(test)]
+            self.test_control
+                .checkpoint(ArtifactPublishStage::Copy)
+                .await;
+            #[cfg(test)]
+            if self.test_control.should_fail_copy() {
+                return Err(ApiError::internal("Injected artifact copy failure"));
             }
-            if let Err(error) = destination.sync_all().await {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error.into());
-            }
+            tokio::io::copy(&mut source, &mut destination).await?;
+            #[cfg(test)]
+            self.test_control
+                .checkpoint(ArtifactPublishStage::Sync)
+                .await;
+            destination.sync_all().await?;
             return Ok((
                 id,
                 ArtifactRecord {

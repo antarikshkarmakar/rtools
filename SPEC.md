@@ -382,6 +382,7 @@ max_dimension = 8192
 [limits]
 max_input_bytes = 104857600
 max_decoded_pixels = 100000000
+max_image_dimension = 32768
 max_pdf_pages = 2000
 max_batch_items = 10000
 max_duration_ms = 300000

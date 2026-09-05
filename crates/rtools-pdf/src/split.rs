@@ -3,7 +3,6 @@ use rtools_core::{FileInput, FileOutput, OutputPolicy, PendingOutput, Processor}
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::path::{Component, Path};
 use std::time::Instant;
 
 /// Page range specification
@@ -98,7 +97,7 @@ impl Processor for PdfSplitProcessor {
                     .filename_pattern
                     .replace("{n}", &page_num.to_string())
                     .replace("{total}", &page_count.to_string());
-                validate_portable_split_filename(&filename)?;
+                rtools_core::validate_portable_filename_component(&filename)?;
                 if !portable_names.insert(filename.to_lowercase()) {
                     return Err(RToolsError::invalid_input(
                         "PDF split filename pattern produces duplicate portable filenames",
@@ -182,41 +181,6 @@ impl Processor for PdfSplitProcessor {
     fn name(&self) -> &'static str {
         "PdfSplitProcessor"
     }
-}
-
-fn validate_portable_split_filename(filename: &str) -> RToolsResult<()> {
-    let mut components = Path::new(filename).components();
-    if filename.is_empty()
-        || !matches!(components.next(), Some(Component::Normal(_)))
-        || components.next().is_some()
-        || matches!(filename, "." | "..")
-        || filename.ends_with(['.', ' '])
-        || filename
-            .chars()
-            .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
-    {
-        return Err(RToolsError::invalid_input(
-            "PDF split result must be one portable filename",
-        ));
-    }
-    let stem = filename
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches([' ', '.']);
-    let reserved = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
-    if reserved
-        .iter()
-        .any(|candidate| stem.eq_ignore_ascii_case(candidate))
-    {
-        return Err(RToolsError::invalid_input(
-            "PDF split result uses a reserved portable filename",
-        ));
-    }
-    Ok(())
 }
 
 /// Resolve page range to actual page numbers

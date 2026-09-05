@@ -612,6 +612,10 @@ fn validate_nonzero_limits(limits: &ResourceLimits) -> RToolsResult<()> {
     for (name, value) in [
         ("limits.max_input_bytes", limits.max_input_bytes),
         ("limits.max_decoded_pixels", limits.max_decoded_pixels),
+        (
+            "limits.max_image_dimension",
+            u64::from(limits.max_image_dimension),
+        ),
         ("limits.max_pdf_pages", limits.max_pdf_pages),
         ("limits.max_batch_items", limits.max_batch_items),
         ("limits.max_duration_ms", limits.max_duration_ms),

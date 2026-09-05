@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 use crate::AppState;
 
-const NAME_PLACEHOLDER: &str = "{name}";
-
 #[derive(Serialize)]
 pub struct AiResponse {
     pub success: bool,
@@ -232,62 +230,68 @@ pub async fn rename(
     state.config.limits.check_batch_items(
         u64::try_from(uploads.len()).map_err(|_| ApiError::invalid("Too many input files"))?,
     )?;
-    let request = RequestFiles::new()?;
-    let mut staged = Vec::with_capacity(uploads.len());
+    let input_request = RequestFiles::new()?;
+    let output_request = RequestFiles::new()?;
+    let mut inputs = Vec::with_capacity(uploads.len());
+    let mut metadata = Vec::with_capacity(uploads.len());
     for (index, upload) in uploads.into_iter().enumerate() {
-        staged.push(incoming_image(
-            &request,
-            upload,
-            index,
-            &state.config.limits,
-        )?);
+        let (mut input, client_name, format) =
+            incoming_image(&input_request, upload, index, &state.config.limits)?;
+        input.name = Some(format!(
+            "{}.{}",
+            safe_output_stem(&client_name),
+            format.extensions()[0]
+        ));
+        inputs.push(input);
+        metadata.push((client_name, format));
     }
 
-    let mut planned_names = Vec::with_capacity(staged.len());
-    for (offset, (input, client_name, _)) in staged.iter().enumerate() {
-        let offset = u32::try_from(offset)
-            .map_err(|_| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
-        let index = start_number
-            .checked_add(offset)
-            .ok_or_else(|| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
-        let effective_pattern = pattern.replace(NAME_PLACEHOLDER, &safe_output_stem(client_name));
-        validate_rest_rename_pattern(&effective_pattern)?;
-        let source = input
-            .source
-            .as_path()
-            .ok_or_else(|| ApiError::invalid("Rename requires file path inputs"))?;
-        let rendered = rtools_ai::rename::render_filename(&effective_pattern, source, index)?;
-        planned_names.push(rendered);
-    }
+    let planned_names = inputs
+        .iter()
+        .enumerate()
+        .map(|(offset, input)| {
+            let offset = u32::try_from(offset)
+                .map_err(|_| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
+            let index = start_number
+                .checked_add(offset)
+                .ok_or_else(|| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
+            let source = input
+                .source
+                .as_path()
+                .ok_or_else(|| ApiError::invalid("Rename requires file path inputs"))?;
+            let source_name = input
+                .name
+                .as_deref()
+                .ok_or_else(|| ApiError::invalid("Rename requires a source filename"))?;
+            rtools_ai::rename::render_filename_with_source_name(
+                &pattern,
+                source,
+                source_name,
+                index,
+            )
+            .map_err(ApiError::from)
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
     rtools_ai::rename::validate_unique_portable_filenames(&planned_names)?;
 
-    let mut completed = Vec::with_capacity(staged.len());
-    for (offset, (input, client_name, format)) in staged.into_iter().enumerate() {
-        let offset = u32::try_from(offset)
-            .map_err(|_| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
-        let index = start_number
-            .checked_add(offset)
-            .ok_or_else(|| ApiError::invalid("Rename sequence exceeds the u32 range"))?;
-        let effective_pattern = pattern.replace(NAME_PLACEHOLDER, &safe_output_stem(&client_name));
-        validate_rest_rename_pattern(&effective_pattern)?;
-        let mut outputs = rtools_ai::RenameProcessor.process(
-            vec![input],
-            rtools_ai::rename::RenameConfig {
-                pattern: effective_pattern,
-                output_dir: None,
-                start_number: index,
-                use_ai_descriptions: false,
-                dry_run: false,
-            },
-        )?;
-        let output = outputs
-            .pop()
-            .ok_or_else(|| ApiError::invalid("Rename processor returned no artifact"))?;
-        completed.push((output, client_name, format));
+    let outputs = rtools_ai::RenameProcessor.process(
+        inputs,
+        rtools_ai::rename::RenameConfig {
+            pattern,
+            output_dir: Some(output_request.path().to_path_buf()),
+            start_number,
+            use_ai_descriptions: false,
+            dry_run: false,
+        },
+    )?;
+    if outputs.len() != metadata.len() {
+        return Err(ApiError::internal(
+            "Rename processor returned an incomplete artifact batch",
+        ));
     }
-    let mut names = Vec::with_capacity(completed.len());
-    let mut pending = Vec::with_capacity(completed.len());
-    for (output, _client_name, format) in &completed {
+    let mut names = Vec::with_capacity(outputs.len());
+    let mut pending = Vec::with_capacity(outputs.len());
+    for (output, (_, format)) in outputs.iter().zip(&metadata) {
         let name = output
             .name
             .clone()

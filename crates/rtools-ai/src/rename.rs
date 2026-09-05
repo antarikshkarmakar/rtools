@@ -7,7 +7,7 @@ use rtools_core::{FileInput, FileOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static RENAME_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -141,7 +141,8 @@ fn rename_with_mover(
             .start_number
             .checked_add(offset)
             .ok_or_else(|| RToolsError::invalid_input("Rename sequence exceeds the u32 range"))?;
-        let new_name = render_filename(&config.pattern, path, index)?;
+        let new_name =
+            render_filename_for_input(&config.pattern, path, inputs[idx].name.as_deref(), index)?;
         let output_dir = config
             .output_dir
             .as_deref()
@@ -352,17 +353,49 @@ pub fn validate_deterministic_pattern(pattern: &str) -> RToolsResult<()> {
 /// Returns an error when file metadata is unavailable or the rendered name is
 /// not a portable filename.
 pub fn render_filename(pattern: &str, path: &Path, index: u32) -> RToolsResult<String> {
+    render_filename_for_input(pattern, path, None, index)
+}
+
+/// Render a filename using separate storage and client-visible source names.
+///
+/// Adapters that stage uploads under private server-generated paths use this
+/// helper to keep the client name as inert filename metadata. The storage path
+/// remains authoritative for filesystem access and file timestamps.
+///
+/// # Errors
+///
+/// Returns an error when file metadata is unavailable or the rendered name is
+/// not one portable filename component.
+pub fn render_filename_with_source_name(
+    pattern: &str,
+    path: &Path,
+    source_name: &str,
+    index: u32,
+) -> RToolsResult<String> {
+    render_filename_for_input(pattern, path, Some(source_name), index)
+}
+
+fn render_filename_for_input(
+    pattern: &str,
+    path: &Path,
+    source_name: Option<&str>,
+    index: u32,
+) -> RToolsResult<String> {
     let metadata = std::fs::metadata(path)?;
     let modified = metadata.modified()?;
     let datetime: chrono::DateTime<chrono::Local> = modified.into();
 
-    let stem = path.file_stem().and_then(OsStr::to_str).ok_or_else(|| {
-        RToolsError::path_policy_violation(format!(
-            "rename destination filename stem is not Unicode: {}",
-            path.display()
-        ))
-    })?;
-    let ext = match path.extension() {
+    let name_path = source_name.map_or(path, Path::new);
+    let stem = name_path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| {
+            RToolsError::path_policy_violation(format!(
+                "rename destination filename stem is not Unicode: {}",
+                path.display()
+            ))
+        })?;
+    let ext = match name_path.extension() {
         Some(extension) => extension.to_str().ok_or_else(|| {
             RToolsError::path_policy_violation(format!(
                 "rename destination filename extension is not Unicode: {}",
@@ -410,38 +443,7 @@ pub fn render_filename(pattern: &str, path: &Path, index: u32) -> RToolsResult<S
 /// Returns `INVALID_INPUT` for paths, reserved device names, control
 /// characters, or other non-portable filename syntax.
 pub fn validate_portable_filename(filename: &str) -> RToolsResult<()> {
-    let mut components = Path::new(filename).components();
-    if !matches!(components.next(), Some(Component::Normal(_)))
-        || components.next().is_some()
-        || filename.is_empty()
-        || matches!(filename, "." | "..")
-        || filename.ends_with(['.', ' '])
-        || filename
-            .chars()
-            .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
-    {
-        return Err(RToolsError::invalid_input(
-            "Rename result must be one portable filename",
-        ));
-    }
-    let stem = filename
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches([' ', '.']);
-    let reserved = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
-    if reserved
-        .iter()
-        .any(|candidate| stem.eq_ignore_ascii_case(candidate))
-    {
-        return Err(RToolsError::invalid_input(
-            "Rename result uses a reserved portable filename",
-        ));
-    }
-    Ok(())
+    rtools_core::validate_portable_filename_component(filename)
 }
 
 /// Validate a batch of rendered filenames and reject portable aliases.

@@ -41,6 +41,12 @@ temporary entry; there is no startup scavenger or retention guarantee. Public
 responses never contain host filesystem paths. Clients that need durable
 storage must download and store the bytes themselves.
 
+Multi-artifact publication is all-or-none. Every create-new destination is
+tracked before copying begins, and cancellation or a later copy, sync, or
+registration failure removes the entire unregistered batch. If owned paths
+cannot be removed, the request fails with `ROLLBACK_FAILED` instead of hiding
+the incomplete rollback.
+
 ## Multipart rules
 
 Endpoint schemas are strict:
@@ -179,8 +185,12 @@ array. Date organization is experimental.
 Supported deterministic tokens are `{date}`, `{time}`, `{datetime}`, `{index}`,
 `{name}`, and `{ext}`. The pattern must produce one portable filename; paths,
 reserved device names (including names such as `COM1.jpg`), malformed tokens,
-and the AI `{subject}` token are rejected. Every final filename is rendered and
-the whole batch is checked for portable collisions before any rename occurs.
+including `COM`/`LPT` superscript-digit aliases, components longer than 255
+UTF-8 bytes or UTF-16 units, and the AI `{subject}` token are rejected. Every
+final filename is rendered and the whole batch is checked for portable
+collisions before any rename occurs. Uploads are staged under server-generated
+names, then processed as one rename transaction into a distinct private output
+directory; client filenames remain inert metadata.
 Successful responses contain `names` and downloadable `artifacts`. Artifact
 publication is transactional: either every returned ID is registered or no
 artifact from the batch remains.

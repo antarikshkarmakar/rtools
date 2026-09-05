@@ -1725,6 +1725,94 @@ async fn artifact_publication_batch_rolls_back_a_late_failure() {
 }
 
 #[tokio::test]
+async fn artifact_publication_cancellation_removes_every_create_new_path() {
+    use handlers::artifact::ArtifactPublishStage;
+
+    for (stage, expected_files) in [
+        (ArtifactPublishStage::Copy, 1),
+        (ArtifactPublishStage::Sync, 1),
+        (ArtifactPublishStage::BetweenCopies, 1),
+        (ArtifactPublishStage::RecordLock, 2),
+    ] {
+        let source_dir = tempfile::tempdir().unwrap();
+        let first = source_dir.path().join("first.bin");
+        let second = source_dir.path().join("second.bin");
+        tokio::fs::write(&first, vec![0x11; 64 * 1024])
+            .await
+            .unwrap();
+        tokio::fs::write(&second, vec![0x22; 64 * 1024])
+            .await
+            .unwrap();
+        let store = Arc::new(ArtifactStore::new().unwrap());
+        let pause = store.pause_publication_at(stage, 1);
+        let task_store = Arc::clone(&store);
+        let task = tokio::spawn(async move {
+            task_store
+                .publish_batch(vec![
+                    handlers::artifact::PendingArtifact {
+                        source: &first,
+                        name: "first.bin".to_string(),
+                        media_type: "application/octet-stream".to_string(),
+                    },
+                    handlers::artifact::PendingArtifact {
+                        source: &second,
+                        name: "second.bin".to_string(),
+                        media_type: "application/octet-stream".to_string(),
+                    },
+                ])
+                .await
+        });
+
+        pause.wait_until_entered().await;
+        assert_eq!(
+            std::fs::read_dir(store.root.path()).unwrap().count(),
+            expected_files,
+            "wrong number of registered paths at {stage:?}"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            std::fs::read_dir(store.root.path()).unwrap().count(),
+            0,
+            "cancellation leaked an artifact at {stage:?}"
+        );
+        assert!(store.records.read().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn artifact_publication_reports_cleanup_failure_as_rollback_failed() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let first = source_dir.path().join("first.bin");
+    let second = source_dir.path().join("second.bin");
+    tokio::fs::write(&first, b"first").await.unwrap();
+    tokio::fs::write(&second, b"second").await.unwrap();
+    let store = ArtifactStore::new().unwrap();
+    store.fail_publication_copy_on(2);
+    store.fail_publication_delete_on(1);
+
+    let error = store
+        .publish_batch(vec![
+            handlers::artifact::PendingArtifact {
+                source: &first,
+                name: "first.bin".to_string(),
+                media_type: "application/octet-stream".to_string(),
+            },
+            handlers::artifact::PendingArtifact {
+                source: &second,
+                name: "second.bin".to_string(),
+                media_type: "application/octet-stream".to_string(),
+            },
+        ])
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), rtools_core::ErrorCode::RollbackFailed);
+    assert!(store.records.read().await.is_empty());
+    assert_eq!(std::fs::read_dir(store.root.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
 async fn graceful_server_shutdown_drops_the_artifact_store() {
     let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
     let root = state.artifacts.root.path().to_path_buf();
@@ -1818,4 +1906,172 @@ async fn rename_preflights_reserved_names_and_batch_collisions_without_artifacts
             0
         );
     }
+}
+
+#[tokio::test]
+async fn rename_uses_one_isolated_batch_when_client_names_resemble_staging_names() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    let before = request_directories();
+    let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+    let router = build_router_with_state(state.clone(), 1024 * 1024);
+    let (status, document) = json_response(
+        &router,
+        multipart(
+            "/api/v1/ai/rename",
+            vec![
+                Part::File {
+                    field: "files",
+                    name: "first.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(2, 2),
+                },
+                Part::File {
+                    field: "files",
+                    name: "upload-00000002.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(3, 2),
+                },
+                Part::File {
+                    field: "files",
+                    name: "third.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(4, 2),
+                },
+                Part::Text {
+                    field: "pattern",
+                    value: "{name}",
+                },
+            ],
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{document}");
+    assert_eq!(
+        document["results"]["names"],
+        serde_json::json!(["first.png", "upload-00000002.png", "third.png"])
+    );
+    assert_eq!(
+        document["results"]["artifacts"].as_array().unwrap().len(),
+        3
+    );
+    for (artifact, width) in document["results"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip([2, 3, 4])
+    {
+        let id = artifact["id"].as_str().unwrap();
+        assert_eq!(
+            image::load_from_memory(&std::fs::read(state.artifacts.root.path().join(id)).unwrap())
+                .unwrap()
+                .width(),
+            width
+        );
+    }
+    assert_eq!(state.artifacts.records.read().await.len(), 3);
+    assert_eq!(
+        std::fs::read_dir(state.artifacts.root.path())
+            .unwrap()
+            .count(),
+        3
+    );
+    assert_eq!(request_directories(), before);
+    assert!(!document
+        .to_string()
+        .contains(state.artifacts.root.path().to_string_lossy().as_ref()));
+}
+
+#[tokio::test]
+async fn rest_rename_uses_shared_superscript_and_component_length_validation() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    let before = request_directories();
+    for (name, pattern) in [
+        ("COM¹.png", ["{", "name", "}"].concat()),
+        ("input.png", "a".repeat(256)),
+    ] {
+        let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+        let router = build_router_with_state(state.clone(), 1024 * 1024);
+        let (status, document) = json_response(
+            &router,
+            multipart(
+                "/api/v1/ai/rename",
+                vec![
+                    Part::File {
+                        field: "files",
+                        name,
+                        content_type: "image/png",
+                        bytes: png_bytes(2, 2),
+                    },
+                    Part::Text {
+                        field: "pattern",
+                        value: &pattern,
+                    },
+                ],
+            ),
+        )
+        .await;
+
+        assert_structured(status, &document, StatusCode::BAD_REQUEST);
+        assert_eq!(document["code"], "INVALID_INPUT");
+        assert!(state.artifacts.records.read().await.is_empty());
+        assert_eq!(
+            std::fs::read_dir(state.artifacts.root.path())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+    assert_eq!(request_directories(), before);
+}
+
+#[tokio::test]
+async fn rest_rename_cleans_a_late_publication_failure_without_artifacts() {
+    let _guard = REQUEST_DIRECTORY_TEST_LOCK.lock().await;
+    let before = request_directories();
+    let state = Arc::new(AppState::new(rtools_core::AppConfig::default()).unwrap());
+    state.artifacts.fail_publication_copy_on(2);
+    let router = build_router_with_state(state.clone(), 1024 * 1024);
+    let (status, document) = json_response(
+        &router,
+        multipart(
+            "/api/v1/ai/rename",
+            vec![
+                Part::File {
+                    field: "files",
+                    name: "first.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(2, 2),
+                },
+                Part::File {
+                    field: "files",
+                    name: "second.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(3, 2),
+                },
+                Part::File {
+                    field: "files",
+                    name: "third.png",
+                    content_type: "image/png",
+                    bytes: png_bytes(4, 2),
+                },
+                Part::Text {
+                    field: "pattern",
+                    value: "renamed_{index}",
+                },
+            ],
+        ),
+    )
+    .await;
+
+    assert_structured(status, &document, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(document["code"], "PROCESSING_FAILED");
+    assert!(state.artifacts.records.read().await.is_empty());
+    assert_eq!(
+        std::fs::read_dir(state.artifacts.root.path())
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(request_directories(), before);
 }

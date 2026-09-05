@@ -256,15 +256,18 @@ fn validate_output_parent(output: &Path) -> RToolsResult<()> {
     let file_name = output.file_name().ok_or_else(|| {
         RToolsError::path_policy_violation(format!("output must name a file: {}", output.display()))
     })?;
-    if file_name
-        .to_str()
-        .is_some_and(is_reserved_windows_device_name)
-    {
-        return Err(RToolsError::path_policy_violation(format!(
-            "output uses a reserved Windows device name: {}",
+    let file_name = file_name.to_str().ok_or_else(|| {
+        RToolsError::path_policy_violation(format!(
+            "output filename must be Unicode: {}",
             output.display()
-        )));
-    }
+        ))
+    })?;
+    validate_portable_filename_component(file_name).map_err(|_| {
+        RToolsError::path_policy_violation(format!(
+            "output must use one portable filename component: {}",
+            output.display()
+        ))
+    })?;
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -343,6 +346,36 @@ fn validate_output_directory(path: &Path) -> RToolsResult<()> {
             "output parent ancestor is not a directory: {}",
             path.display()
         )));
+    }
+    Ok(())
+}
+
+/// Validate one portable filename component shared by every output planner.
+///
+/// The conservative length ceiling satisfies common 255-byte Unix filesystems
+/// and the 255 UTF-16-code-unit Windows component limit.
+///
+/// # Errors
+///
+/// Returns `INVALID_INPUT` for empty, rooted, multi-component, reserved,
+/// syntactically invalid, or overlong filenames.
+pub fn validate_portable_filename_component(file_name: &str) -> RToolsResult<()> {
+    let mut components = Path::new(file_name).components();
+    if file_name.is_empty()
+        || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+        || matches!(file_name, "." | "..")
+        || file_name.ends_with(['.', ' '])
+        || file_name.len() > 255
+        || file_name.encode_utf16().count() > 255
+        || file_name
+            .chars()
+            .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
+        || is_reserved_windows_device_name(file_name)
+    {
+        return Err(RToolsError::invalid_input(
+            "Filename must be one portable component of at most 255 bytes and UTF-16 units",
+        ));
     }
     Ok(())
 }

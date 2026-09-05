@@ -171,6 +171,40 @@ fn rename_duplicate_input_fails_without_creating_an_artifact() {
 }
 
 #[test]
+fn rename_rejects_superscript_devices_and_long_components_before_mutation() {
+    for dry_run in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.jpg");
+        std::fs::write(&source, b"source").unwrap();
+        let output_dir = temp.path().join("out");
+        if !dry_run {
+            std::fs::create_dir(&output_dir).unwrap();
+        }
+
+        for pattern in ["COM¹".to_string(), "a".repeat(256)] {
+            let error = RenameProcessor
+                .process(
+                    vec![FileInput::from_path(source.clone())],
+                    RenameConfig {
+                        pattern,
+                        output_dir: Some(output_dir.clone()),
+                        start_number: 1,
+                        use_ai_descriptions: false,
+                        dry_run,
+                    },
+                )
+                .unwrap_err();
+
+            assert_eq!(error.code(), ErrorCode::InvalidInput);
+            assert_eq!(std::fs::read(&source).unwrap(), b"source");
+            if output_dir.exists() {
+                assert_eq!(std::fs::read_dir(&output_dir).unwrap().count(), 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn organize_dry_run_rejects_case_only_planned_destination_aliases() {
     let temp = tempfile::tempdir().unwrap();
     let upper_source_dir = temp.path().join("upper-source");

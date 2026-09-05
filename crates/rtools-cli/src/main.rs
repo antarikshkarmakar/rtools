@@ -829,6 +829,10 @@ fn apply_cli_behavioral_config(
         .checked_mul(u64::from(config.image.max_dimension))
         .ok_or_else(|| RToolsError::configuration_invalid("image.max_dimension overflows"))?;
     config.limits.max_decoded_pixels = config.limits.max_decoded_pixels.min(configured_pixels);
+    config.limits.max_image_dimension = config
+        .limits
+        .max_image_dimension
+        .min(config.image.max_dimension);
     Ok(())
 }
 

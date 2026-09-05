@@ -234,6 +234,18 @@ try {
         if ($LastCargoExitCode -ne 0) {
             Fail-CapabilityVerification "REST adapter contract test exited with status $LastCargoExitCode"
         }
+        Invoke-Cargo -CargoArguments @('test', '--locked', '-p', 'rtools-api', 'rename_uses_one_isolated_batch_when_client_names_resemble_staging_names')
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "REST rename batch contract test exited with status $LastCargoExitCode"
+        }
+        Invoke-Cargo -CargoArguments @('test', '--locked', '-p', 'rtools-cli', 'webp_rejects_explicit_quality_but_allows_omitted_quality')
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "CLI quality contract test exited with status $LastCargoExitCode"
+        }
+        Invoke-Cargo -CargoArguments @('test', '--locked', '-p', 'rtools-core', 'portable_filename_component_rejects_superscript_devices_and_long_names')
+        if ($LastCargoExitCode -ne 0) {
+            Fail-CapabilityVerification "portable filename contract test exited with status $LastCargoExitCode"
+        }
     }
     finally {
         Pop-Location
