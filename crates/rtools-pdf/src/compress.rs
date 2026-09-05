@@ -118,8 +118,17 @@ impl Processor for PdfCompressProcessor {
         })
     }
 
-    fn validate_config(&self, _config: &PdfCompressConfig) -> RToolsResult<()> {
-        Ok(())
+    fn validate_config(&self, config: &PdfCompressConfig) -> RToolsResult<()> {
+        match config.level {
+            PdfCompressionLevel::Medium => Ok(()),
+            PdfCompressionLevel::Light | PdfCompressionLevel::Heavy => {
+                Err(RToolsError::capability_unavailable(
+                    "pdf.compress.level",
+                    "Only medium PDF compression is implemented",
+                    "Use compression level medium",
+                ))
+            }
+        }
     }
 
     fn name(&self) -> &'static str {

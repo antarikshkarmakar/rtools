@@ -6,7 +6,7 @@ use rmcp::{
     transport::io::stdio,
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
-use rtools_core::Processor;
+use rtools_core::{Processor, RToolsError, RToolsResult};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -92,6 +92,20 @@ fn file_output_content(output: &rtools_core::FileOutput) -> Result<ContentBlock,
         .map_err(|error| McpError::internal_error(error.to_string(), None))
 }
 
+fn tool_error(error: &RToolsError) -> CallToolResult {
+    let operation_id = match error {
+        RToolsError::CapabilityUnavailable { operation_id, .. } => Some(operation_id.as_str()),
+        _ => None,
+    };
+    let mut result = CallToolResult::error(vec![ContentBlock::text(error.to_string())]);
+    result.structured_content = Some(serde_json::json!({
+        "code": error.code().as_str(),
+        "message": error.to_string(),
+        "operation_id": operation_id,
+    }));
+    result
+}
+
 impl RToolsServer {
     #[allow(clippy::too_many_lines)] // Task 7 will group tool schemas by domain.
     fn tools() -> Vec<Tool> {
@@ -125,7 +139,7 @@ impl RToolsServer {
             ),
             Tool::new(
                 "organize_photos",
-                "AI-organize photos into folders",
+                "Organize photos by deterministic date into prepared year/month folders",
                 serde_json::to_value(rmcp::schemars::schema_for!(OrganizeInput))
                     .unwrap_or_default()
                     .as_object()
@@ -134,7 +148,7 @@ impl RToolsServer {
             ),
             Tool::new(
                 "rename_photos",
-                "AI-rename photos with descriptive names",
+                "Rename photos with deterministic filename tokens",
                 serde_json::to_value(rmcp::schemars::schema_for!(RenameInput))
                     .unwrap_or_default()
                     .as_object()
@@ -143,7 +157,7 @@ impl RToolsServer {
             ),
             Tool::new(
                 "generate_alt_text",
-                "Generate accessibility alt text for an image",
+                "Unavailable: no verified image captioning provider is configured",
                 serde_json::to_value(rmcp::schemars::schema_for!(AltTextInput))
                     .unwrap_or_default()
                     .as_object()
@@ -161,7 +175,7 @@ impl RToolsServer {
             ),
             Tool::new(
                 "compress_pdf",
-                "Compress PDF file size",
+                "Experimentally compress a PDF using the medium level only",
                 serde_json::to_value(rmcp::schemars::schema_for!(PdfCompressInput))
                     .unwrap_or_default()
                     .as_object()
@@ -179,7 +193,7 @@ impl RToolsServer {
             ),
             Tool::new(
                 "extract_text",
-                "Extract text from image or PDF using OCR",
+                "Unavailable: no verified OCR provider is configured",
                 serde_json::to_value(rmcp::schemars::schema_for!(OcrInput))
                     .unwrap_or_default()
                     .as_object()
@@ -237,9 +251,7 @@ impl RToolsServer {
                             file_output_content(&output)?,
                         ]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -271,9 +283,7 @@ impl RToolsServer {
                         ContentBlock::text(format!("Converted to {}", input.target_format)),
                         file_output_content(&output)?,
                     ])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -298,16 +308,17 @@ impl RToolsServer {
                         ContentBlock::text("Resized successfully"),
                         file_output_content(&output)?,
                     ])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
             "organize_photos" => {
                 let input: OrganizeInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = collect_images(&input.input_dir);
+                let inputs = match collect_images(&input.input_dir) {
+                    Ok(inputs) => inputs,
+                    Err(error) => return Ok(tool_error(&error)),
+                };
                 let config = rtools_ai::organize::OrganizeConfig {
                     output_dir: PathBuf::from(&input.output_dir),
                     strategy: match input.strategy.as_deref().unwrap_or("date") {
@@ -333,16 +344,17 @@ impl RToolsServer {
                         "Organized {} photos",
                         outputs.len()
                     ))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
             "rename_photos" => {
                 let input: RenameInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = collect_images(&input.input_dir);
+                let inputs = match collect_images(&input.input_dir) {
+                    Ok(inputs) => inputs,
+                    Err(error) => return Ok(tool_error(&error)),
+                };
                 let config = rtools_ai::rename::RenameConfig {
                     pattern: input
                         .pattern
@@ -358,9 +370,7 @@ impl RToolsServer {
                         "Renamed {} photos",
                         outputs.len()
                     ))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -379,16 +389,17 @@ impl RToolsServer {
                     Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                         result.alt_text,
                     )])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
             "find_duplicates" => {
                 let input: DuplicatesInput = serde_json::from_value(input)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let inputs = collect_images(&input.input_dir);
+                let inputs = match collect_images(&input.input_dir) {
+                    Ok(inputs) => inputs,
+                    Err(error) => return Ok(tool_error(&error)),
+                };
                 let config = rtools_ai::duplicates::DuplicatesConfig {
                     threshold: input.threshold.unwrap_or(0.9),
                     algorithm: rtools_ai::duplicates::HashAlgorithm::Perceptual,
@@ -404,9 +415,7 @@ impl RToolsServer {
                         let _ = writeln!(text, "Duplicates: {}", result.total_duplicates);
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -418,8 +427,14 @@ impl RToolsServer {
                 let config = rtools_pdf::PdfCompressConfig {
                     level: match input.level.as_deref().unwrap_or("medium") {
                         "light" => rtools_pdf::compress::PdfCompressionLevel::Light,
+                        "medium" => rtools_pdf::compress::PdfCompressionLevel::Medium,
                         "heavy" => rtools_pdf::compress::PdfCompressionLevel::Heavy,
-                        _ => rtools_pdf::compress::PdfCompressionLevel::Medium,
+                        other => {
+                            return Err(McpError::invalid_params(
+                                format!("Unsupported PDF compression level: {other}"),
+                                None,
+                            ));
+                        }
                     },
                     output: input.output_path.map(PathBuf::from),
                     remove_metadata: false,
@@ -434,9 +449,7 @@ impl RToolsServer {
                         }
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -459,9 +472,7 @@ impl RToolsServer {
                         "Merged PDFs into {}",
                         input.output_path
                     ))])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -480,9 +491,7 @@ impl RToolsServer {
                     Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                         result.text,
                     )])),
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -499,9 +508,7 @@ impl RToolsServer {
                             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                         Ok(CallToolResult::success(vec![ContentBlock::text(result)]))
                     }
-                    Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.to_string(),
-                    )])),
+                    Err(error) => Ok(tool_error(&error)),
                 }
             }
 
@@ -513,16 +520,25 @@ impl RToolsServer {
     }
 }
 
-fn collect_images(dir: &str) -> Vec<rtools_core::FileInput> {
+fn collect_images(dir: &str) -> RToolsResult<Vec<rtools_core::FileInput>> {
+    let root = std::path::Path::new(dir);
+    if !root.exists() {
+        return Err(RToolsError::file_not_found(dir));
+    }
+    if !root.is_dir() {
+        return Err(RToolsError::invalid_input(format!(
+            "Image input is not a directory: {dir}"
+        )));
+    }
     let mut inputs = Vec::new();
     let valid_extensions = [
         "jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "bmp", "gif",
     ];
 
-    for entry in walkdir::WalkDir::new(dir)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry.map_err(|error| {
+            RToolsError::invalid_input(format!("Failed to traverse image input {dir}: {error}"))
+        })?;
         if entry.file_type().is_file() {
             if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
                 if valid_extensions.contains(&ext.to_lowercase().as_str()) {
@@ -534,7 +550,7 @@ fn collect_images(dir: &str) -> Vec<rtools_core::FileInput> {
         }
     }
 
-    inputs
+    Ok(inputs)
 }
 
 impl ServerHandler for RToolsServer {
@@ -816,6 +832,106 @@ mod tests {
             .await
             .expect("tool dispatch must complete");
         assert!(is_error(&duplicates), "{duplicates:?}");
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_missing_directory_is_a_structured_tool_error() {
+        let result = RToolsServer
+            .handle_tool(
+                "rename_photos",
+                serde_json::json!({
+                    "input_dir": "definitely-missing-mcp-directory",
+                    "dry_run": true,
+                }),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        let serialized = serde_json::to_value(&result).unwrap();
+
+        assert!(is_error(&result), "{result:?}");
+        assert_eq!(serialized["structuredContent"]["code"], "INVALID_INPUT");
+    }
+
+    #[tokio::test]
+    async fn mcp_contract_pdf_compression_levels_do_not_fallback() {
+        let invalid = RToolsServer
+            .handle_tool(
+                "compress_pdf",
+                serde_json::json!({
+                    "input_path": "missing.pdf",
+                    "level": "mystery",
+                }),
+            )
+            .await;
+        assert!(invalid.is_err(), "unknown values are invalid parameters");
+
+        let unavailable = RToolsServer
+            .handle_tool(
+                "compress_pdf",
+                serde_json::json!({
+                    "input_path": "missing.pdf",
+                    "level": "light",
+                }),
+            )
+            .await
+            .expect("known level must reach capability validation");
+        let serialized = serde_json::to_value(&unavailable).unwrap();
+        assert!(is_error(&unavailable), "{unavailable:?}");
+        assert_eq!(
+            serialized["structuredContent"]["code"],
+            "CAPABILITY_UNAVAILABLE"
+        );
+        assert_eq!(
+            serialized["structuredContent"]["operation_id"],
+            "pdf.compress.level"
+        );
+    }
+
+    #[test]
+    fn mcp_contract_tool_descriptions_do_not_advertise_unavailable_ai_behavior() {
+        let tools = RToolsServer::tools();
+        let serialized = serde_json::to_string(&tools).unwrap();
+
+        assert!(!serialized.contains("AI-organize"), "{serialized}");
+        assert!(!serialized.contains("AI-rename"), "{serialized}");
+        assert!(serialized.contains("deterministic date"), "{serialized}");
+        assert!(
+            serialized.contains("deterministic filename"),
+            "{serialized}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mcp_contract_organize_rejects_linked_output_without_outside_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.png");
+        write_png(&input);
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let linked = temp.path().join("linked");
+        std::os::unix::fs::symlink(&outside, &linked).unwrap();
+
+        let result = RToolsServer
+            .handle_tool(
+                "organize_photos",
+                serde_json::json!({
+                    "input_dir": temp.path(),
+                    "output_dir": linked,
+                    "strategy": "date",
+                }),
+            )
+            .await
+            .expect("tool dispatch must complete");
+        let serialized = serde_json::to_value(&result).unwrap();
+
+        assert!(is_error(&result), "{result:?}");
+        assert_eq!(
+            serialized["structuredContent"]["code"],
+            "PATH_POLICY_VIOLATION"
+        );
+        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+        assert!(input.exists());
     }
 
     #[tokio::test]

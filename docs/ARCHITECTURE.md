@@ -201,19 +201,16 @@ sequenceDiagram
     Core-->>CLI: Output path
     CLI-->>U: "Merged: merged.pdf"
 
-    Note over U,FS: AI Organize Flow
-    U->>CLI: rtools ai organize --input ~/Photos
+    Note over U,FS: Experimental Date Organize Flow
+    U->>CLI: rtools --dry-run ai organize --input ~/Photos --output ~/Organized
     CLI->>Core: Validate request
     Core->>AI: OrganizeProcessor.process()
-    AI->>FS: List all images
+    AI->>FS: Read image modification times
     FS-->>AI: File list
-    AI->>AI: Classify by date/subject
-    AI->>FS: Create folders
-    AI->>FS: Move files
-    FS-->>AI: Move success
-    AI-->>Core: List of organized files
-    Core-->>CLI: Summary
-    CLI-->>U: "Organized 150 photos into 12 folders"
+    AI->>AI: Plan deterministic year/month destinations
+    AI-->>Core: Exact no-write plan
+    Core-->>CLI: Source/destination pairs
+    CLI-->>U: "Planned 150 file operations"
 ```
 
 ## Error Handling Flow

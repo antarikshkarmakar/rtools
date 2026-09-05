@@ -17,7 +17,7 @@ source of truth. The complete, verifier-controlled table is in
 |---|---|
 | Available | Image compress, convert, resize, crop, filter, image watermark, EXIF human/JSON inspection; config init/show/validate; shell completions; doctor |
 | Experimental | PDF merge/compress/split; report-only duplicate detection; date organization; deterministic rename |
-| Unavailable | OCR, alt text, AI classification/naming, PDF rendering/text/OCR, text watermarks, selective metadata preservation/GPS removal, destructive duplicate actions, batch recipes |
+| Unavailable | OCR, alt text, AI classification/naming/sorting, PDF rendering/text/OCR, light/heavy PDF compression, PDF split-to-image, text watermarks, selective metadata preservation/GPS removal, destructive duplicate actions, batch recipes |
 
 Available means supported for the current release. Experimental operations run
 but carry the limitation reported by doctor. Unavailable operations fail with
@@ -152,6 +152,13 @@ artifact.
 - PDF output parents must already exist. The CLI requires an existing explicit
   directory for `pdf split`; Rust callers using `PdfSplitConfig::default()`
   must create its `output/` directory from a trusted path before processing.
+- Live date organization requires each derived year/month output directory to
+  exist already. Dry-run can be used to obtain the exact planned paths first.
+  The REST adapter creates only derived directories below its private,
+  server-owned request directory.
+- PDF compression currently accepts only `medium`. `light` and `heavy` fail
+  with `CAPABILITY_UNAVAILABLE`. PDF split emits PDF pages only; image-output
+  settings other than the public defaults fail closed.
 - Writing image operations use the verified drop-all metadata policy. Metadata
   preservation and GPS-only removal are unavailable and fail before output
   reservation. EXIF inspection is read-only. The public Rust `quality` fields

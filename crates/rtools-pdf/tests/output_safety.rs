@@ -1,12 +1,62 @@
 use lopdf::{dictionary, Document, Object, Stream};
 use rtools_core::{ErrorCode, FileInput, OutputPolicy, PendingOutput, Processor};
-use rtools_pdf::compress::{PdfCompressConfig, PdfCompressProcessor};
+use rtools_pdf::compress::{PdfCompressConfig, PdfCompressProcessor, PdfCompressionLevel};
 use rtools_pdf::merge::{PdfMergeConfig, PdfMergeProcessor};
 use rtools_pdf::split::{PageRange, PdfSplitConfig, PdfSplitProcessor};
 use serde as _;
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
+
+#[test]
+fn unsupported_pdf_compression_levels_fail_before_input_or_output_access() {
+    let temp = tempfile::tempdir().unwrap();
+    for level in [PdfCompressionLevel::Light, PdfCompressionLevel::Heavy] {
+        let output = temp.path().join(format!("{level:?}.pdf"));
+        let error = PdfCompressProcessor
+            .process(
+                FileInput::from_path(temp.path().join("missing.pdf")),
+                PdfCompressConfig {
+                    level,
+                    output: Some(output.clone()),
+                    remove_metadata: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn pdf_split_image_options_fail_before_input_or_output_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let cases = [
+        PdfSplitConfig {
+            as_images: true,
+            ..PdfSplitConfig::default()
+        },
+        PdfSplitConfig {
+            image_format: Some("jpeg".to_string()),
+            ..PdfSplitConfig::default()
+        },
+        PdfSplitConfig {
+            image_dpi: 144,
+            ..PdfSplitConfig::default()
+        },
+    ];
+    for mut config in cases {
+        config.output_dir = temp.path().join("missing-output");
+        let error = PdfSplitProcessor
+            .process(
+                FileInput::from_path(temp.path().join("missing.pdf")),
+                config,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::CapabilityUnavailable);
+        assert!(!temp.path().join("missing-output").exists());
+    }
+}
 
 #[cfg(unix)]
 fn create_directory_symlink(target: &Path, link: &Path) {

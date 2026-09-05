@@ -1,5 +1,5 @@
 use icu_casemap::CaseMapper;
-use rtools_core::{OutputPolicy, PendingOutput, RToolsError, RToolsResult};
+use rtools_core::{RToolsError, RToolsResult};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -119,14 +119,6 @@ fn destination_or_case_alias_exists_with_base(path: &Path, base: &Path) -> RTool
     }
 
     Ok(has_normal_component && path_entry_exists(&current)?)
-}
-
-/// Copy to a sibling temporary artifact, then publish with the Task 4
-/// no-replace reservation/commit protocol.
-pub fn copy_no_replace(source: &Path, destination: &Path) -> RToolsResult<PathBuf> {
-    let pending = PendingOutput::new(destination, OutputPolicy::FailIfExists)?;
-    std::fs::copy(source, pending.temporary_path())?;
-    pending.commit(|_| Ok(()))
 }
 
 /// Atomically create a no-replace rename destination that shares the source

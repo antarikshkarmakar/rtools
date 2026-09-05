@@ -32,6 +32,7 @@ rows.
 | `ai.organize.subject` | `unavailable` | Subject classification is not implemented. |
 | `ai.rename.ai` | `unavailable` | AI-generated filename descriptions are not implemented. |
 | `ai.rename.deterministic` | `experimental` | Deterministic tokens are supported with limited release-safety coverage. |
+| `ai.sort` | `unavailable` | The public sort processor fails closed; no sorting strategy is implemented. |
 | `batch.run` | `unavailable` | Typed batch recipe execution is not implemented. |
 | `completions.generate` | `available` | Generate shell completions. |
 | `config.init` | `available` | Create a configuration file without replacing an existing file. |
@@ -51,9 +52,11 @@ rows.
 | `image.watermark.image` | `available` | Apply an image watermark with bounded decode and validated placement. |
 | `image.watermark.text` | `unavailable` | Text rendering is not implemented for watermarks. |
 | `pdf.compress` | `experimental` | Collision-safe publication requires an existing validated parent; PDF structure preservation is only partially verified. |
+| `pdf.compress.level` | `unavailable` | Light and heavy levels are not implemented; medium is the only accepted level. |
 | `pdf.merge` | `experimental` | Collision-safe publication requires an existing validated parent; PDF structure preservation is only partially verified. |
 | `pdf.ocr` | `unavailable` | No verified searchable-PDF OCR adapter. |
 | `pdf.split` | `experimental` | The output directory must exist and validate before all page destinations are reserved; PDF structure preservation is only partially verified. |
+| `pdf.split.images` | `unavailable` | Image output and non-default image options are not implemented. |
 | `pdf.text` | `unavailable` | PDF text extraction is not implemented in the CLI. |
 | `pdf.to_image` | `unavailable` | No verified PDFium rendering adapter. |
 

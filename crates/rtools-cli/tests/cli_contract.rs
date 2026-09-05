@@ -474,6 +474,7 @@ fn doctor_json_is_one_report_and_matches_the_sorted_shared_registry() {
             ("ai.organize.subject", "unavailable"),
             ("ai.rename.ai", "unavailable"),
             ("ai.rename.deterministic", "experimental"),
+            ("ai.sort", "unavailable"),
             ("batch.run", "unavailable"),
             ("completions.generate", "available"),
             ("config.init", "available"),
@@ -493,9 +494,11 @@ fn doctor_json_is_one_report_and_matches_the_sorted_shared_registry() {
             ("image.watermark.image", "available"),
             ("image.watermark.text", "unavailable"),
             ("pdf.compress", "experimental"),
+            ("pdf.compress.level", "unavailable"),
             ("pdf.merge", "experimental"),
             ("pdf.ocr", "unavailable"),
             ("pdf.split", "experimental"),
+            ("pdf.split.images", "unavailable"),
             ("pdf.text", "unavailable"),
             ("pdf.to_image", "unavailable"),
         ]
@@ -674,4 +677,35 @@ fn global_dry_run_date_organize_returns_exact_pair_without_directories() {
     assert!(destination.starts_with(&output_dir.display().to_string()));
     assert!(destination.ends_with("photo.jpg"));
     assert!(!Path::new(destination).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn live_organize_rejects_linked_output_root_without_outside_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let input_dir = temp.path().join("photos");
+    std::fs::create_dir(&input_dir).unwrap();
+    let source = input_dir.join("photo.jpg");
+    std::fs::write(&source, b"fixture").unwrap();
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let linked = temp.path().join("linked");
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+
+    let output = command(temp.path())
+        .args(["--output-format", "json", "ai", "organize", "--input"])
+        .arg(&input_dir)
+        .arg("--output")
+        .arg(&linked)
+        .args(["--strategy", "date"])
+        .output()
+        .unwrap();
+
+    assert_exit(&output, 5);
+    assert_eq!(
+        stdout_json(&output)["failures"][0]["code"],
+        "PATH_POLICY_VIOLATION"
+    );
+    assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+    assert_eq!(std::fs::read(source).unwrap(), b"fixture");
 }

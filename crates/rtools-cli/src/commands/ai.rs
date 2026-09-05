@@ -16,7 +16,7 @@ pub fn handle_ai_command(
             output,
             strategy,
         } => {
-            let source_paths = collect_image_paths(&input);
+            let source_paths = collect_image_paths(&input)?;
             require_nonempty_inputs(&source_paths)?;
             let processor = rtools_ai::OrganizeProcessor;
             let processor_config = rtools_ai::organize::OrganizeConfig {
@@ -53,7 +53,7 @@ pub fn handle_ai_command(
             pattern,
             dry_run,
         } => {
-            let source_paths = collect_image_paths(&input);
+            let source_paths = collect_image_paths(&input)?;
             require_nonempty_inputs(&source_paths)?;
             let dry_run = global_dry_run || dry_run;
             let processor = rtools_ai::RenameProcessor;
@@ -117,7 +117,7 @@ pub fn handle_ai_command(
             threshold,
             action,
         } => {
-            let source_paths = collect_image_paths(&input);
+            let source_paths = collect_image_paths(&input)?;
             require_nonempty_inputs(&source_paths)?;
             let processor = rtools_ai::DuplicatesProcessor;
             let processor_config = rtools_ai::duplicates::DuplicatesConfig {
@@ -200,13 +200,31 @@ fn require_nonempty_inputs(inputs: &[PathBuf]) -> RToolsResult<()> {
     }
 }
 
-fn collect_image_paths(directory: &PathBuf) -> Vec<PathBuf> {
+fn collect_image_paths(directory: &PathBuf) -> RToolsResult<Vec<PathBuf>> {
+    if !directory.exists() {
+        return Err(RToolsError::file_not_found(directory.display().to_string()));
+    }
+    if !directory.is_dir() {
+        return Err(RToolsError::invalid_input(format!(
+            "Image input is not a directory: {}",
+            directory.display()
+        )));
+    }
     let valid_extensions = [
         "jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "bmp", "gif",
     ];
     let mut paths = walkdir::WalkDir::new(directory)
         .into_iter()
-        .filter_map(std::result::Result::ok)
+        .map(|entry| {
+            entry.map_err(|error| {
+                RToolsError::invalid_input(format!(
+                    "Failed to traverse image input {}: {error}",
+                    directory.display()
+                ))
+            })
+        })
+        .collect::<RToolsResult<Vec<_>>>()?
+        .into_iter()
         .filter(|entry| entry.file_type().is_file())
         .filter_map(|entry| {
             entry
@@ -218,14 +236,33 @@ fn collect_image_paths(directory: &PathBuf) -> Vec<PathBuf> {
         })
         .collect::<Vec<_>>();
     paths.sort();
-    paths
+    Ok(paths)
 }
 
 #[cfg(test)]
 mod tests {
     use super::handle_ai_command;
     use crate::{AiCommands, DuplicateMode};
-    use rtools_core::{AppConfig, ErrorCode};
+    use rtools_core::{AppConfig, ErrorCode, RToolsError};
+
+    #[test]
+    fn rename_missing_directory_is_not_flattened_into_an_empty_scan() {
+        let missing = std::path::PathBuf::from("definitely-missing-rename-directory");
+        let error = handle_ai_command(
+            AiCommands::Rename {
+                input: missing.clone(),
+                pattern: "{name}".to_string(),
+                dry_run: true,
+            },
+            &AppConfig::default(),
+            false,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, RToolsError::FileNotFound(path) if path == missing.display().to_string())
+        );
+    }
 
     #[test]
     fn alt_text_processor_error_is_retained_with_its_item_path() {

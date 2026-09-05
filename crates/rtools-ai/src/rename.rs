@@ -49,6 +49,11 @@ impl Processor for RenameProcessor {
         inputs: Vec<FileInput>,
         config: RenameConfig,
     ) -> RToolsResult<Vec<FileOutput>> {
+        if inputs.is_empty() {
+            return Err(RToolsError::invalid_input(
+                "Rename requires at least one input file",
+            ));
+        }
         let input_paths =
             inputs
                 .iter()

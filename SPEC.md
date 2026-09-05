@@ -22,7 +22,7 @@ operation-ID order. The checked-in projection and its CI verifier live in
 |---|---|
 | Available | Image compress, convert, crop, resize, filter, image watermark, EXIF human/JSON inspection; configuration commands; completions; doctor |
 | Experimental | PDF merge/compress/split; report-only duplicate detection; date organization; deterministic rename |
-| Unavailable | OCR, alt text, AI classification/naming, PDF rendering/text/OCR, text watermarking, metadata preservation or GPS-only removal, destructive duplicate modes, batch recipes |
+| Unavailable | OCR, alt text, AI classification/naming/sorting, PDF rendering/text/OCR, light/heavy PDF compression, PDF split-to-image, text watermarking, metadata preservation or GPS-only removal, destructive duplicate modes, batch recipes |
 
 Unavailable operations return a structured `CAPABILITY_UNAVAILABLE` error and
 a nonzero process status. Provider discovery never enables an operation without
@@ -43,6 +43,12 @@ rendering, ONNX inference, or fabricated batch execution.
   can traverse an unvalidated linked ancestor before output policy runs. This
   includes the default `PdfSplitConfig` output directory, `output/`, which a
   caller must create from a trusted path before processing.
+- Live date organization likewise requires its derived year/month directory to
+  exist before processing. The public sort processor is unavailable and fails
+  before reading inputs or creating an output directory.
+- PDF compression accepts only the implemented `medium` level. PDF split emits
+  PDF pages only; its image-output fields remain public for compatibility but
+  non-default values fail with `CAPABILITY_UNAVAILABLE`.
 - Writing image operations re-encode with a verified drop-all metadata policy.
   Preserve and GPS-only policies are unavailable and fail before any output is
   reserved. EXIF human and JSON operations are read-only.
@@ -266,7 +272,7 @@ rtools --dry-run ai rename --input photos/ --pattern "{date}_{name}_{index}"
 
 # Experimental PDF operations
 rtools pdf merge --input file1.pdf file2.pdf --output merged.pdf
-rtools pdf compress --level heavy --input large.pdf --output small.pdf
+rtools pdf compress --level medium --input large.pdf --output small.pdf
 rtools pdf split --pages 1-5,10-15 --input doc.pdf --output split/
 
 # Registered but unavailable; each returns exit 3 without placeholder success
@@ -328,8 +334,8 @@ modes return structured errors.
       "inputSchema": {...}
     },
     {
-      "name": "ai_organize_photos",
-      "description": "AI-organize photos into folders",
+      "name": "organize_photos",
+      "description": "Organize photos by deterministic date into prepared folders",
       "inputSchema": {...}
     },
     {

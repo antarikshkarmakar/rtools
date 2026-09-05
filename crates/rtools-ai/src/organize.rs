@@ -1,8 +1,6 @@
-use crate::destination::{
-    copy_no_replace, destination_or_case_alias_exists, insert_unique_destination,
-};
+use crate::destination::{destination_or_case_alias_exists, insert_unique_destination};
 use rtools_core::error::{RToolsError, RToolsResult};
-use rtools_core::{FileInput, FileOutput, Processor};
+use rtools_core::{FileInput, FileOutput, OutputPolicy, PendingOutput, Processor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -106,17 +104,37 @@ impl Processor for OrganizeProcessor {
             plans.push((path.clone(), target_path));
         }
 
-        let mut outputs = Vec::with_capacity(plans.len());
-        for (path, target_path) in plans {
-            if !config.dry_run {
-                let target_dir = target_path.parent().ok_or_else(|| {
-                    RToolsError::path_policy_violation("Organize destination has no parent")
-                })?;
-                std::fs::create_dir_all(target_dir)?;
-                copy_no_replace(&path, &target_path)?;
+        if !config.dry_run {
+            let mut pending = plans
+                .iter()
+                .map(|(_, target_path)| PendingOutput::new(target_path, OutputPolicy::FailIfExists))
+                .collect::<RToolsResult<Vec<_>>>()?;
+            for ((source, _), reservation) in plans.iter().zip(&pending) {
+                std::fs::copy(source, reservation.temporary_path())?;
             }
 
-            outputs.push(FileOutput {
+            let mut committed = Vec::with_capacity(pending.len());
+            while let Some(reservation) = pending.pop() {
+                match reservation.commit(|_| Ok(())) {
+                    Ok(path) => committed.push(path),
+                    Err(error) => {
+                        for path in &committed {
+                            std::fs::remove_file(path).map_err(|rollback| {
+                                RToolsError::rollback_failed(format!(
+                                    "organize failed ({error}); could not remove {}: {rollback}",
+                                    path.display()
+                                ))
+                            })?;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        let outputs = plans
+            .into_iter()
+            .map(|(_, target_path)| FileOutput {
                 destination: rtools_core::output::OutputDestination::File(target_path.clone()),
                 name: target_path
                     .file_name()
@@ -124,15 +142,22 @@ impl Processor for OrganizeProcessor {
                 mime_type: None,
                 stats: None,
                 warnings: Vec::new(),
-            });
-        }
+            })
+            .collect();
 
         Ok(outputs)
     }
 
     fn validate_config(&self, config: &OrganizeConfig) -> RToolsResult<()> {
         let operation_id = match config.strategy {
-            OrganizeStrategy::ByDate => return Ok(()),
+            OrganizeStrategy::ByDate => {
+                if !config.by_date || config.by_subject {
+                    return Err(RToolsError::invalid_input(
+                        "Date organization requires by_date=true and by_subject=false",
+                    ));
+                }
+                return Ok(());
+            }
             OrganizeStrategy::BySubject => "ai.organize.subject",
             OrganizeStrategy::ByLocation => "ai.organize.location",
             OrganizeStrategy::ByCamera => "ai.organize.camera",

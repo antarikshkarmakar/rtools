@@ -158,10 +158,31 @@ pub async fn organize(
         inputs.push(input);
         metadata.push((name, format));
     }
+    let output_dir = request.path().join("organized");
+    let organize_config = rtools_ai::organize::OrganizeConfig {
+        output_dir: output_dir.clone(),
+        strategy: rtools_ai::organize::OrganizeStrategy::ByDate,
+        by_date: true,
+        by_subject: false,
+        dry_run: true,
+    };
+    let planned = rtools_ai::OrganizeProcessor.process(inputs.clone(), organize_config)?;
+    for output in &planned {
+        let path = artifact_path(output)?;
+        if !path.starts_with(&output_dir) {
+            return Err(ApiError::invalid(
+                "Organize processor planned an output outside the request directory",
+            ));
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| ApiError::invalid("Organize output has no parent directory"))?;
+        std::fs::create_dir_all(parent).map_err(rtools_core::RToolsError::from)?;
+    }
     let outputs = rtools_ai::OrganizeProcessor.process(
         inputs,
         rtools_ai::organize::OrganizeConfig {
-            output_dir: request.path().join("organized"),
+            output_dir,
             strategy: rtools_ai::organize::OrganizeStrategy::ByDate,
             by_date: true,
             by_subject: false,

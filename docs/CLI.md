@@ -300,15 +300,12 @@ rtools pdf compress [OPTIONS]
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input PDF file |
 | `--output` | `-o` | - | Output file |
-| `--level` | `-l` | medium | Compression level |
+| `--level` | `-l` | medium | Only implemented level; light/heavy fail unavailable |
 
 **Examples:**
 ```bash
-# Light compression
-rtools pdf compress -i document.pdf -l light
-
-# Heavy compression
-rtools pdf compress -i document.pdf -l heavy
+# Medium compression (the only implemented level)
+rtools pdf compress -i document.pdf -l medium
 ```
 
 #### `rtools pdf split`
@@ -339,7 +336,9 @@ rtools pdf split -i document.pdf -p 1-5,10,15-20 -o extracted/
 
 #### `rtools ai organize`
 
-AI-organize photos into folders.
+Organize photos deterministically by modification date. AI-derived strategies
+are unavailable. A live run requires each planned year/month directory to
+already exist; use global `--dry-run` first to inspect the exact paths.
 
 ```bash
 rtools ai organize [OPTIONS]
@@ -349,21 +348,19 @@ rtools ai organize [OPTIONS]
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input directory |
-| `--output` | `-o` | - | Output directory |
-| `--strategy` | `-s` | date | Organization strategy |
+| `--output` | `-o` | - | Prepared output directory tree |
+| `--strategy` | `-s` | date | `date` only; other known modes are unavailable |
 
 **Examples:**
 ```bash
-# Organize by date
-rtools ai organize -i ~/Photos -o ~/Organized
-
-# Organize by subject
-rtools ai organize -i ~/Photos -o ~/Organized -s subject
+# Preview exact year/month destinations without writing
+rtools --dry-run ai organize -i ~/Photos -o ~/Organized -s date
 ```
 
 #### `rtools ai rename`
 
-AI-rename photos with descriptive names.
+Rename photos with deterministic filename tokens. AI-generated descriptions
+are unavailable.
 
 ```bash
 rtools ai rename [OPTIONS]
@@ -373,7 +370,7 @@ rtools ai rename [OPTIONS]
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input directory |
-| `--pattern` | `-p` | {date}_{subject}_{index} | Filename pattern |
+| `--pattern` | `-p` | {date}_{name}_{index} | Deterministic filename pattern |
 | `--dry-run` | - | false | Preview changes |
 
 **Examples:**
@@ -390,7 +387,8 @@ rtools ai rename -i ~/Photos -p "{date}_{index}"
 
 #### `rtools ai alt-text`
 
-Generate accessibility alt text.
+Unavailable in Milestone 1 because no verified captioning provider is
+registered. The command returns `CAPABILITY_UNAVAILABLE` and writes nothing.
 
 ```bash
 rtools ai alt-text [OPTIONS]
@@ -425,7 +423,7 @@ rtools ai duplicates [OPTIONS]
 |--------|-------|---------|-------------|
 | `--input` | `-i` | - | Input directory |
 | `--threshold` | `-t` | 0.9 | Similarity threshold |
-| `--action` | `-a` | report | Action (report, move, delete) |
+| `--action` | `-a` | report | Only report is executable; mutations are unavailable |
 
 **Examples:**
 ```bash

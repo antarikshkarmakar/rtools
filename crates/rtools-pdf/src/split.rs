@@ -138,6 +138,16 @@ impl Processor for PdfSplitProcessor {
     }
 
     fn validate_config(&self, config: &PdfSplitConfig) -> RToolsResult<()> {
+        if config.as_images
+            || config.image_format.as_deref() != Some("png")
+            || config.image_dpi != 300
+        {
+            return Err(RToolsError::capability_unavailable(
+                "pdf.split.images",
+                "PDF split image output is not implemented",
+                "Use PDF output with as_images=false, image_format=png, and image_dpi=300",
+            ));
+        }
         if config.filename_pattern.is_empty() {
             return Err(RToolsError::invalid_input(
                 "Filename pattern cannot be empty",

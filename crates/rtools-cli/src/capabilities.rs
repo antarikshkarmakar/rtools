@@ -131,6 +131,12 @@ fn register_unavailable(registry: &mut CapabilityRegistry) -> RToolsResult<()> {
             None,
         ),
         (
+            "ai.sort",
+            "File sorting is not implemented",
+            "Use date organization or sort files manually",
+            None,
+        ),
+        (
             "batch.run",
             "Batch recipe execution is not implemented",
             "Run operations individually until typed batch execution is available",
@@ -161,10 +167,22 @@ fn register_unavailable(registry: &mut CapabilityRegistry) -> RToolsResult<()> {
             None,
         ),
         (
+            "pdf.compress.level",
+            "Only medium PDF compression is implemented",
+            "Use compression level medium",
+            None,
+        ),
+        (
             "pdf.ocr",
             "No searchable PDF OCR provider is configured",
             "Configure a supported searchable PDF OCR provider",
             Some("tesseract"),
+        ),
+        (
+            "pdf.split.images",
+            "PDF split image output is not implemented",
+            "Use PDF output with the default image settings",
+            None,
         ),
         (
             "pdf.text",
@@ -326,6 +344,7 @@ mod tests {
                 ("ai.organize.subject", CapabilityState::Unavailable),
                 ("ai.rename.ai", CapabilityState::Unavailable),
                 ("ai.rename.deterministic", CapabilityState::Experimental),
+                ("ai.sort", CapabilityState::Unavailable),
                 ("batch.run", CapabilityState::Unavailable),
                 ("completions.generate", CapabilityState::Available),
                 ("config.init", CapabilityState::Available),
@@ -345,9 +364,11 @@ mod tests {
                 ("image.watermark.image", CapabilityState::Available),
                 ("image.watermark.text", CapabilityState::Unavailable),
                 ("pdf.compress", CapabilityState::Experimental),
+                ("pdf.compress.level", CapabilityState::Unavailable),
                 ("pdf.merge", CapabilityState::Experimental),
                 ("pdf.ocr", CapabilityState::Unavailable),
                 ("pdf.split", CapabilityState::Experimental),
+                ("pdf.split.images", CapabilityState::Unavailable),
                 ("pdf.text", CapabilityState::Unavailable),
                 ("pdf.to_image", CapabilityState::Unavailable),
             ]
