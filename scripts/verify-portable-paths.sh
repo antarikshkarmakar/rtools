@@ -12,7 +12,7 @@ tree_hash="$(git rev-parse --verify "${treeish}^{tree}")"
 invalid_count=0
 
 while IFS= read -r -d '' path; do
-    IFS='/' read -r -a components <<< "$path"
+    IFS='/' read -r -d '' -a components < <(printf '%s\0' "$path")
 
     for component in "${components[@]}"; do
         reason=""
